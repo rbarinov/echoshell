@@ -20,10 +20,12 @@ struct RecordingView: View {
     @State private var accumulatedOutput: String = "" // Accumulate output chunks
     @State private var terminalScreen: TerminalScreenEmulator? = nil // Terminal screen emulator
     @State private var lastSentCommand: String = "" // Track last sent command to filter it from output
-    @State private var ttsTimer: Timer? = nil // Timer for auto TTS after 3 seconds
+    @State private var ttsTimer: Timer? = nil // Timer for auto TTS after 5 seconds of silence
     @State private var lastTTSOutput: String = "" // Track what was last spoken to avoid duplicates
-    @State private var accumulatedForTTS: String = "" // Accumulated text for TTS (new additions only)
+    @State private var accumulatedForTTS: String = "" // Accumulated text for TTS (all messages)
     @StateObject private var audioPlayer = AudioPlayer() // Audio player for TTS
+    @State private var ttsQueue: [String] = [] // Queue for TTS messages
+    @State private var lastOutputSnapshot: String = "" // Snapshot of output when timer started
     
     private func toggleRecording() {
         if audioRecorder.isRecording {
@@ -37,6 +39,8 @@ struct RecordingView: View {
                 self.lastSentCommand = ""
                 self.lastTTSOutput = ""
                 self.accumulatedForTTS = ""
+                self.lastOutputSnapshot = ""
+                self.ttsQueue = []
                 self.ttsTimer?.invalidate()
                 self.ttsTimer = nil
             }
@@ -548,6 +552,8 @@ struct RecordingView: View {
                     self.ttsTimer = nil
                     self.lastTTSOutput = "" // Reset last spoken text
                     self.accumulatedForTTS = "" // Reset accumulated TTS text
+                    self.lastOutputSnapshot = "" // Reset output snapshot
+                    self.ttsQueue = [] // Clear TTS queue
                     
                     // Clear terminal output when switching to agent mode
                     self.lastTerminalOutput = ""
@@ -566,6 +572,8 @@ struct RecordingView: View {
                     self.ttsTimer = nil
                     self.lastTTSOutput = "" // Reset last spoken text
                     self.accumulatedForTTS = "" // Reset accumulated TTS text
+                    self.lastOutputSnapshot = "" // Reset output snapshot
+                    self.ttsQueue = [] // Clear TTS queue
                     
                     // Don't clear lastTerminalOutput - keep accumulated output between commands
                     // Only clear accumulated output and screen emulator
@@ -621,6 +629,8 @@ struct RecordingView: View {
                 self.lastSentCommand = ""
                 self.lastTTSOutput = ""
                 self.accumulatedForTTS = ""
+                self.lastOutputSnapshot = ""
+                self.ttsQueue = []
                 self.ttsTimer?.invalidate()
                 self.ttsTimer = nil
             }
@@ -687,12 +697,22 @@ struct RecordingView: View {
                 
                 // Get current screen state (final rendered output)
                 if let screenOutput = self.terminalScreen?.getScreenContent() {
+                    // Debug: log raw screen output
+                    if !screenOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        print("📺 Raw screen output (\(screenOutput.count) chars): \(screenOutput.prefix(300))")
+                    }
+                    
                     // Filter out only specific UI elements:
                     // 1. Lines starting with vertical pipe (│) - box borders
                     // 2. Lines with ANSI dim codes (semi-transparent UI text)
                     // 3. Lines starting with hexagon symbols (⬢, ⬡) - status indicators
                     // All other lines should be kept and appended
                     var filteredOutput = self.filterIntermediateMessages(screenOutput)
+                    
+                    // Debug: log filtered output
+                    if !filteredOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        print("🔍 Filtered output (\(filteredOutput.count) chars): \(filteredOutput.prefix(300))")
+                    }
                     
                     // Filter out user's command if it appears in output
                     // But be careful - only remove exact matches or very short lines that are just the command
@@ -739,14 +759,12 @@ struct RecordingView: View {
                         print("⚠️ RecordingView: extractCommandResult returned empty, filteredOutput (\(filteredOutput.count) chars): \(filteredOutput.prefix(200))")
                     }
                     
+                    // Always try to update output, even if extraction returns empty
+                    var textToAppend: String = ""
+                    
                     if !result.isEmpty {
-                        // Append to terminal output instead of replacing (accumulate between voice inputs)
-                        let newText = self.appendToTerminalOutput(result)
-                        if !newText.isEmpty {
-                            print("✅ RecordingView: Appended to terminal output: \(newText.prefix(200))")
-                            // Schedule auto TTS for new additions only
-                            self.scheduleAutoTTS(for: newText)
-                        }
+                        // Use extracted result
+                        textToAppend = result
                     } else if !filteredOutput.isEmpty {
                         // If extraction returned empty, use filtered text directly
                         let lines = filteredOutput.components(separatedBy: .newlines)
@@ -758,14 +776,24 @@ struct RecordingView: View {
                         if !meaningfulLines.isEmpty {
                             let meaningfulText = meaningfulLines.joined(separator: "\n")
                             // Take last 1000 characters to avoid memory issues
-                            let finalText = meaningfulText.count > 1000 
+                            textToAppend = meaningfulText.count > 1000 
                                 ? String(meaningfulText.suffix(1000))
                                 : meaningfulText
-                            // Append to terminal output instead of replacing
-                            let newText = self.appendToTerminalOutput(finalText)
-                            if !newText.isEmpty {
-                                // Schedule auto TTS for new additions only
-                                self.scheduleAutoTTS(for: newText)
+                        }
+                    }
+                    
+                    // Update output if we have text
+                    if !textToAppend.isEmpty {
+                        let newText = self.appendToTerminalOutput(textToAppend)
+                        if !newText.isEmpty {
+                            print("✅ RecordingView: Appended to terminal output: \(newText.prefix(200))")
+                            // Schedule auto TTS for new additions only
+                            self.scheduleAutoTTS(for: newText)
+                        } else {
+                            // Even if newText is empty (duplicate), ensure lastTerminalOutput is set
+                            // This ensures UI updates even for duplicate content
+                            if self.lastTerminalOutput.isEmpty {
+                                self.lastTerminalOutput = textToAppend
                             }
                         }
                     }
@@ -1082,7 +1110,14 @@ struct RecordingView: View {
             meaningfulLines.append(line)
         }
         
-        return meaningfulLines.joined(separator: "\n")
+        let result = meaningfulLines.joined(separator: "\n")
+        
+        // Debug logging
+        if !result.isEmpty && result != output {
+            print("🔍 filterIntermediateMessages: filtered from \(output.count) to \(result.count) chars")
+        }
+        
+        return result
     }
     
     // Helper function to remove ANSI escape sequences from text
@@ -1103,18 +1138,19 @@ struct RecordingView: View {
             return ""
         }
         
+        // Since we're already in Task { @MainActor in }, we can update directly
         // If lastTerminalOutput is empty, just set it
-        if lastTerminalOutput.isEmpty {
-            Task { @MainActor in
-                self.lastTerminalOutput = trimmedNew
-            }
+        if self.lastTerminalOutput.isEmpty {
+            self.lastTerminalOutput = trimmedNew
             return trimmedNew
         }
         
         // Check if this is new text (not already in output)
-        let currentOutput = lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if currentOutput.contains(trimmedNew) {
-            // Text already exists, return empty to skip TTS
+        let currentOutput = self.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // More lenient check - only skip if the exact same text is at the end
+        if currentOutput.hasSuffix(trimmedNew) && currentOutput.count == trimmedNew.count {
+            // Exact duplicate, skip
             return ""
         }
         
@@ -1129,15 +1165,17 @@ struct RecordingView: View {
             ? String(appended.suffix(5000))
             : appended
         
-        Task { @MainActor in
-            self.lastTerminalOutput = finalOutput
-        }
+        self.lastTerminalOutput = finalOutput
         
         // Return only the new part for TTS
         return trimmedNew
     }
     
-    // Schedule auto TTS if text remains stable for 3 seconds
+    // Schedule auto TTS with new logic:
+    // 1. Accumulate all messages
+    // 2. Wait 5 seconds without new messages (command completion)
+    // 3. Play all accumulated messages at 1.5x speed
+    // 4. If new message arrives during playback, add it to queue
     private func scheduleAutoTTS(for text: String) {
         // Cancel previous timer
         ttsTimer?.invalidate()
@@ -1149,35 +1187,140 @@ struct RecordingView: View {
             return
         }
         
-        // Skip if already spoken this exact text
-        if trimmed == lastTTSOutput {
+        // Use full accumulated output
+        let fullOutput = lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if fullOutput.isEmpty {
             return
         }
         
-        // Skip if audio is already playing
+        // Update accumulated TTS text with full output
+        accumulatedForTTS = fullOutput
+        
+        // If already playing, add new content to queue for later
         if audioPlayer.isPlaying {
+            // Find new content that hasn't been spoken yet
+            let newContent = extractNewContent(from: fullOutput, after: lastTTSOutput)
+            if !newContent.isEmpty {
+                let cleaned = cleanTerminalOutputForTTS(newContent)
+                if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    // Add to queue if not already there
+                    if !ttsQueue.contains(cleaned) {
+                        ttsQueue.append(cleaned)
+                    }
+                }
+            }
             return
         }
         
-        // Create new timer for 3 seconds
-        // Capture trimmed text to avoid using it in closure
-        let textToCheck = trimmed
-        ttsTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [self] _ in
-            // Check if text hasn't changed (still the same)
-            let currentText = self.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-            if currentText == textToCheck && !currentText.isEmpty {
-                // Text is stable, generate and play TTS
+        // Not playing - wait 5 seconds for command completion
+        lastOutputSnapshot = fullOutput
+        let threshold: TimeInterval = 5.0 // 5 seconds
+        
+        ttsTimer = Timer.scheduledTimer(withTimeInterval: threshold, repeats: false) { [self] _ in
+            // Check if output hasn't changed (command completed)
+            let currentOutput = self.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if currentOutput == self.lastOutputSnapshot && !currentOutput.isEmpty {
+                // Command completed - play all accumulated messages
                 Task { @MainActor in
-                    await self.generateAndPlayTTS(for: currentText)
+                    await self.playAccumulatedTTS()
                 }
             }
         }
     }
     
-    // Generate TTS audio and play it
-    private func generateAndPlayTTS(for text: String) async {
+    // Extract new content that hasn't been spoken yet
+    private func extractNewContent(from fullOutput: String, after spokenOutput: String) -> String {
+        if spokenOutput.isEmpty {
+            return fullOutput
+        }
+        
+        // Find position of spoken output in full output
+        if let range = fullOutput.range(of: spokenOutput) {
+            let newStart = range.upperBound
+            return String(fullOutput[newStart...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        // If not found, return everything (fallback)
+        return fullOutput
+    }
+    
+    // Play all accumulated TTS messages at 1.5x speed
+    private func playAccumulatedTTS() async {
         // Skip if already playing
         if audioPlayer.isPlaying {
+            return
+        }
+        
+        // Get accumulated text
+        let accumulated = accumulatedForTTS.trimmingCharacters(in: .whitespacesAndNewlines)
+        if accumulated.isEmpty {
+            return
+        }
+        
+        // Clean text for TTS
+        let cleanedText = cleanTerminalOutputForTTS(accumulated)
+        if cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
+        
+        // Check for ephemeral keys
+        guard let keys = settingsManager.ephemeralKeys else {
+            print("⚠️ No ephemeral keys for TTS")
+            return
+        }
+        
+        print("🔊 Generating TTS for accumulated output (length: \(cleanedText.count)) at 1.5x speed...")
+        
+        do {
+            let ttsHandler = LocalTTSHandler(apiKey: keys.openai)
+            let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
+            
+            // Use 1.5x speed
+            let audioData = try await ttsHandler.synthesize(text: cleanedText, voice: voice, speed: 1.5)
+            
+            // Update last spoken text
+            await MainActor.run {
+                self.lastTTSOutput = accumulated
+            }
+            
+            // Play audio on main thread
+            await MainActor.run {
+                do {
+                    try self.audioPlayer.play(audioData: audioData)
+                    print("🔊 TTS playback started at 1.5x speed")
+                } catch {
+                    print("❌ Failed to play TTS audio: \(error)")
+                }
+            }
+        } catch {
+            print("❌ TTS generation error: \(error)")
+        }
+    }
+    
+    
+    // Process queue after playback finishes
+    private func processQueueAfterPlayback() async {
+        // Wait a bit for audio session to settle
+        try? await Task.sleep(nanoseconds: 200_000_000) // 200ms
+        
+        // Process queue if there are items
+        while !ttsQueue.isEmpty {
+            let queuedText = ttsQueue.removeFirst()
+            
+            // Generate and play TTS for queued text
+            await generateAndPlayTTS(for: queuedText, isFromQueue: true)
+            
+            // Wait for playback to finish
+            while audioPlayer.isPlaying {
+                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+            }
+        }
+    }
+    
+    // Generate TTS audio and play it
+    private func generateAndPlayTTS(for text: String, isFromQueue: Bool = false) async {
+        // Skip if already playing (unless called from queue)
+        if audioPlayer.isPlaying && !isFromQueue {
             return
         }
         
@@ -1201,11 +1344,14 @@ struct RecordingView: View {
             return
         }
         
-        print("🔊 Auto-generating TTS for stable text (length: \(cleanedText.count))...")
+        print("🔊 Generating TTS (length: \(cleanedText.count))...")
         
         do {
             let ttsHandler = LocalTTSHandler(apiKey: keys.openai)
-            let audioData = try await ttsHandler.synthesize(text: cleanedText)
+            let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
+            
+            // Use 1.5x speed for all TTS
+            let audioData = try await ttsHandler.synthesize(text: cleanedText, voice: voice, speed: 1.5)
             
             // Update last spoken text
             await MainActor.run {
@@ -1216,13 +1362,38 @@ struct RecordingView: View {
             await MainActor.run {
                 do {
                     try self.audioPlayer.play(audioData: audioData)
-                    print("🔊 Auto-TTS playback started")
+                    print("🔊 TTS playback started at 1.5x speed")
+                    
+                    // If there's a queue, process it after playback finishes
+                    if !self.ttsQueue.isEmpty {
+                        Task { @MainActor in
+                            // Wait for playback to finish, then process queue
+                            while self.audioPlayer.isPlaying {
+                                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
+                            }
+                            await self.processQueueAfterPlayback()
+                        }
+                    }
                 } catch {
                     print("❌ Failed to play TTS audio: \(error)")
                 }
             }
         } catch {
             print("❌ TTS generation error: \(error)")
+        }
+    }
+    
+    // Select voice based on language from settings
+    private func selectVoiceForLanguage(_ language: TranscriptionLanguage) -> String {
+        switch language {
+        case .russian:
+            return "nova" // Good for Russian
+        case .english:
+            return "alloy" // Good for English
+        case .georgian:
+            return "echo" // Neutral voice
+        case .auto:
+            return "alloy" // Default neutral voice
         }
     }
     
@@ -1277,4 +1448,6 @@ struct RecordingView: View {
     RecordingView()
         .environmentObject(SettingsManager())
 }
+
+
 
