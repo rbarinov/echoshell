@@ -21,7 +21,7 @@ class TranscriptionService {
             return
         }
         
-        // Создаем multipart/form-data запрос
+        // Create multipart/form-data request
         var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
         
@@ -31,7 +31,7 @@ class TranscriptionService {
         
         var body = Data()
         
-        // Добавляем файл
+        // Add file
         if let audioData = try? Data(contentsOf: audioFileURL) {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
@@ -40,12 +40,12 @@ class TranscriptionService {
             body.append("\r\n".data(using: .utf8)!)
         }
         
-        // Добавляем модель
+        // Add model
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
         body.append("whisper-1\r\n".data(using: .utf8)!)
         
-        // Добавляем язык (если указан и не "auto")
+        // Add language (if specified and not "auto")
         if let lang = language, lang != "auto", !lang.isEmpty {
             body.append("--\(boundary)\r\n".data(using: .utf8)!)
             body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
@@ -55,13 +55,13 @@ class TranscriptionService {
             print("📝 Watch TranscriptionService: Using auto language detection")
         }
         
-        // Закрываем boundary
+        // Close boundary
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         
         request.httpBody = body
         let sentBytes = Int64(body.count)
         
-        // Отправляем запрос
+        // Send request
         URLSession.shared.dataTask(with: request) { data, response, error in
             if let error = error {
                 completion(.failure(error))
@@ -79,7 +79,7 @@ class TranscriptionService {
                 let result = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
                 completion(.success((text: result.text, networkUsage: (sent: sentBytes, received: receivedBytes))))
             } catch {
-                // Если не удалось декодировать, выводим сырой ответ для отладки
+                // If decoding failed, output raw response for debugging
                 if let responseString = String(data: data, encoding: .utf8) {
                     print("Raw response: \(responseString)")
                 }

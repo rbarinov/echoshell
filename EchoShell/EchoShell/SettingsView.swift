@@ -10,39 +10,15 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @StateObject private var watchManager = WatchConnectivityManager.shared
-    @State private var showingApiKey = false
     @State private var showingQRScanner = false
     @State private var scannedConfig: TunnelConfig?
+    @State private var hasProcessedScan = false // Prevent processing the same scan multiple times
     
     var body: some View {
         Form {
-            // NEW SECTION: Operation Mode
-            Section(header: Text("Operation Mode")) {
-                Picker("Mode", selection: $settingsManager.operationMode) {
-                    ForEach(OperationMode.allCases) { mode in
-                        HStack {
-                            Image(systemName: mode.icon)
-                            Text(mode.displayName)
-                        }
-                        .tag(mode)
-                    }
-                }
-                .pickerStyle(.inline)
-                
-                if settingsManager.operationMode == .standalone {
-                    Text("Connect directly to OpenAI for transcription")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("Connect to laptop for terminal control and AI commands")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            // NEW SECTION: Laptop Connection (only in laptop mode)
-            if settingsManager.operationMode == .laptop {
-                Section(header: Text("Laptop Connection")) {
+            // Laptop Connection Section
+            Section(header: Text("Laptop Connection"),
+                   footer: Text("Connect to your laptop for terminal control and AI commands")) {
                     if let config = settingsManager.laptopConfig {
                         // Connected
                         HStack {
@@ -73,8 +49,13 @@ struct SettingsView: View {
                         }
                         
                         Button(role: .destructive) {
+                            // Clear all connection state
                             settingsManager.laptopConfig = nil
                             settingsManager.ephemeralKeys = nil
+                            // Reset scan state to allow re-scanning
+                            hasProcessedScan = false
+                            scannedConfig = nil
+                            print("📱 Disconnected from laptop, ready for new scan")
                         } label: {
                             Label("Disconnect from Laptop", systemImage: "xmark.circle")
                         }
@@ -91,9 +72,8 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
                 }
-            }
             
-            // EXISTING SECTION: Watch Connection
+            // Watch Connection Section
             Section(header: Text("Watch Connection")) {
                     HStack {
                         Image(systemName: "applewatch")
@@ -122,50 +102,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                // MODIFIED: Only show API key in standalone mode
-                if settingsManager.operationMode == .standalone {
-                    Section(header: Text("OpenAI Settings")) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("API Key")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        
-                        HStack {
-                            if showingApiKey {
-                                TextField("Enter your OpenAI API key", text: $settingsManager.apiKey)
-                                    .textContentType(.password)
-                                    .autocapitalization(.none)
-                                    .disableAutocorrection(true)
-                            } else {
-                                SecureField("Enter your OpenAI API key", text: $settingsManager.apiKey)
-                                    .textContentType(.password)
-                                    .autocapitalization(.none)
-                                    .disableAutocorrection(true)
-                            }
-                            
-                            Button(action: {
-                                showingApiKey.toggle()
-                            }) {
-                                Image(systemName: showingApiKey ? "eye.slash.fill" : "eye.fill")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-                    
-                    Link(destination: URL(string: "https://platform.openai.com/api-keys")!) {
-                        HStack {
-                            Image(systemName: "key.fill")
-                                .foregroundColor(.blue)
-                            Text("Get API Key")
-                            Spacer()
-                            Image(systemName: "arrow.up.right")
-                                .font(.caption)
-                        }
-                    }
-                }
-                }
-                
-                Section(header: Text("Transcription Language"),
+            Section(header: Text("Transcription Language"),
                        footer: Text("Select language for better accuracy. Auto mode supports English, Russian, and Georgian.")) {
                     Picker("Language", selection: $settingsManager.transcriptionLanguage) {
                         ForEach(TranscriptionLanguage.allCases) { language in
@@ -230,17 +167,6 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
                     
-                    // NEW: Add current mode
-                    HStack {
-                        Text("Current Mode")
-                        Spacer()
-                        HStack(spacing: 4) {
-                            Image(systemName: settingsManager.operationMode.icon)
-                            Text(settingsManager.operationMode == .standalone ? "Standalone" : "Laptop")
-                        }
-                        .foregroundColor(.secondary)
-                    }
-                    
                     HStack {
                         Text("Current Language")
                         Spacer()
@@ -256,16 +182,58 @@ struct SettingsView: View {
                 QRScannerView(scannedConfig: $scannedConfig)
             }
             .onChange(of: scannedConfig) { oldValue, newValue in
-                if let config = newValue {
-                    print("📱 QR Code scanned successfully")
-                    print("   Tunnel ID: \(config.tunnelId)")
-                    
-                    // Save config
-                    settingsManager.laptopConfig = config
-                    
-                    // Request ephemeral keys from laptop
-                    Task {
-                        await requestEphemeralKeys(config: config, manager: settingsManager)
+                // Only process if we have a new config and haven't processed it yet
+                guard let config = newValue else {
+                    // If config is cleared (nil), reset the processing flag
+                    if newValue == nil && oldValue != nil {
+                        hasProcessedScan = false
+                        print("📱 Scanned config cleared, ready for new scan")
+                    }
+                    return
+                }
+                
+                // Prevent processing the same scan multiple times
+                guard !hasProcessedScan else {
+                    print("ℹ️ QR Code: Already processed this scan, skipping")
+                    return
+                }
+                
+                // Always process new scan, even if same tunnel ID
+                // This allows reconnecting to the same laptop after disconnection
+                hasProcessedScan = true
+                print("📱 QR Code scanned successfully")
+                print("   Tunnel ID: \(config.tunnelId)")
+                print("   Tunnel URL: \(config.tunnelUrl)")
+                print("   Key endpoint: \(config.keyEndpoint)")
+                
+                // Save config (this will replace any existing config)
+                settingsManager.laptopConfig = config
+                
+                // Request ephemeral keys from laptop
+                Task {
+                    await requestEphemeralKeys(config: config, manager: settingsManager)
+                }
+            }
+            .onChange(of: settingsManager.laptopConfig) { oldValue, newValue in
+                // When config is cleared (disconnected), reset scan state
+                if newValue == nil && oldValue != nil {
+                    hasProcessedScan = false
+                    scannedConfig = nil
+                    print("📱 Laptop config cleared, scan state reset")
+                }
+            }
+            .onChange(of: showingQRScanner) { oldValue, newValue in
+                if newValue {
+                    // Scanner is opening - reset all scan state
+                    hasProcessedScan = false
+                    scannedConfig = nil
+                    print("📱 QR Scanner opened, state reset")
+                } else {
+                    // Scanner is closing - clear scanned config if it wasn't processed
+                    // This allows re-scanning if the user didn't complete the connection
+                    if scannedConfig != nil && !hasProcessedScan {
+                        scannedConfig = nil
+                        print("📱 QR Scanner closed, cleared unprocessed scan")
                     }
                 }
             }
@@ -274,6 +242,8 @@ struct SettingsView: View {
     
     private func requestEphemeralKeys(config: TunnelConfig, manager: SettingsManager) async {
         print("🔑 Requesting ephemeral keys from laptop...")
+        print("   Tunnel URL: \(config.tunnelUrl)")
+        print("   Key endpoint: \(config.keyEndpoint)")
         
         let apiClient = APIClient(config: config)
         do {
@@ -284,9 +254,15 @@ struct SettingsView: View {
                 manager.ephemeralKeys = keyResponse.keys
                 manager.keyExpiresAt = Date(timeIntervalSince1970: TimeInterval(keyResponse.expiresAt))
                 print("✅ Ephemeral keys saved successfully")
+                print("   Keys expire in: \(keyResponse.expiresIn) seconds")
             }
         } catch {
             print("❌ Error requesting keys: \(error.localizedDescription)")
+            print("   Make sure the laptop app and tunnel server are running")
+            print("   Check that PUBLIC_HOST in tunnel-server/.env matches your network IP")
+            
+            // Don't clear the config on key request failure - user might fix the issue
+            // The config is still valid, just the keys couldn't be retrieved yet
         }
     }
 

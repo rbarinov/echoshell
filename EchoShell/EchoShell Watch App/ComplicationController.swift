@@ -45,7 +45,7 @@ class ComplicationController: NSObject, CLKComplicationDataSource {
     // MARK: - Timeline Population
     
     func getCurrentTimelineEntry(for complication: CLKComplication, withHandler handler: @escaping (CLKComplicationTimelineEntry?) -> Void) {
-        // Создаем простой template с иконкой микрофона
+        // Create a simple template with microphone icon
         let template = createTemplate(for: complication.family)
         let entry = CLKComplicationTimelineEntry(date: Date(), complicationTemplate: template)
         handler(entry)

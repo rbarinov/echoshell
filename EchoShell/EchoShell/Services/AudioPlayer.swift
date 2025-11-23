@@ -38,5 +38,27 @@ extension AudioPlayer: AVAudioPlayerDelegate {
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         isPlaying = false
         print("🔊 TTS audio playback finished")
+        
+        // Deactivate audio session to allow recording to start again
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+            print("🔊 Audio session deactivated, ready for recording")
+        } catch {
+            print("⚠️ Failed to deactivate audio session: \(error)")
+        }
+    }
+    
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        isPlaying = false
+        print("❌ Audio playback decode error: \(error?.localizedDescription ?? "Unknown")")
+        
+        // Deactivate audio session on error
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("⚠️ Failed to deactivate audio session: \(error)")
+        }
     }
 }

@@ -80,7 +80,7 @@ class AudioRecorder: NSObject, ObservableObject {
             try? FileManager.default.removeItem(at: audioFilename)
         }
         
-        // Сбрасываем предыдущий текст и статистику
+        // Reset previous text and statistics
         recognizedText = ""
         isTranscribing = false
         lastRecordingDuration = 0
@@ -91,10 +91,10 @@ class AudioRecorder: NSObject, ObservableObject {
         
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 16000,  // Снижено с 44100 до 16000 Hz (достаточно для речи)
-            AVNumberOfChannelsKey: 1,  // Моно
-            AVEncoderAudioQualityKey: AVAudioQuality.low.rawValue,  // Снижено качество с high до low
-            AVEncoderBitRateKey: 32000  // 32 kbps (вместо стандартных 128 kbps)
+            AVSampleRateKey: 16000,  // Reduced from 44100 to 16000 Hz (sufficient for speech)
+            AVNumberOfChannelsKey: 1,  // Mono
+            AVEncoderAudioQualityKey: AVAudioQuality.low.rawValue,  // Reduced quality from high to low
+            AVEncoderBitRateKey: 32000  // 32 kbps (instead of standard 128 kbps)
         ]
         
         do {
@@ -112,11 +112,11 @@ class AudioRecorder: NSObject, ObservableObject {
         audioRecorder?.stop()
         isRecording = false
         
-        // Вычисляем длительность записи
+        // Calculate recording duration
         if let startTime = recordingStartTime {
             lastRecordingDuration = Date().timeIntervalSince(startTime)
             
-            // Whisper API: $0.006 за минуту
+            // Whisper API: $0.006 per minute
             let minutes = lastRecordingDuration / 60.0
             lastTranscriptionCost = minutes * 0.006
             
@@ -149,7 +149,7 @@ extension AudioRecorder: AVAudioRecorderDelegate {
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         if flag {
             hasRecording = true
-            // Запускаем транскрипцию через OpenAI Whisper
+            // Start transcription via OpenAI Whisper
             transcribeWithAPI()
         }
     }
@@ -205,7 +205,7 @@ extension AudioRecorder: AVAudioRecorderDelegate {
         }
     }
     
-    // Функция для установки распознанного текста (будет вызвана из ContentView для ручной диктовки)
+    // Function to set recognized text (will be called from ContentView for manual dictation)
     func setRecognizedText(_ text: String) {
         recognizedText = text
         isTranscribing = false

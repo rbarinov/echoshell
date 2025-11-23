@@ -21,6 +21,11 @@ class APIClient: ObservableObject {
         self.deviceId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
     }
     
+    // Helper to add auth header to requests
+    private func addAuthHeader(to request: inout URLRequest) {
+        request.setValue(config.authKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
+    }
+    
     // MARK: - Key Management
     
     func requestKeys() async throws -> KeyResponse {
@@ -28,6 +33,7 @@ class APIClient: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addAuthHeader(to: &request)  // Add auth header for laptop authentication
         
         let body: [String: Any] = [
             "device_id": deviceId,
@@ -38,10 +44,29 @@ class APIClient: ObservableObject {
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            // Handle network errors
+            if let urlError = error as? URLError {
+                print("❌ APIClient: Network error - \(urlError.localizedDescription)")
+                if urlError.code == .cannotConnectToHost || urlError.code == .networkConnectionLost {
+                    throw APIError.connectionRefused
+                }
+            }
+            throw APIError.networkError
+        }
         
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ APIClient: Invalid response type")
+            throw APIError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "No response body"
+            print("❌ APIClient: Request failed with status \(httpResponse.statusCode)")
+            print("   Response: \(responseBody)")
             throw APIError.requestFailed
         }
         
@@ -59,6 +84,7 @@ class APIClient: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addAuthHeader(to: &request)
         
         let body: [String: Any] = [
             "device_id": deviceId,
@@ -79,20 +105,26 @@ class APIClient: ObservableObject {
         let url = URL(string: "\(config.apiBaseUrl)/terminal/list")!
         var request = URLRequest(url: url)
         request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
         
         let (data, _) = try await URLSession.shared.data(for: request)
         
         struct SessionsResponse: Codable {
-            let sessions: [SessionInfo]
+            let sessions: [SessionInfo]?
             struct SessionInfo: Codable {
                 let session_id: String
                 let working_dir: String
             }
         }
         
-        let response = try JSONDecoder().decode(SessionsResponse.self, from: data)
+        // Handle empty or missing response gracefully
+        guard let response = try? JSONDecoder().decode(SessionsResponse.self, from: data),
+              let sessions = response.sessions else {
+            print("ℹ️ No sessions found or invalid response, returning empty list")
+            return []
+        }
         
-        return response.sessions.map { info in
+        return sessions.map { info in
             TerminalSession(
                 id: info.session_id,
                 workingDir: info.working_dir,
@@ -109,6 +141,7 @@ class APIClient: ObservableObject {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
         
         var body: [String: Any] = [:]
         if let workingDir = workingDir {
@@ -136,12 +169,30 @@ class APIClient: ObservableObject {
         )
     }
     
+    func getHistory(sessionId: String) async throws -> String {
+        let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)/history")!
+        var request = URLRequest(url: url)
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
+        
+        let (data, _) = try await URLSession.shared.data(for: request)
+        
+        struct HistoryResponse: Codable {
+            let session_id: String
+            let history: String
+        }
+        
+        let response = try JSONDecoder().decode(HistoryResponse.self, from: data)
+        return response.history
+    }
+    
     func executeCommand(sessionId: String, command: String) async throws -> String {
         let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)/execute")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
         
         let body: [String: Any] = [
             "command": command
@@ -159,12 +210,49 @@ class APIClient: ObservableObject {
         return response.output
     }
     
+    func resizeTerminal(sessionId: String, cols: Int, rows: Int) async throws {
+        let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)/resize")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
+        
+        let body: [String: Any] = [
+            "cols": cols,
+            "rows": rows
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.requestFailed
+        }
+    }
+    
+    func deleteSession(sessionId: String) async throws {
+        let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.requestFailed
+        }
+    }
+    
     func executeAgentCommand(sessionId: String, command: String) async throws -> String {
         let url = URL(string: "\(config.apiBaseUrl)/agent/execute")!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
         
         let body: [String: Any] = [
             "command": command,
@@ -204,15 +292,18 @@ enum APIError: Error, LocalizedError {
     case requestFailed
     case invalidResponse
     case networkError
+    case connectionRefused
     
     var errorDescription: String? {
         switch self {
         case .requestFailed:
-            return "Request failed"
+            return "Request failed - check if laptop app is running"
         case .invalidResponse:
             return "Invalid response from server"
         case .networkError:
-            return "Network error occurred"
+            return "Network error occurred - check your connection"
+        case .connectionRefused:
+            return "Connection refused - check PUBLIC_HOST in tunnel-server/.env"
         }
     }
 }

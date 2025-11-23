@@ -45,7 +45,13 @@ class WatchConnectivityManager: NSObject, ObservableObject {
     
     func updateContext(apiKey: String, language: String = "auto", laptopConfig: TunnelConfig? = nil) {
         guard WCSession.default.activationState == .activated else {
-            print("⚠️ iOS: WCSession is not activated, cannot update context")
+            // Silently skip if not activated (Watch app might not be installed)
+            return
+        }
+        
+        // Only try to update context if Watch app is installed
+        guard WCSession.default.isWatchAppInstalled else {
+            // Silently skip if Watch app is not installed (this is normal)
             return
         }
         
@@ -66,7 +72,11 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             print("✅ iOS: Context updated successfully")
             print("   Sent: apiKey=\(apiKey.count) chars, language=\(language)")
         } catch {
-            print("❌ iOS: Error updating context: \(error.localizedDescription)")
+            // Only log if it's not the "not installed" error
+            let errorDescription = error.localizedDescription
+            if !errorDescription.contains("not installed") && !errorDescription.contains("WCErrorCodeWatchAppNotInstalled") {
+                print("⚠️ iOS: Error updating context: \(errorDescription)")
+            }
         }
     }
 }
@@ -87,10 +97,9 @@ extension WatchConnectivityManager: WCSessionDelegate {
             print("   Watch reachable: \(session.isReachable)")
             print("   Watch app installed: \(session.isWatchAppInstalled)")
             
-            // Send initial settings after activation
-            if activationState == .activated {
+            // Send initial settings after activation (only if Watch app is installed)
+            if activationState == .activated && session.isWatchAppInstalled {
                 // Get current settings from UserDefaults
-                // API key should be user-entered (standalone mode) or empty (laptop mode uses ephemeral keys)
                 let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
                 let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
                 
@@ -105,6 +114,8 @@ extension WatchConnectivityManager: WCSessionDelegate {
                 }
                 
                 updateContext(apiKey: apiKey, language: language)
+            } else if !session.isWatchAppInstalled {
+                print("ℹ️ iOS: Watch app not installed, skipping context update")
             }
         }
     }
@@ -124,11 +135,10 @@ extension WatchConnectivityManager: WCSessionDelegate {
         }
         print("📡 iOS: Watch reachability changed: \(session.isReachable)")
         
-        // When Watch becomes available - send settings
-        if session.isReachable {
+        // When Watch becomes available - send settings (only if Watch app is installed)
+        if session.isReachable && session.isWatchAppInstalled {
             print("📤 iOS: Watch just became reachable, sending settings...")
             
-            // API key should be user-entered (standalone mode) or empty (laptop mode uses ephemeral keys)
             let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
             let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
             

@@ -1,14 +1,50 @@
 import { WebSocket } from 'ws';
 
+export interface TunnelConfig {
+  tunnelId: string;
+  apiKey: string;
+  publicUrl: string;
+  wsUrl: string;
+}
+
+interface TunnelRequest {
+  method: string;
+  path: string;
+  body: unknown;
+  query: Record<string, string | undefined>;
+  headers: Record<string, string | string[] | undefined>;
+  requestId: string;
+}
+
+interface TunnelResponse {
+  statusCode: number;
+  body: unknown;
+}
+
 export class TunnelClient {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
+  private maxReconnectAttempts = Infinity; // Keep trying forever
+  private terminalInputHandler: ((sessionId: string, data: string) => void) | null = null;
   
   constructor(
-    private config: any,
-    private requestHandler: (req: any) => Promise<any>
+    private config: TunnelConfig,
+    private requestHandler: (req: TunnelRequest) => Promise<TunnelResponse>
   ) {}
+  
+  setTerminalInputHandler(handler: (sessionId: string, data: string) => void): void {
+    this.terminalInputHandler = handler;
+  }
+  
+  sendTerminalOutput(sessionId: string, data: string): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'terminal_output',
+        sessionId,
+        data
+      }));
+    }
+  }
   
   async connect(): Promise<void> {
     const wsUrl = `${this.config.wsUrl}?api_key=${this.config.apiKey}`;
@@ -27,7 +63,20 @@ export class TunnelClient {
         const message = JSON.parse(data.toString());
         
         if (message.type === 'http_request') {
-          const response = await this.requestHandler(message);
+          // Normalize path - remove any double slashes and ensure it starts with /
+          let normalizedPath = message.path || '/';
+          if (!normalizedPath.startsWith('/')) {
+            normalizedPath = '/' + normalizedPath;
+          }
+          // Remove double slashes (except at the start)
+          normalizedPath = normalizedPath.replace(/\/+/g, '/');
+          
+          console.log(`📥 Tunnel: ${message.method} ${message.path} -> normalized: ${normalizedPath}`);
+          
+          const response = await this.requestHandler({
+            ...message,
+            path: normalizedPath
+          });
           
           // Send response back through tunnel
           this.ws?.send(JSON.stringify({
@@ -36,6 +85,11 @@ export class TunnelClient {
             statusCode: response.statusCode || 200,
             body: response.body
           }));
+        } else if (message.type === 'terminal_input') {
+          // Handle terminal input from iPhone
+          if (this.terminalInputHandler) {
+            this.terminalInputHandler(message.sessionId, message.data);
+          }
         }
       } catch (error) {
         console.error('❌ Error processing tunnel message:', error);
@@ -55,16 +109,20 @@ export class TunnelClient {
   private attemptReconnect(): void {
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
       console.error('❌ Max reconnection attempts reached');
+      console.log('💡 Please restart the application or check tunnel server');
       return;
     }
     
     this.reconnectAttempts++;
-    const delay = Math.pow(2, this.reconnectAttempts) * 1000;
+    const delay = Math.min(Math.pow(2, this.reconnectAttempts) * 1000, 30000); // Max 30s
     
-    console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    console.log(`🔄 Reconnecting to tunnel in ${delay / 1000}s (attempt ${this.reconnectAttempts}${this.maxReconnectAttempts === Infinity ? '' : '/' + this.maxReconnectAttempts})`);
     
     setTimeout(() => {
-      this.connect();
+      console.log('🔌 Attempting to reconnect...');
+      this.connect().catch(err => {
+        console.error('❌ Reconnection failed:', err.message);
+      });
     }, delay);
   }
   

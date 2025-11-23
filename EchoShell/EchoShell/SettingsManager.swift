@@ -13,7 +13,7 @@ class SettingsManager: ObservableObject {
         didSet {
             UserDefaults.standard.set(apiKey, forKey: "apiKey")
             print("📱 SettingsManager: API key updated, length: \(apiKey.count)")
-            // Автоматическая синхронизация при изменении
+            // Automatic sync on change
             syncToWatch()
             // Notify AudioRecorder about API key change
             NotificationCenter.default.post(name: NSNotification.Name("APIKeyChanged"), object: nil)
@@ -24,22 +24,14 @@ class SettingsManager: ObservableObject {
         didSet {
             UserDefaults.standard.set(transcriptionLanguage.rawValue, forKey: "transcriptionLanguage")
             print("📱 SettingsManager: Language updated to: \(transcriptionLanguage.displayName)")
-            // Автоматическая синхронизация при изменении
+            // Automatic sync on change
             syncToWatch()
             // Notify AudioRecorder about language change
             NotificationCenter.default.post(name: NSNotification.Name("LanguageChanged"), object: nil)
         }
     }
     
-    // NEW: Add laptop mode properties
-    @Published var operationMode: OperationMode {
-        didSet {
-            UserDefaults.standard.set(operationMode.rawValue, forKey: "operationMode")
-            print("📱 SettingsManager: Operation mode changed to: \(operationMode.displayName)")
-            syncToWatch()
-        }
-    }
-    
+    // Laptop mode properties
     @Published var laptopConfig: TunnelConfig? {
         didSet {
             if let config = laptopConfig {
@@ -78,37 +70,51 @@ class SettingsManager: ObservableObject {
         }
     }
     
-    // NEW: Computed property
-    var isLaptopMode: Bool {
-        return operationMode == .laptop && laptopConfig != nil
+    // Command execution mode
+    @Published var commandMode: CommandMode {
+        didSet {
+            UserDefaults.standard.set(commandMode.rawValue, forKey: "commandMode")
+            print("📱 SettingsManager: Command mode updated to: \(commandMode.displayName)")
+        }
     }
     
-    // NEW: Key refresh check
+    // Selected terminal session ID
+    @Published var selectedSessionId: String? {
+        didSet {
+            if let sessionId = selectedSessionId {
+                UserDefaults.standard.set(sessionId, forKey: "selectedSessionId")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "selectedSessionId")
+            }
+            print("📱 SettingsManager: Selected session updated: \(selectedSessionId ?? "none")")
+        }
+    }
+    
+    // Last terminal output for direct mode display
+    @Published var lastTerminalOutput: String = ""
+    
+    // Key refresh check
     func shouldRefreshKeys() -> Bool {
         guard let expiresAt = keyExpiresAt else { return true }
         return Date().addingTimeInterval(300) >= expiresAt // 5 minutes before expiry
     }
     
     init() {
-        // Load API key from UserDefaults (user-entered in standalone mode)
-        // In laptop mode, ephemeral keys are used instead
+        // API key is only used for legacy purposes, ephemeral keys from laptop are used instead
         self.apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
         
         if let languageCode = UserDefaults.standard.string(forKey: "transcriptionLanguage"),
            let language = TranscriptionLanguage(rawValue: languageCode) {
             self.transcriptionLanguage = language
         } else {
-            self.transcriptionLanguage = .auto // По умолчанию авто-определение (ru, en, ka)
+            self.transcriptionLanguage = .auto // Default to auto-detection (ru, en, ka)
         }
         
-        // NEW: Load laptop config
+        // Load laptop config
         if let data = UserDefaults.standard.data(forKey: "laptopConfig"),
            let config = try? JSONDecoder().decode(TunnelConfig.self, from: data) {
             self.laptopConfig = config
         }
-        
-        let modeRaw = UserDefaults.standard.string(forKey: "operationMode") ?? "standalone"
-        self.operationMode = OperationMode(rawValue: modeRaw) ?? .standalone
         
         // Load ephemeral keys from Keychain
         self.ephemeralKeys = SecureKeyStore.shared.load()
@@ -116,37 +122,61 @@ class SettingsManager: ObservableObject {
             self.keyExpiresAt = Date(timeIntervalSince1970: timestamp)
         }
         
+        // Load command mode
+        if let modeRaw = UserDefaults.standard.string(forKey: "commandMode"),
+           let mode = CommandMode(rawValue: modeRaw) {
+            self.commandMode = mode
+        } else {
+            self.commandMode = .agent // Default to agent mode
+        }
+        
+        // Load selected session
+        self.selectedSessionId = UserDefaults.standard.string(forKey: "selectedSessionId")
+        
         print("📱 SettingsManager: Initialized with API key length: \(self.apiKey.count)")
         print("📱 SettingsManager: Language: \(self.transcriptionLanguage.displayName)")
-        print("📱 SettingsManager: Operation mode: \(self.operationMode.displayName)")
+        print("📱 SettingsManager: Command mode: \(self.commandMode.displayName)")
+        print("📱 SettingsManager: Operation mode: Laptop Mode (Terminal Control)")
     }
     
     private func syncToWatch() {
-        WatchConnectivityManager.shared.updateContext(apiKey: apiKey, language: transcriptionLanguage.rawValue, laptopConfig: laptopConfig)
+        // Only sync if Watch app is installed (silently skip if not)
+        if WatchConnectivityManager.shared.isWatchAppInstalled {
+            WatchConnectivityManager.shared.updateContext(apiKey: apiKey, language: transcriptionLanguage.rawValue, laptopConfig: laptopConfig)
+        }
     }
 }
 
-enum OperationMode: String, CaseIterable, Identifiable {
-    case standalone = "standalone"
-    case laptop = "laptop"
+enum CommandMode: String, CaseIterable, Identifiable {
+    case agent = "agent"
+    case direct = "direct"
     
     var id: String { rawValue }
     
     var displayName: String {
         switch self {
-        case .standalone:
-            return "Standalone (Direct OpenAI)"
-        case .laptop:
-            return "Laptop Mode (Terminal Control)"
+        case .agent:
+            return "AI Agent"
+        case .direct:
+            return "Direct Terminal"
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .agent:
+            return "AI Agent: answers questions, manages terminals (create/delete/navigate)"
+        case .direct:
+            return "Direct Terminal: commands are executed directly in the terminal"
         }
     }
     
     var icon: String {
         switch self {
-        case .standalone:
-            return "iphone"
-        case .laptop:
-            return "laptopcomputer"
+        case .agent:
+            return "brain.head.profile"
+        case .direct:
+            return "terminal"
         }
     }
 }
@@ -162,13 +192,13 @@ enum TranscriptionLanguage: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .auto:
-            return "Auto (Русский, English, ქართული)"
+            return "Auto (Russian, English, Georgian)"
         case .russian:
-            return "Русский"
+            return "Russian"
         case .english:
             return "English"
         case .georgian:
-            return "ქართული (Georgian)"
+            return "Georgian"
         }
     }
     
@@ -188,7 +218,7 @@ enum TranscriptionLanguage: String, CaseIterable, Identifiable {
     var whisperCode: String? {
         switch self {
         case .auto:
-            return nil // Whisper автоматически определит язык
+            return nil // Whisper will automatically detect language
         case .russian:
             return "ru"
         case .english:

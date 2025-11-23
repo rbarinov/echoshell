@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EchoShell Terminal Sessions</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- xterm.js for interactive terminal -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script>
+        // Ensure FitAddon is available globally
+        if (typeof FitAddon === 'undefined' && typeof window.FitAddon !== 'undefined') {
+            window.FitAddon = window.FitAddon.FitAddon || window.FitAddon;
+        }
+    </script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🖥️ EchoShell Terminal Sessions</h1>
+            <button id="refreshBtn" class="btn btn-primary">Refresh</button>
+            <button id="createBtn" class="btn btn-success">New Session</button>
+        </header>
+
+        <div id="sessionsList" class="sessions-list">
+            <div class="loading">Loading sessions...</div>
+        </div>
+
+        <div id="sessionDetail" class="session-detail hidden">
+            <div class="session-header">
+                <h2 id="sessionTitle">Session</h2>
+                <div class="session-actions">
+                    <button id="closeDetailBtn" class="btn btn-secondary">Close</button>
+                    <button id="deleteSessionBtn" class="btn btn-danger">Delete Session</button>
+                </div>
+            </div>
+            <div class="session-info">
+                <div><strong>Session ID:</strong> <span id="sessionId"></span></div>
+                <div><strong>Working Directory:</strong> <span id="workingDir"></span></div>
+                <div><strong>Created:</strong> <span id="createdAt"></span></div>
+            </div>
+            <div class="terminal-container">
+                <div id="terminal" class="terminal"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

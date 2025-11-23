@@ -19,14 +19,18 @@ class WebSocketClient: ObservableObject {
     private var sessionId: String?
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 5
+    private var onMessageCallback: ((String) -> Void)?
     
-    func connect(config: TunnelConfig, sessionId: String) {
+    func connect(config: TunnelConfig, sessionId: String, onMessage: ((String) -> Void)? = nil) {
+        self.onMessageCallback = onMessage
         self.config = config
         self.sessionId = sessionId
         
         let wsUrlString = "\(config.wsUrl)/api/\(config.tunnelId)/terminal/\(sessionId)/stream"
         guard let url = URL(string: wsUrlString) else {
-            connectionError = "Invalid WebSocket URL"
+            Task { @MainActor in
+                self.connectionError = "Invalid WebSocket URL"
+            }
             return
         }
         
@@ -36,7 +40,9 @@ class WebSocketClient: ObservableObject {
         webSocketTask = URLSession.shared.webSocketTask(with: request)
         webSocketTask?.resume()
         
-        isConnected = true
+        Task { @MainActor in
+            self.isConnected = true
+        }
         reconnectAttempts = 0
         
         print("📡 WebSocket connecting to: \(wsUrlString)")
@@ -46,8 +52,41 @@ class WebSocketClient: ObservableObject {
     
     func disconnect() {
         webSocketTask?.cancel(with: .goingAway, reason: nil)
-        isConnected = false
+        Task { @MainActor in
+            self.isConnected = false
+        }
         print("📡 WebSocket disconnected")
+    }
+    
+    func sendInput(_ input: String) {
+        guard isConnected, let webSocketTask = webSocketTask else {
+            print("⚠️ Cannot send input - not connected")
+            return
+        }
+        
+        // Log input bytes for debugging
+        let inputBytes = input.utf8.map { $0 }
+        let inputDescription = input
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        print("📤 Sending input to terminal: '\(inputDescription)' (bytes: \(inputBytes))")
+        
+        // Send input as JSON message
+        let message: [String: Any] = [
+            "type": "input",
+            "data": input
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: message),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            webSocketTask.send(.string(jsonString)) { error in
+                if let error = error {
+                    print("❌ Error sending input: \(error.localizedDescription)")
+                } else {
+                    print("✅ Input sent successfully")
+                }
+            }
+        }
     }
     
     private func receiveMessage() {
@@ -72,8 +111,11 @@ class WebSocketClient: ObservableObject {
                 
             case .failure(let error):
                 print("❌ WebSocket error: \(error.localizedDescription)")
-                self.isConnected = false
-                self.connectionError = error.localizedDescription
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    self.isConnected = false
+                    self.connectionError = error.localizedDescription
+                }
                 self.attemptReconnect()
             }
         }
@@ -97,7 +139,22 @@ class WebSocketClient: ObservableObject {
             timestamp: timestamp
         )
         
+        // Log message data for debugging
+        print("📨 WebSocket message received: \(messageData.prefix(100))...")
+        print("📨 Message data length: \(messageData.count) bytes")
+        
+        // Call callback on main thread for terminal display
         DispatchQueue.main.async {
+            if let callback = self.onMessageCallback {
+                print("📞 Calling onMessageCallback with \(messageData.count) bytes")
+                callback(messageData)
+            } else {
+                print("⚠️ onMessageCallback is nil!")
+            }
+        }
+        
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
             self.messages.append(message)
             
             // Keep only last 100 messages
@@ -105,8 +162,6 @@ class WebSocketClient: ObservableObject {
                 self.messages.removeFirst(self.messages.count - 100)
             }
         }
-        
-        print("📨 WebSocket message received: \(messageData.prefix(50))...")
     }
     
     private func attemptReconnect() {
@@ -120,9 +175,10 @@ class WebSocketClient: ObservableObject {
         
         print("🔄 Attempting reconnect #\(reconnectAttempts) in \(delay)s...")
         
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            guard let self = self,
-                  let config = self.config,
+        Task { @MainActor [weak self] in
+            guard let self = self else { return }
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard let config = self.config,
                   let sessionId = self.sessionId else {
                 return
             }

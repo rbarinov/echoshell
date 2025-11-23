@@ -7,7 +7,26 @@
   "license": "MIT",
   "scripts": {
     "prepare": "husky install",
-    "commitlint": "commitlint --edit"
+    "commitlint": "commitlint --edit",
+    "build": "cd laptop-app && npm run build && cd ../tunnel-server && npm run build",
+    "build:laptop-app": "cd laptop-app && npm run build",
+    "build:tunnel-server": "cd tunnel-server && npm run build",
+    "build:watch": "cd laptop-app && npm run build:watch & cd ../tunnel-server && npm run build:watch",
+    "dev:laptop-app": "cd laptop-app && DOTENV_CONFIG_PATH=./.env npm run dev",
+    "dev:tunnel-server": "cd tunnel-server && DOTENV_CONFIG_PATH=./.env npm run dev",
+    "start:laptop-app": "cd laptop-app && DOTENV_CONFIG_PATH=./.env npm run start",
+    "start:tunnel-server": "cd tunnel-server && DOTENV_CONFIG_PATH=./.env npm run start",
+    "start:prod": "npm run build && npm run start:laptop-app & npm run start:tunnel-server",
+    "type-check": "cd laptop-app && npm run type-check && cd ../tunnel-server && npm run type-check",
+    "type-check:laptop-app": "cd laptop-app && npm run type-check",
+    "type-check:tunnel-server": "cd tunnel-server && npm run type-check",
+    "clean": "cd laptop-app && npm run clean && cd ../tunnel-server && npm run clean",
+    "clean:laptop-app": "cd laptop-app && npm run clean",
+    "clean:tunnel-server": "cd tunnel-server && npm run clean",
+    "rebuild": "cd laptop-app && npm run rebuild && cd ../tunnel-server && npm run rebuild",
+    "lint": "cd laptop-app && npm run lint && cd ../tunnel-server && npm run lint",
+    "test": "cd laptop-app && npm run test && cd ../tunnel-server && npm run test",
+    "install:all": "npm install && cd laptop-app && npm install && cd ../tunnel-server && npm install"
   },
   "devDependencies": {
     "@commitlint/cli": "^18.4.4",

@@ -15,7 +15,7 @@ struct TerminalView: View {
     @State private var showingNewSession = false
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack {
                 if let config = settingsManager.laptopConfig {
                     if viewModel.sessions.isEmpty && !viewModel.isLoading {
@@ -44,11 +44,24 @@ struct TerminalView: View {
                         }
                     } else {
                         // Session list
-                        List(viewModel.sessions) { session in
-                            Button {
-                                selectedSession = session
-                            } label: {
-                                SessionRow(session: session)
+                        List {
+                            ForEach(viewModel.sessions) { session in
+                                Button {
+                                    selectedSession = session
+                                } label: {
+                                    SessionRow(session: session)
+                                }
+                            }
+                            .onDelete { indexSet in
+                                // Handle swipe to delete
+                                for index in indexSet {
+                                    let session = viewModel.sessions[index]
+                                    if let config = settingsManager.laptopConfig {
+                                        Task {
+                                            await viewModel.deleteSession(session, config: config)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -103,7 +116,7 @@ struct TerminalView: View {
                     }
                 }
             }
-            .sheet(item: $selectedSession) { session in
+            .navigationDestination(item: $selectedSession) { session in
                 TerminalDetailView(session: session, config: settingsManager.laptopConfig!)
             }
             .task {

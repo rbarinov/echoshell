@@ -1,5 +1,7 @@
 import { spawn, IPty } from 'node-pty';
 import os from 'os';
+import type { TunnelClient } from '../tunnel/TunnelClient.js';
+import { StateManager, type TerminalSessionState } from '../storage/StateManager.js';
 
 interface TerminalSession {
   sessionId: string;
@@ -12,19 +14,155 @@ interface TerminalSession {
 export class TerminalManager {
   private sessions = new Map<string, TerminalSession>();
   private outputListeners = new Map<string, Set<(data: string) => void>>();
+  private tunnelClient: TunnelClient | null = null;
+  private stateManager: StateManager;
   
-  createSession(workingDir?: string): { sessionId: string; workingDir: string } {
+  constructor(stateManager: StateManager) {
+    this.stateManager = stateManager;
+  }
+  
+  async restoreSessions(): Promise<void> {
+    console.log('🔄 Attempting to restore terminal sessions...');
+    const state = await this.stateManager.loadState();
+    
+    if (!state || !state.sessions || state.sessions.length === 0) {
+      console.log('📂 No sessions to restore');
+      return;
+    }
+    
+    console.log(`🔄 Found ${state.sessions.length} sessions to restore`);
+    console.log('⚠️  Note: Sessions cannot be restored without tmux. Creating new sessions instead.');
+    
+    // Without tmux, we cannot restore existing sessions as PTY connections are lost
+    // Clear the state and let users create new sessions
+    await this.stateManager.saveSessionsState([]);
+  }
+  
+  private async saveSessionsState(): Promise<void> {
+    const sessions: TerminalSessionState[] = Array.from(this.sessions.values()).map(s => ({
+      sessionId: s.sessionId,
+      workingDir: s.workingDir,
+      createdAt: s.createdAt
+    }));
+    
+    await this.stateManager.saveSessionsState(sessions);
+  }
+  
+  setTunnelClient(tunnelClient: TunnelClient): void {
+    this.tunnelClient = tunnelClient;
+  }
+  
+  writeInput(sessionId: string, data: string, isCommand: boolean = false): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      // Normalize input: convert \n to \r for Enter key
+      // This fixes issues when cursor-agent or other tools modify Enter key behavior
+      // Terminal expects \r (carriage return) to execute commands, not \n (newline)
+      let normalizedData = data;
+      
+      // Log original data for debugging
+      const originalBytes = Array.from(data).map(c => c.charCodeAt(0));
+      console.log(`⌨️  Raw input: ${JSON.stringify(data)} (bytes: ${originalBytes.join(', ')})`);
+      
+      // Handle cursor-agent case: it sends \n\n instead of \r
+      // Also handle SwiftTerm which may send \n instead of \r
+      // Always convert \n to \r if there's no \r in the data
+      // This ensures Enter key always sends \r (carriage return) which terminals expect
+      if (!normalizedData.includes('\r')) {
+        // If there's no \r in the data, replace all \n sequences with \r
+        // This handles:
+        // - SwiftTerm sending \n instead of \r
+        // - cursor-agent sending \n\n instead of \r
+        // - Any other case where \n is used instead of \r
+        normalizedData = normalizedData.replace(/\n+/g, '\r');
+      } else if (normalizedData.endsWith('\n') && !normalizedData.endsWith('\r\n')) {
+        // If data has \r but ends with \n (not \r\n), replace trailing \n with \r
+        normalizedData = normalizedData.slice(0, -1) + '\r';
+      }
+      
+      // Only add \r at the end for complete commands (HTTP API), not for character-by-character input
+      // Character-by-character input should only have \r when user presses Enter
+      if (isCommand && !normalizedData.endsWith('\r') && !normalizedData.endsWith('\r\n')) {
+        // This is a complete command from HTTP API, ensure it ends with \r for execution
+        normalizedData += '\r';
+      }
+      
+      // Log normalized data
+      if (normalizedData !== data) {
+        const normalizedBytes = Array.from(normalizedData).map(c => c.charCodeAt(0));
+        console.log(`⌨️  Normalized: ${JSON.stringify(normalizedData)} (bytes: ${normalizedBytes.join(', ')})`);
+      }
+      
+      // Write to PTY - this is what actually sends data to the terminal
+      // For cursor-agent, the command should be sent as-is with \r at the end
+      session.pty.write(normalizedData);
+      
+      // Log what was actually written to PTY
+      console.log(`📝 Written to PTY: ${normalizedData.length} bytes, ends with: ${normalizedData.slice(-5).split('').map(c => `'${c}'(${c.charCodeAt(0)})`).join(' ')}`);
+    }
+  }
+  
+  resizeTerminal(sessionId: string, cols: number, rows: number): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      try {
+        // Resize the PTY
+        session.pty.resize(cols, rows);
+        console.log(`📐 Resized terminal ${sessionId}: ${cols}x${rows}`);
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`❌ Failed to resize PTY for ${sessionId}: ${errorMessage}`);
+        
+        // Try to recover by checking if PTY is still alive
+        if (errorMessage.includes('EBADF')) {
+          console.error(`⚠️  PTY is closed for session ${sessionId}, session may be dead`);
+        }
+      }
+    } else {
+      console.warn(`⚠️  Cannot resize - session ${sessionId} not found`);
+    }
+  }
+  
+  async createSession(workingDir?: string): Promise<{ sessionId: string; workingDir: string }> {
     const sessionId = `session-${Date.now()}`;
     const cwd = workingDir || process.env.HOME || os.homedir();
     
+    // Create direct PTY session (no tmux)
     const shell = process.env.SHELL || (os.platform() === 'win32' ? 'powershell.exe' : 'bash');
     
-    const pty = spawn(shell, [], {
-      name: 'xterm-color',
+    // Configure environment to ensure proper shell prompt
+    const env = {
+      ...process.env,
+      TERM: 'xterm-256color',
+      TERM_PROGRAM: '',
+      VTE_VERSION: '',
+      // Don't override prompt - let user's default shell prompt be used
+      // For zsh: ensure it knows it's interactive
+      ZDOTDIR: process.env.ZDOTDIR || process.env.HOME,
+      // Disable zsh's auto-detection of non-interactive mode
+      ZSH_DISABLE_COMPFIX: 'true',
+    } as Record<string, string>;
+    
+    // Remove any variables that might make shell think it's non-interactive
+    delete env.BASH_ENV;
+    delete env.ENV;
+    
+    // Create direct PTY session with interactive flag for zsh
+    const shellArgs: string[] = [];
+    if (shell.includes('zsh')) {
+      // Force zsh to run in interactive mode
+      shellArgs.push('-i');
+    } else if (shell.includes('bash')) {
+      // Force bash to run in interactive mode
+      shellArgs.push('-i');
+    }
+    
+    const pty = spawn(shell, shellArgs, {
+      name: 'xterm-256color',
       cols: 80,
       rows: 30,
       cwd,
-      env: process.env as any
+      env
     });
     
     const session: TerminalSession = {
@@ -39,9 +177,14 @@ export class TerminalManager {
     pty.onData((data) => {
       session.outputBuffer.push(data);
       
-      // Keep only last 1000 lines
-      if (session.outputBuffer.length > 1000) {
+      // Keep only last 10000 lines for history
+      if (session.outputBuffer.length > 10000) {
         session.outputBuffer.shift();
+      }
+      
+      // Stream to tunnel (for iPhone)
+      if (this.tunnelClient) {
+        this.tunnelClient.sendTerminalOutput(sessionId, data);
       }
       
       // Notify listeners (for WebSocket streaming)
@@ -51,43 +194,65 @@ export class TerminalManager {
       }
     });
     
+    
     this.sessions.set(sessionId, session);
+    
+    // Save sessions to state file
+    await this.saveSessionsState();
+    
+    console.log(`✅ Created terminal session: ${sessionId} in ${cwd}`);
     
     return { sessionId, workingDir: cwd };
   }
   
-  executeCommand(sessionId: string, command: string): string {
+  executeCommand(sessionId: string, command: string): Promise<string> {
     const session = this.sessions.get(sessionId);
     
     if (!session) {
       throw new Error('Session not found');
     }
     
-    // Clear buffer before command
-    session.outputBuffer = [];
+    console.log(`📝 executeCommand called for ${sessionId}: ${JSON.stringify(command)}`);
+    console.log(`📝 Command length: ${command.length}, bytes: ${Array.from(command).map(c => c.charCodeAt(0)).join(', ')}`);
     
-    // Write command to PTY
-    session.pty.write(command + '\r');
+    // Use writeInput with isCommand=true to ensure proper normalization and \r at the end
+    // This is especially important when cursor-agent is active
+    // Command may come with \n\n from iPhone app, which needs to be normalized
+    this.writeInput(sessionId, command, true);
+    
+    console.log(`✅ Command written to PTY for ${sessionId}`);
     
     // Wait a bit for output (simple approach)
     // In production, you'd want more sophisticated output detection
     return new Promise((resolve) => {
       setTimeout(() => {
-        const output = session.outputBuffer.join('');
-        resolve(output);
-      }, 500);
-    }) as any;
+        // Return only the new output since command was written
+        // For now, return empty since we're streaming via WebSocket
+        resolve('');
+      }, 100);
+    });
   }
   
-  listSessions(): Array<{ sessionId: string; workingDir: string }> {
+  listSessions(): Array<{ sessionId: string; workingDir: string; createdAt: number }> {
     return Array.from(this.sessions.values()).map(s => ({
       sessionId: s.sessionId,
-      workingDir: s.workingDir
+      workingDir: s.workingDir,
+      createdAt: s.createdAt
     }));
   }
   
   getSession(sessionId: string): TerminalSession | undefined {
     return this.sessions.get(sessionId);
+  }
+  
+  getHistory(sessionId: string): string {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return '';
+    }
+    
+    // Return output buffer history
+    return session.outputBuffer.join('');
   }
   
   addOutputListener(sessionId: string, listener: (data: string) => void): void {
@@ -107,6 +272,13 @@ export class TerminalManager {
       session.pty.kill();
       this.sessions.delete(sessionId);
       this.outputListeners.delete(sessionId);
+      
+      // Update state file
+      this.saveSessionsState().catch(err => {
+        console.error('Failed to save sessions state:', err);
+      });
+      
+      console.log(`🗑️  Destroyed session: ${sessionId}`);
     }
   }
   

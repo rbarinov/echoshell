@@ -20,54 +20,39 @@ class AudioRecorder: NSObject, ObservableObject {
     private var audioRecorder: AVAudioRecorder?
     private var recordingURL: URL?
     private var recordingStartTime: Date?
-    private var transcriptionService: TranscriptionService?
     
-    // NEW: Add settingsManager reference
+    // Settings manager and API client for laptop mode
     private var settingsManager: SettingsManager?
     private var apiClient: APIClient?
     
     override init() {
         super.init()
         setupAudioSession()
-        
-        // Listen for API key changes
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleAPIKeyChange),
-            name: NSNotification.Name("APIKeyChanged"),
-            object: nil
-        )
-        
-        // Initialize with current API key
-        updateTranscriptionService()
     }
     
     // NEW: Initialize with settings manager
     func configure(with settingsManager: SettingsManager) {
         self.settingsManager = settingsManager
         
-        if let config = settingsManager.laptopConfig {
-            self.apiClient = APIClient(config: config)
-        }
+        // Update API client when config changes
+        updateAPIClient()
         
-        print("📱 AudioRecorder: Configured with operation mode: \(settingsManager.operationMode.displayName)")
+        print("📱 AudioRecorder: Configured with operation mode: Laptop Mode (Terminal Control)")
+    }
+    
+    // Update API client when config changes
+    private func updateAPIClient() {
+        if let config = settingsManager?.laptopConfig {
+            self.apiClient = APIClient(config: config)
+            print("📱 AudioRecorder: API client updated with new config")
+        } else {
+            self.apiClient = nil
+            print("📱 AudioRecorder: API client cleared (no config)")
+        }
     }
     
     deinit {
-        NotificationCenter.default.removeObserver(self)
-    }
-    
-    @objc private func handleAPIKeyChange() {
-        updateTranscriptionService()
-    }
-    
-    private func updateTranscriptionService() {
-        let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
-        if !apiKey.isEmpty {
-            self.transcriptionService = TranscriptionService(apiKey: apiKey)
-        } else {
-            self.transcriptionService = nil
-        }
+        // Cleanup if needed
     }
     
     private func setupAudioSession() {
@@ -81,23 +66,66 @@ class AudioRecorder: NSObject, ObservableObject {
     }
     
     func startRecording() {
-        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let audioFilename = documentsPath.appendingPathComponent("recording_ios.m4a")
-        recordingURL = audioFilename
-        
-        // Delete previous recording if it exists
-        if FileManager.default.fileExists(atPath: audioFilename.path) {
-            try? FileManager.default.removeItem(at: audioFilename)
+        // If already recording, don't start a new one
+        guard !isRecording else {
+            print("⚠️ iOS AudioRecorder: Already recording, ignoring start request")
+            return
         }
         
-        // Сбрасываем предыдущий текст и статистику
-        recognizedText = ""
-        isTranscribing = false
-        lastRecordingDuration = 0
-        lastTranscriptionCost = 0
-        lastNetworkUsage = (0, 0)
-        lastTranscriptionDuration = 0
+        // If transcription is in progress, wait for it to complete
+        if isTranscribing {
+            print("⚠️ iOS AudioRecorder: Transcription in progress, waiting...")
+            return
+        }
+        
+        // Update API client before recording (in case config changed)
+        updateAPIClient()
+        
+        // Clear previous file if it exists
+        if let oldURL = recordingURL {
+            try? FileManager.default.removeItem(at: oldURL)
+            recordingURL = nil
+        }
+        
+        // Create unique filename with timestamp to avoid conflicts
+        let timestamp = Int(Date().timeIntervalSince1970 * 1000)
+        let documentsPath = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let audioFilename = documentsPath.appendingPathComponent("recording_ios_\(timestamp).m4a")
+        recordingURL = audioFilename
+        
+        // Reset previous text and statistics (on main thread)
+        DispatchQueue.main.async {
+            self.recognizedText = ""
+            self.isTranscribing = false
+            self.lastRecordingDuration = 0
+            self.lastTranscriptionCost = 0
+            self.lastNetworkUsage = (0, 0)
+            self.lastTranscriptionDuration = 0
+        }
         recordingStartTime = Date()
+        
+        print("📱 AudioRecorder: Starting new recording, state reset")
+        print("   File: \(audioFilename.path)")
+        
+        // Configure audio session for recording
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            // First deactivate to reset state
+            try audioSession.setActive(false)
+            // Set category for recording
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            // Activate with options to interrupt other audio
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            print("✅ iOS AudioRecorder: Audio session configured for recording")
+        } catch {
+            print("⚠️ iOS AudioRecorder: Failed to configure audio session: \(error)")
+            DispatchQueue.main.async {
+                self.recognizedText = "Audio session error: \(error.localizedDescription)"
+                self.isRecording = false
+                self.recordingURL = nil
+            }
+            return
+        }
         
         // Optimized settings for speech (same as Watch)
         let settings: [String: Any] = [
@@ -111,104 +139,186 @@ class AudioRecorder: NSObject, ObservableObject {
         do {
             audioRecorder = try AVAudioRecorder(url: audioFilename, settings: settings)
             audioRecorder?.delegate = self
-            audioRecorder?.record()
-            isRecording = true
-            print("📱 iOS AudioRecorder: Started recording")
+            
+            // Prepare recorder before starting
+            guard audioRecorder?.prepareToRecord() == true else {
+                print("❌ iOS AudioRecorder: Failed to prepare recorder")
+                DispatchQueue.main.async {
+                    self.recognizedText = "Failed to prepare recorder. Please try again."
+                    self.isRecording = false
+                    self.recordingURL = nil
+                }
+                return
+            }
+            
+            // Check that recording started successfully
+            guard audioRecorder?.record() == true else {
+                print("❌ iOS AudioRecorder: Failed to start recording (record() returned false)")
+                DispatchQueue.main.async {
+                    self.recognizedText = "Failed to start recording. Please check microphone permissions."
+                    self.isRecording = false
+                    self.recordingURL = nil
+                }
+                return
+            }
+            
+            DispatchQueue.main.async {
+                self.isRecording = true
+            }
+            print("📱 iOS AudioRecorder: Started recording successfully")
         } catch {
-            print("Could not start recording: \(error)")
+            print("❌ iOS AudioRecorder: Could not start recording: \(error)")
+            DispatchQueue.main.async {
+                self.recognizedText = "Recording error: \(error.localizedDescription)"
+                self.isRecording = false
+                self.recordingURL = nil
+            }
         }
     }
     
     func stopRecording() {
-        audioRecorder?.stop()
-        isRecording = false
-        
-        // Вычисляем длительность записи
-        if let startTime = recordingStartTime {
-            lastRecordingDuration = Date().timeIntervalSince(startTime)
-            
-            // Whisper API: $0.006 за минуту
-            let minutes = lastRecordingDuration / 60.0
-            lastTranscriptionCost = minutes * 0.006
-            
-            print("📱 iOS AudioRecorder: Recording duration: \(lastRecordingDuration)s, estimated cost: $\(lastTranscriptionCost)")
+        guard let recorder = audioRecorder else {
+            print("⚠️ iOS AudioRecorder: No recorder to stop")
+            DispatchQueue.main.async {
+                self.isRecording = false
+            }
+            return
         }
+        
+        // Calculate recording duration before stopping
+        if let startTime = recordingStartTime {
+            let duration = Date().timeIntervalSince(startTime)
+            
+            // Whisper API: $0.006 per minute
+            let minutes = duration / 60.0
+            let cost = minutes * 0.006
+            
+            print("📱 iOS AudioRecorder: Recording duration: \(duration)s, estimated cost: $\(cost)")
+            
+            // Check minimum duration (0.5 seconds)
+            if duration < 0.5 {
+                print("⚠️ iOS AudioRecorder: Recording too short (\(duration)s), aborting")
+                recorder.stop()
+                DispatchQueue.main.async {
+                    self.isRecording = false
+                    self.recognizedText = "Recording too short. Please speak longer."
+                    self.isTranscribing = false
+                }
+                // Clear file
+                if let url = recordingURL {
+                    try? FileManager.default.removeItem(at: url)
+                }
+                recordingURL = nil
+                return
+            }
+            
+            // Update duration and cost on main thread
+            DispatchQueue.main.async {
+                self.lastRecordingDuration = duration
+                self.lastTranscriptionCost = cost
+            }
+        }
+        
+        // Stop recording
+        recorder.stop()
+        DispatchQueue.main.async {
+            self.isRecording = false
+        }
+        
+        // Don't clear recordingURL immediately - it's needed for transcription
+        // Will clear it after successful transcription
+        print("📱 iOS AudioRecorder: Recording stopped, waiting for delegate callback")
     }
 }
 
 // MARK: - AVAudioRecorderDelegate
 extension AudioRecorder: AVAudioRecorderDelegate {
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        if flag {
-            print("📱 iOS AudioRecorder: Recording finished successfully")
-            
-            // Check operation mode
-            if let settings = settingsManager, settings.isLaptopMode {
-                // Laptop mode: Send transcription request to laptop
-                print("📱 iOS AudioRecorder: Using laptop mode")
+        print("📱 iOS AudioRecorder: Delegate callback - success: \(flag)")
+        
+        guard flag else {
+            print("❌ iOS AudioRecorder: Recording failed")
+            // Check if file exists
+            if let url = recordingURL, FileManager.default.fileExists(atPath: url.path) {
+                print("⚠️ iOS AudioRecorder: File exists despite failure flag, attempting transcription anyway")
+                // Try to transcribe even if failure flag
                 transcribeViaLaptop()
             } else {
-                // Standalone mode: Direct OpenAI transcription (existing behavior)
-                print("📱 iOS AudioRecorder: Using standalone mode")
-                transcribeWithAPI()
+                print("❌ iOS AudioRecorder: No valid recording file")
+                DispatchQueue.main.async {
+                    self.recognizedText = "Recording failed. Please try again."
+                    self.isTranscribing = false
+                    self.recordingURL = nil
+                }
             }
-        } else {
-            print("❌ iOS AudioRecorder: Recording failed")
+            return
+        }
+        
+        // Check that file actually exists and is not empty
+        guard let url = recordingURL else {
+            print("❌ iOS AudioRecorder: No recording URL")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: No recording file found."
+                self.isTranscribing = false
+            }
+            return
+        }
+        
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("❌ iOS AudioRecorder: Recording file does not exist at path: \(url.path)")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: Recording file not found."
+                self.isTranscribing = false
+                self.recordingURL = nil
+            }
+            return
+        }
+        
+        // Check file size (should be greater than 0)
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+            if let fileSize = attributes[.size] as? Int64, fileSize == 0 {
+                print("❌ iOS AudioRecorder: Recording file is empty")
+                DispatchQueue.main.async {
+                    self.recognizedText = "Recording file is empty. Please try again."
+                    self.isTranscribing = false
+                    try? FileManager.default.removeItem(at: url)
+                    self.recordingURL = nil
+                }
+                return
+            }
+            print("📱 iOS AudioRecorder: Recording file size: \(attributes[.size] ?? "unknown") bytes")
+        } catch {
+            print("⚠️ iOS AudioRecorder: Could not check file attributes: \(error)")
+        }
+        
+        print("📱 iOS AudioRecorder: Recording finished successfully, starting transcription")
+        
+        // Always use laptop mode transcription
+        print("📱 iOS AudioRecorder: Using laptop mode")
+        transcribeViaLaptop()
+    }
+    
+    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        print("❌ iOS AudioRecorder: Encode error - \(error?.localizedDescription ?? "Unknown")")
+        if let error = error {
+            print("   Error details: \(error)")
+        }
+        DispatchQueue.main.async {
+            self.recognizedText = "Recording encoding error: \(error?.localizedDescription ?? "Unknown error"). Please try again."
+            self.isTranscribing = false
+            self.isRecording = false
+                    // Clear file on error
+            if let url = self.recordingURL {
+                try? FileManager.default.removeItem(at: url)
+            }
+            self.recordingURL = nil
         }
     }
 }
 
 // MARK: - Transcription
 extension AudioRecorder {
-    private func transcribeWithAPI() {
-        guard let url = recordingURL else {
-            print("❌ iOS AudioRecorder: No recording URL")
-            return
-        }
-        
-        guard let service = transcriptionService else {
-            recognizedText = "Error: No API key configured. Please set it in Settings."
-            print("❌ iOS AudioRecorder: No transcription service available")
-            return
-        }
-        
-        isTranscribing = true
-        recognizedText = ""
-        
-        let transcriptionStartTime = Date()
-        
-        // Get language from UserDefaults
-        let languageCode = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
-        print("📱 iOS AudioRecorder: Starting transcription with language: \(languageCode)...")
-        
-        service.transcribe(audioFileURL: url, language: languageCode == "auto" ? nil : languageCode) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                
-                let transcriptionEndTime = Date()
-                self.lastTranscriptionDuration = transcriptionEndTime.timeIntervalSince(transcriptionStartTime)
-                self.isTranscribing = false
-                
-                switch result {
-                case .success((let text, let networkUsage)):
-                    self.recognizedText = text
-                    self.lastNetworkUsage = networkUsage
-                    print("✅ iOS AudioRecorder: Transcription successful")
-                    print("   Text: \(text.prefix(50))...")
-                    print("   Network usage - Sent: \(networkUsage.sent) bytes, Received: \(networkUsage.received) bytes")
-                    print("   Transcription time: \(self.lastTranscriptionDuration)s")
-                    
-                    // Also send stats to Watch if connected
-                    self.sendStatsToWatch(text: text, uploadSize: networkUsage.sent, downloadSize: networkUsage.received)
-                    
-                case .failure(let error):
-                    print("❌ iOS AudioRecorder: Transcription error: \(error.localizedDescription)")
-                    self.recognizedText = "Error: \(error.localizedDescription)"
-                }
-            }
-        }
-    }
-    
     private func sendStatsToWatch(text: String, uploadSize: Int64, downloadSize: Int64) {
         // Post notification for Watch connectivity to pick up
         let _: [String: Any] = [
@@ -228,27 +338,54 @@ extension AudioRecorder {
     
     // NEW: Laptop mode transcription
     private func transcribeViaLaptop() {
+        // Check URL again
         guard let url = recordingURL else {
-            recognizedText = "Error: No recording URL"
+            print("❌ iOS AudioRecorder: No recording URL for transcription")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: No recording URL"
+                self.isTranscribing = false
+            }
+            return
+        }
+        
+        // Check file existence
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            print("❌ iOS AudioRecorder: Recording file does not exist: \(url.path)")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: Recording file not found"
+                self.isTranscribing = false
+                self.recordingURL = nil
+            }
             return
         }
         
         guard apiClient != nil else {
-            recognizedText = "Error: Not connected to laptop"
+            print("❌ iOS AudioRecorder: No API client (not connected to laptop)")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: Not connected to laptop"
+                self.isTranscribing = false
+            }
             return
         }
         
-        isTranscribing = true
-        recognizedText = ""
+        DispatchQueue.main.async {
+            self.isTranscribing = true
+            self.recognizedText = ""
+        }
         
         let transcriptionStartTime = Date()
         
         // Get ephemeral key for transcription
         guard let keys = settingsManager?.ephemeralKeys else {
-            recognizedText = "Error: No ephemeral keys. Please reconnect to laptop."
-            isTranscribing = false
+            print("❌ iOS AudioRecorder: No ephemeral keys")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: No ephemeral keys. Please reconnect to laptop."
+                self.isTranscribing = false
+            }
             return
         }
+        
+        print("📱 iOS AudioRecorder: Starting transcription for file: \(url.path)")
         
         // Use ephemeral key with transcription service
         let service = TranscriptionService(apiKey: keys.openai)
@@ -256,7 +393,10 @@ extension AudioRecorder {
         
         service.transcribe(audioFileURL: url, language: language == "auto" ? nil : language) { [weak self] result in
             DispatchQueue.main.async {
-                guard let self = self else { return }
+                guard let self = self else {
+                    print("⚠️ iOS AudioRecorder: Self deallocated during transcription")
+                    return
+                }
                 
                 let transcriptionEndTime = Date()
                 self.lastTranscriptionDuration = transcriptionEndTime.timeIntervalSince(transcriptionStartTime)
@@ -264,18 +404,37 @@ extension AudioRecorder {
                 
                 switch result {
                 case .success((let text, let networkUsage)):
+                    // Check that text is not empty
+                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                        print("⚠️ iOS AudioRecorder: Transcription returned empty text")
+                        self.recognizedText = "No speech detected. Please try again."
+                        return
+                    }
+                    
                     self.recognizedText = text
                     self.lastNetworkUsage = networkUsage
                     
                     print("✅ Transcription via laptop successful")
                     print("   Text: \(text.prefix(50))...")
                     
+                    // Clear file after successful transcription
+                    if let url = self.recordingURL {
+                        try? FileManager.default.removeItem(at: url)
+                        self.recordingURL = nil
+                    }
+                    
                     // Send transcribed text to laptop for command execution
                     self.sendCommandToLaptop(text: text)
                     
                 case .failure(let error):
                     print("❌ Transcription error: \(error.localizedDescription)")
-                    self.recognizedText = "Error: \(error.localizedDescription)"
+                    self.recognizedText = "Transcription error: \(error.localizedDescription)"
+                    
+                    // Clear file on error
+                    if let url = self.recordingURL {
+                        try? FileManager.default.removeItem(at: url)
+                        self.recordingURL = nil
+                    }
                 }
             }
         }
@@ -284,31 +443,100 @@ extension AudioRecorder {
     // NEW: Send transcribed command to laptop
     private func sendCommandToLaptop(text: String) {
         guard let client = apiClient,
-              settingsManager != nil else {
+              let settings = settingsManager else {
             return
         }
         
         print("📤 Sending command to laptop: \(text)")
+        print("   Mode: \(settings.commandMode.displayName)")
         
         Task {
             do {
-                // Get or create default session
-                var sessions = try await client.listSessions()
-                if sessions.isEmpty {
-                    let newSession = try await client.createSession()
-                    sessions = [newSession]
+                // Get or select session
+                var sessionId: String
+                
+                if let selectedId = settings.selectedSessionId {
+                    // Verify session still exists
+                    let sessions = try await client.listSessions()
+                    if sessions.contains(where: { $0.id == selectedId }) {
+                        sessionId = selectedId
+                    } else {
+                        // Session no longer exists, get or create default
+                        print("⚠️ Selected session no longer exists, getting default session")
+                        var sessions = try await client.listSessions()
+                        if sessions.isEmpty {
+                            let newSession = try await client.createSession()
+                            sessions = [newSession]
+                        }
+                        sessionId = sessions.first!.id
+                        // Update on main thread - capture value before async call
+                        let capturedSessionId = sessionId
+                        await MainActor.run {
+                            settings.selectedSessionId = capturedSessionId
+                        }
+                    }
+                } else {
+                    // No session selected, get or create default
+                    var sessions = try await client.listSessions()
+                    if sessions.isEmpty {
+                        let newSession = try await client.createSession()
+                        sessions = [newSession]
+                    }
+                    sessionId = sessions.first!.id
+                    // Update on main thread - capture value before async call
+                    let capturedSessionId = sessionId
+                    await MainActor.run {
+                        settings.selectedSessionId = capturedSessionId
+                    }
                 }
                 
-                let sessionId = sessions.first!.id
+                print("   Session: \(sessionId)")
                 
-                // Execute command via AI agent
-                let result = try await client.executeAgentCommand(sessionId: sessionId, command: text)
+                let result: String
                 
-                DispatchQueue.main.async {
-                    self.recognizedText = "✅ Command executed:\n\n\(result)"
+                // Execute based on selected mode
+                switch settings.commandMode {
+                case .agent:
+                    // Execute command via AI agent
+                    result = try await client.executeAgentCommand(sessionId: sessionId, command: text)
                     
-                    // TTS the result
-                    self.speakResponse(result)
+                case .direct:
+                    // Send command directly to terminal via WebSocket input (not HTTP API)
+                    // This ensures commands work with cursor-agent and other interactive apps
+                    // The command will be sent through WebSocket in RecordingView's notification handler
+                    result = ""
+                    
+                    // Notify that command should be sent (will be sent via WebSocket in RecordingView)
+                    // This allows RecordingView to send the command through WebSocket input
+                    // which works better with interactive apps like cursor-agent
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("CommandSentToTerminal"),
+                        object: nil,
+                        userInfo: ["command": text, "sessionId": sessionId]
+                    )
+                }
+                
+                let commandMode = settings.commandMode
+                DispatchQueue.main.async {
+                    if commandMode == .direct {
+                        // In direct mode, show command text initially
+                        // Terminal output will be updated via WebSocket subscription
+                        self.recognizedText = text
+                    } else {
+                        // Agent mode - clean result from ANSI codes and show only the result text
+                        let cleanedResult = self.cleanTerminalOutput(result)
+                        
+                        // Show only the result text, without command text or status messages
+                        // This matches what Cursor shows - just the result, no code quoting
+                        let finalText = cleanedResult.isEmpty ? "Command executed" : cleanedResult
+                        self.recognizedText = finalText
+                    }
+                    
+                    // TTS the result (or confirmation if empty)
+                    // Clean result for TTS to avoid reading ANSI codes
+                    let cleanedResult = self.cleanTerminalOutput(result)
+                    let ttsText = cleanedResult.isEmpty ? "Command sent to terminal" : cleanedResult
+                    self.speakResponse(ttsText)
                 }
                 
             } catch {
@@ -317,6 +545,37 @@ extension AudioRecorder {
                 }
             }
         }
+    }
+    
+    // Clean terminal output for display (remove ANSI sequences, keep text readable)
+    private func cleanTerminalOutput(_ output: String) -> String {
+        var cleaned = output
+        
+        // Remove ANSI escape sequences (needed for clean display)
+        cleaned = cleaned.replacingOccurrences(
+            of: "\\u{001B}\\[[0-9;]*[a-zA-Z]",
+            with: "",
+            options: .regularExpression
+        )
+        
+        // Remove control characters except newline and tab
+        cleaned = cleaned.unicodeScalars.filter { scalar in
+            let value = scalar.value
+            // Keep printable ASCII (32-126), newline (10), and tab (9)
+            return (value >= 32 && value <= 126) || value == 10 || value == 9
+        }.map { Character($0) }.reduce("") { $0 + String($1) }
+        
+        // Convert tabs to spaces
+        cleaned = cleaned.replacingOccurrences(of: "\t", with: "    ")
+        
+        // Normalize line endings
+        cleaned = cleaned.replacingOccurrences(of: "\r\n", with: "\n")
+        cleaned = cleaned.replacingOccurrences(of: "\r", with: "\n")
+        
+        // Remove leading/trailing whitespace but keep structure
+        cleaned = cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        return cleaned
     }
     
     // NEW: TTS for laptop responses

@@ -6,15 +6,15 @@ struct ContentView: View {
     
     var body: some View {
         TabView {
-            // EXISTING: Tab 1 - Recording
+            // Tab 1 - Recording
             RecordingView()
                 .environmentObject(settingsManager)
                 .tabItem {
                     Label("Record", systemImage: "mic.fill")
                 }
             
-            // NEW: Tab 2 - Terminal (only in laptop mode)
-            if settingsManager.isLaptopMode {
+            // Tab 2 - Terminal (only when connected to laptop)
+            if settingsManager.laptopConfig != nil {
                 TerminalView()
                     .environmentObject(settingsManager)
                     .tabItem {
@@ -22,7 +22,7 @@ struct ContentView: View {
                     }
             }
             
-            // EXISTING: Tab 3 - Settings
+            // Tab 3 - Settings
             SettingsView()
                 .environmentObject(settingsManager)
                 .tabItem {
@@ -31,7 +31,7 @@ struct ContentView: View {
         }
         .onAppear {
             print("📱 iOS ContentView: App appeared")
-            print("📱 iOS ContentView: Operation mode: \(settingsManager.operationMode.displayName)")
+            print("📱 iOS ContentView: Operation mode: Laptop Mode (Terminal Control)")
         }
     }
 }

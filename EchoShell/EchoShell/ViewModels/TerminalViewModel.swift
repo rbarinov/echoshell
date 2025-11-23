@@ -14,7 +14,7 @@ class TerminalViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var error: String?
     
-    private var apiClient: APIClient?
+    var apiClient: APIClient?
     
     func loadSessions(config: TunnelConfig) async {
         isLoading = true
@@ -52,6 +52,22 @@ class TerminalViewModel: ObservableObject {
         } catch {
             self.error = error.localizedDescription
             print("❌ Error creating session: \(error)")
+        }
+    }
+    
+    func deleteSession(_ session: TerminalSession, config: TunnelConfig) async {
+        if apiClient == nil {
+            apiClient = APIClient(config: config)
+        }
+        
+        do {
+            try await apiClient!.deleteSession(sessionId: session.id)
+            // Remove from local list
+            sessions.removeAll { $0.id == session.id }
+            print("✅ Deleted session: \(session.id)")
+        } catch {
+            self.error = error.localizedDescription
+            print("❌ Error deleting session: \(error)")
         }
     }
 }

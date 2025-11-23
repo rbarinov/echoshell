@@ -22,7 +22,7 @@ struct ContentView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 0) {
-                // Статус подключения к iPhone (компактный)
+                // iPhone connection status (compact)
                 if !watchConnectivity.isPhoneConnected {
                     HStack(spacing: 4) {
                         Image(systemName: "iphone.slash")
@@ -53,7 +53,7 @@ struct ContentView: View {
                     toggleRecording()
                 }) {
                     ZStack {
-                        // Внешний круг с градиентом
+                        // Outer circle with gradient
                         Circle()
                             .fill(
                                 LinearGradient(
@@ -70,12 +70,12 @@ struct ContentView: View {
                                 : Color.blue.opacity(0.5), 
                                 radius: 15, x: 0, y: 8)
                         
-                        // Внутренний круг
+                        // Inner circle
                         Circle()
                             .fill(Color.white.opacity(0.2))
                             .frame(width: 88, height: 88)
                         
-                        // Иконка
+                        // Icon
                         Image(systemName: audioRecorder.isRecording ? "stop.fill" : "mic.fill")
                             .font(.system(size: 36, weight: .medium))
                             .foregroundColor(.white)
@@ -88,7 +88,7 @@ struct ContentView: View {
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: audioRecorder.isRecording)
                 .padding(.bottom, 15)
                 
-                // Индикатор распознавания
+                // Transcription indicator
                 if audioRecorder.isTranscribing {
                     VStack(spacing: 6) {
                         ProgressView()
@@ -100,10 +100,10 @@ struct ContentView: View {
                     .padding(.bottom, 10)
                 }
                 
-                // Отображение последней транскрипции и статистики
+                // Display last transcription and statistics
                 if !audioRecorder.recognizedText.isEmpty && !audioRecorder.isTranscribing {
                     VStack(alignment: .leading, spacing: 6) {
-                        // Транскрипция
+                        // Transcription
                         Text(audioRecorder.recognizedText)
                             .font(.caption)
                             .foregroundColor(.primary)
@@ -113,12 +113,12 @@ struct ContentView: View {
                             .background(Color.secondary.opacity(0.1))
                             .cornerRadius(8)
                         
-                        // Статистика
+                        // Statistics
                         if audioRecorder.lastRecordingDuration > 0 {
                             VStack(alignment: .leading, spacing: 4) {
-                                // Первая строка: длительность, стоимость, время обработки
+                                // First row: duration, cost, processing time
                                 HStack(spacing: 6) {
-                                    // Длительность записи
+                                    // Recording duration
                                     HStack(spacing: 2) {
                                         Image(systemName: "mic.fill")
                                             .font(.system(size: 8))
@@ -127,7 +127,7 @@ struct ContentView: View {
                                             .font(.system(size: 9))
                                     }
                                     
-                                    // Стоимость
+                                    // Cost
                                     if audioRecorder.lastTranscriptionCost > 0 {
                                         HStack(spacing: 2) {
                                             Image(systemName: "dollarsign.circle")
@@ -138,7 +138,7 @@ struct ContentView: View {
                                         }
                                     }
                                     
-                                    // Время обработки
+                                    // Processing time
                                     if audioRecorder.lastTranscriptionDuration > 0 {
                                         HStack(spacing: 2) {
                                             Image(systemName: "hourglass")
@@ -150,10 +150,10 @@ struct ContentView: View {
                                     }
                                 }
                                 
-                                // Вторая строка: сетевой трафик
+                                // Second row: network traffic
                                 if audioRecorder.lastNetworkUsage.sent > 0 || audioRecorder.lastNetworkUsage.received > 0 {
                                     HStack(spacing: 6) {
-                                        // Отправлено
+                                        // Sent
                                         if audioRecorder.lastNetworkUsage.sent > 0 {
                                             HStack(spacing: 2) {
                                                 Image(systemName: "arrow.up.circle")
@@ -164,7 +164,7 @@ struct ContentView: View {
                                             }
                                         }
                                         
-                                        // Получено
+                                        // Received
                                         if audioRecorder.lastNetworkUsage.received > 0 {
                                             HStack(spacing: 2) {
                                                 Image(systemName: "arrow.down.circle")
@@ -193,12 +193,12 @@ struct ContentView: View {
             .padding(.vertical, 10)
         }
         .onLongPressGesture(minimumDuration: 0.2) {
-            // Длительное нажатие на экран переключает запись
+            // Long press on screen toggles recording
             toggleRecording()
         }
     }
     
-    // Форматирование байтов в читаемый формат
+    // Format bytes to readable format
     private func formatBytes(_ bytes: Int64) -> String {
         let kb = Double(bytes) / 1024.0
         if kb < 1.0 {

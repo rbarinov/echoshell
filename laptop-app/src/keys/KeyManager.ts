@@ -9,9 +9,17 @@ interface EphemeralKey {
   permissions: string[];
 }
 
+interface UsageLogEntry {
+  type: 'issue' | 'refresh' | 'revoke';
+  deviceId: string;
+  timestamp: number;
+  expiresAt?: number;
+  permissions?: string[];
+}
+
 export class KeyManager {
   private keys = new Map<string, EphemeralKey>();
-  private usageLog: any[] = [];
+  private usageLog: UsageLogEntry[] = [];
   
   constructor(
     private masterOpenAIKey: string,
@@ -112,7 +120,7 @@ export class KeyManager {
     return true;
   }
   
-  getUsageLog(): any[] {
+  getUsageLog(): UsageLogEntry[] {
     return this.usageLog;
   }
 }

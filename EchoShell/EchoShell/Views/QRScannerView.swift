@@ -54,12 +54,18 @@ struct QRScannerView: View {
             scanner.startScanning()
         }
         .onDisappear {
+            // Stop scanning when view disappears
             scanner.stopScanning()
         }
         .onChange(of: scanner.scannedConfig) { oldValue, newValue in
             if let config = newValue {
+                // Update binding
                 scannedConfig = config
-                dismiss()
+                
+                // Dismiss immediately after a brief delay to show success feedback
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    dismiss()
+                }
             }
         }
         .alert("QR Scan Error", isPresented: .constant(scanner.error != nil)) {
@@ -75,24 +81,57 @@ struct QRScannerView: View {
 struct CameraPreview: UIViewRepresentable {
     let scanner: QRCodeScanner
     
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView(frame: .zero)
-        
-        guard let captureSession = scanner.captureSession else {
-            return view
-        }
-        
-        let previewLayer = AVCaptureVideoPreviewLayer(session: captureSession)
-        previewLayer.videoGravity = .resizeAspectFill
-        previewLayer.frame = view.bounds
-        view.layer.addSublayer(previewLayer)
-        
+    func makeUIView(context: Context) -> CameraPreviewView {
+        let view = CameraPreviewView()
+        view.setupPreviewLayer(scanner: scanner)
         return view
     }
     
-    func updateUIView(_ uiView: UIView, context: Context) {
-        if let previewLayer = uiView.layer.sublayers?.first as? AVCaptureVideoPreviewLayer {
-            previewLayer.frame = uiView.bounds
+    func updateUIView(_ uiView: CameraPreviewView, context: Context) {
+        uiView.updatePreviewFrame()
+    }
+}
+
+class CameraPreviewView: UIView {
+    private var previewLayer: AVCaptureVideoPreviewLayer?
+    private weak var scanner: QRCodeScanner?
+    
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+    }
+    
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+    
+    func setupPreviewLayer(scanner: QRCodeScanner) {
+        self.scanner = scanner
+        
+        guard let captureSession = scanner.captureSession else {
+            return
         }
+        
+        let layer = AVCaptureVideoPreviewLayer(session: captureSession)
+        layer.videoGravity = .resizeAspectFill
+        self.layer.addSublayer(layer)
+        self.previewLayer = layer
+        
+        // Set initial frame
+        updatePreviewFrame()
+    }
+    
+    func updatePreviewFrame() {
+        guard let previewLayer = previewLayer else { return }
+        
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        previewLayer.frame = bounds
+        CATransaction.commit()
+    }
+    
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updatePreviewFrame()
     }
 }
