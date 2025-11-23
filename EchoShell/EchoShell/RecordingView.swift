@@ -16,24 +16,66 @@ struct RecordingView: View {
     @Environment(\.colorScheme) var colorScheme
     @State private var showSessionPicker = false
     @State private var showModeTooltip: CommandMode? = nil
-    @State private var lastTerminalOutput: String = ""
+    @State private var lastTerminalOutput: String = "" // Accumulated output (not replaced, but appended)
     @State private var accumulatedOutput: String = "" // Accumulate output chunks
     @State private var terminalScreen: TerminalScreenEmulator? = nil // Terminal screen emulator
     @State private var lastSentCommand: String = "" // Track last sent command to filter it from output
+    @State private var ttsTimer: Timer? = nil // Timer for auto TTS after 3 seconds
+    @State private var lastTTSOutput: String = "" // Track what was last spoken to avoid duplicates
+    @State private var accumulatedForTTS: String = "" // Accumulated text for TTS (new additions only)
+    @StateObject private var audioPlayer = AudioPlayer() // Audio player for TTS
     
     private func toggleRecording() {
         if audioRecorder.isRecording {
             audioRecorder.stopRecording()
         } else {
+            // Clear previous output when starting new recording
+            Task { @MainActor in
+                self.lastTerminalOutput = ""
+                self.accumulatedOutput = ""
+                self.terminalScreen = nil
+                self.lastSentCommand = ""
+                self.lastTTSOutput = ""
+                self.accumulatedForTTS = ""
+                self.ttsTimer?.invalidate()
+                self.ttsTimer = nil
+            }
             audioRecorder.startRecording()
         }
     }
     
     var body: some View {
+        viewModifiers
+    }
+    
+    private var mainContentView: some View {
         ScrollView {
             VStack(spacing: 20) {
-                // Top bar: Mode toggle and connection status
-                HStack {
+                topBarView
+                
+                if settingsManager.laptopConfig != nil {
+                    sessionSelectorView
+                }
+                
+                Spacer()
+                    .frame(height: 20)
+                
+                recordButtonView
+                
+                statusTextView
+                
+                Spacer()
+                    .frame(height: 20)
+                
+                transcriptionIndicatorView
+                
+                resultDisplayView
+            }
+        }
+    }
+    
+    private var topBarView: some View {
+        HStack {
                     if settingsManager.laptopConfig != nil {
                         // Custom Command Mode Toggle (only 2 buttons)
                         HStack(spacing: 4) {
@@ -132,103 +174,101 @@ struct RecordingView: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 8)
-                
-                if settingsManager.laptopConfig != nil {
-                    
-                    // Terminal Session Selector (simplified)
-                    HStack {
-                        if terminalViewModel.isLoading {
-                            ProgressView()
-                                .scaleEffect(0.8)
-                        } else if terminalViewModel.sessions.isEmpty {
-                            Button(action: {
-                                Task {
-                                    if let config = settingsManager.laptopConfig {
-                                        if terminalViewModel.apiClient == nil {
-                                            terminalViewModel.apiClient = APIClient(config: config)
-                                        }
-                                        let _ = try? await terminalViewModel.apiClient?.createSession()
-                                        await terminalViewModel.refreshSessions(config: config)
-                                    }
-                                }
-                            }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "plus.circle.fill")
-                                        .font(.system(size: 14))
-                                    Text("Create Session")
-                                        .font(.subheadline)
-                                }
-                                .foregroundColor(.blue)
+    }
+    
+    private var sessionSelectorView: some View {
+        // Terminal Session Selector (simplified)
+        HStack {
+            if terminalViewModel.isLoading {
+                ProgressView()
+                    .scaleEffect(0.8)
+            } else if terminalViewModel.sessions.isEmpty {
+                Button(action: {
+                    Task {
+                        if let config = settingsManager.laptopConfig {
+                            if terminalViewModel.apiClient == nil {
+                                terminalViewModel.apiClient = APIClient(config: config)
                             }
-                        } else {
-                            // Filter out invalid sessions and ensure selected session exists
-                            let validSessions = terminalViewModel.sessions
-                            let selectedId = settingsManager.selectedSessionId ?? validSessions.first?.id
-                            let validSelectedId = validSessions.contains(where: { $0.id == selectedId }) ? selectedId : validSessions.first?.id
-                            
-                            HStack(spacing: 8) {
-                                Image(systemName: "terminal.fill")
-                                    .font(.system(size: 12))
-                                    .foregroundColor(.secondary)
-                                
-                                Picker("Session", selection: Binding(
-                                    get: { validSelectedId ?? "" },
-                                    set: { newId in
-                                        if validSessions.contains(where: { $0.id == newId }) {
-                                            settingsManager.selectedSessionId = newId
-                                        }
-                                    }
-                                )) {
-                                    ForEach(validSessions) { session in
-                                        Text(session.id)
-                                            .tag(session.id)
-                                    }
-                                }
-                                .pickerStyle(.menu)
-                                .font(.system(size: colorScheme == .dark ? 16 : 14))
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                
-                                Button(action: {
-                                    Task {
-                                        if let config = settingsManager.laptopConfig {
-                                            await terminalViewModel.refreshSessions(config: config)
-                                        }
-                                    }
-                                }) {
-                                    Image(systemName: "arrow.clockwise")
-                                        .font(.system(size: 12))
-                                        .foregroundColor(.secondary)
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .onChange(of: terminalViewModel.sessions) { oldSessions, newSessions in
-                                // Validate selected session when sessions list changes
-                                if let currentSelected = settingsManager.selectedSessionId,
-                                   !newSessions.contains(where: { $0.id == currentSelected }) {
-                                    // Selected session no longer exists, select first available
-                                    settingsManager.selectedSessionId = newSessions.first?.id
-                                } else if settingsManager.selectedSessionId == nil && !newSessions.isEmpty {
-                                    // No session selected, select first available
-                                    settingsManager.selectedSessionId = newSessions.first?.id
-                                }
-                            }
+                            let _ = try? await terminalViewModel.apiClient?.createSession()
+                            await terminalViewModel.refreshSessions(config: config)
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 4)
-                }
-                
-                Spacer()
-                    .frame(height: 20)
-                
-                // Main Record Button
-                Button(action: {
-                    toggleRecording()
                 }) {
-                    ZStack {
+                    HStack(spacing: 6) {
+                        Image(systemName: "plus.circle.fill")
+                            .font(.system(size: 14))
+                        Text("Create Session")
+                            .font(.subheadline)
+                    }
+                    .foregroundColor(.blue)
+                }
+            } else {
+                // Filter out invalid sessions and ensure selected session exists
+                let validSessions = terminalViewModel.sessions
+                let selectedId = settingsManager.selectedSessionId ?? validSessions.first?.id
+                let validSelectedId = validSessions.contains(where: { $0.id == selectedId }) ? selectedId : validSessions.first?.id
+                
+                HStack(spacing: 8) {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                    
+                    Picker("Session", selection: Binding(
+                        get: { validSelectedId ?? "" },
+                        set: { newId in
+                            if validSessions.contains(where: { $0.id == newId }) {
+                                settingsManager.selectedSessionId = newId
+                            }
+                        }
+                    )) {
+                        ForEach(validSessions) { session in
+                            Text(session.id)
+                                .tag(session.id)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .font(.system(size: colorScheme == .dark ? 16 : 14))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    
+                    Button(action: {
+                        Task {
+                            if let config = settingsManager.laptopConfig {
+                                await terminalViewModel.refreshSessions(config: config)
+                            }
+                        }
+                    }) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .onChange(of: terminalViewModel.sessions) { oldSessions, newSessions in
+                    // Validate selected session when sessions list changes
+                    if let currentSelected = settingsManager.selectedSessionId,
+                       !newSessions.contains(where: { $0.id == currentSelected }) {
+                        // Selected session no longer exists, select first available
+                        settingsManager.selectedSessionId = newSessions.first?.id
+                    } else if settingsManager.selectedSessionId == nil && !newSessions.isEmpty {
+                        // No session selected, select first available
+                        settingsManager.selectedSessionId = newSessions.first?.id
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 4)
+    }
+    
+    private var recordButtonView: some View {
+        // Main Record Button
+        Button(action: {
+            toggleRecording()
+        }) {
+            ZStack {
                         // Outer circle with gradient
                         Circle()
                             .fill(
@@ -254,199 +294,210 @@ struct RecordingView: View {
                         // Icon
                         Image(systemName: audioRecorder.isRecording ? "stop.fill" : "mic.fill")
                             .font(.system(size: 55, weight: .medium))
-                            .foregroundColor(.white)
-                            .symbolEffect(.pulse, isActive: audioRecorder.isRecording)
-                    }
+                .foregroundColor(.white)
+                .symbolEffect(.pulse, isActive: audioRecorder.isRecording)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(audioRecorder.isTranscribing || settingsManager.laptopConfig == nil)
+        .scaleEffect(audioRecorder.isRecording ? 1.05 : 1.0)
+        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: audioRecorder.isRecording)
+        .padding(.horizontal, 30)
+    }
+    
+    private var statusTextView: some View {
+        // Status text
+        Group {
+            if audioRecorder.isRecording {
+                Text("Recording...")
+                    .font(.title3)
+                    .foregroundColor(.red)
+                    .fontWeight(.semibold)
+            } else if settingsManager.laptopConfig == nil {
+                Text("Please connect to laptop in Settings")
+                    .font(.subheadline)
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            } else {
+                Text("Tap to Record")
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+    
+    private var transcriptionIndicatorView: some View {
+        // Transcription indicator
+        Group {
+            if audioRecorder.isTranscribing {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .scaleEffect(1.2)
+                    Text("Transcribing...")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
                 }
-                .buttonStyle(.plain)
-                .disabled(audioRecorder.isTranscribing || settingsManager.laptopConfig == nil)
-                .scaleEffect(audioRecorder.isRecording ? 1.05 : 1.0)
-                .animation(.spring(response: 0.3, dampingFraction: 0.6), value: audioRecorder.isRecording)
-                .padding(.horizontal, 30)
-                    
-                    // Status text
-                    if audioRecorder.isRecording {
-                        Text("Recording...")
-                            .font(.title3)
-                            .foregroundColor(.red)
-                            .fontWeight(.semibold)
-                    } else if settingsManager.laptopConfig == nil {
-                        Text("Please connect to laptop in Settings")
-                            .font(.subheadline)
-                            .foregroundColor(.orange)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 20)
-                    } else {
-                        Text("Tap to Record")
-                            .font(.title3)
-                            .foregroundColor(.secondary)
+                .padding(.vertical, 20)
+            }
+        }
+    }
+    
+    private var resultDisplayView: some View {
+        // Display last transcription/terminal output and statistics
+        Group {
+            if (!audioRecorder.recognizedText.isEmpty || !lastTerminalOutput.isEmpty) && !audioRecorder.isTranscribing {
+                VStack(alignment: .leading, spacing: 16) {
+                    // Header
+                    HStack {
+                        Image(systemName: settingsManager.commandMode == .direct ? "terminal.fill" : "text.bubble.fill")
+                            .foregroundColor(.blue)
+                        Text(settingsManager.commandMode == .direct ? "Command Result" : "Command Result")
+                            .font(.headline)
+                        Spacer()
                     }
+                    .padding(.horizontal, 20)
                     
-                    Spacer()
-                        .frame(height: 20)
+                    // Display text based on mode
+                    // In direct mode, show terminal output (result), not the command
+                    // In agent mode, show the result from audioRecorder
+                    Text(settingsManager.commandMode == .direct 
+                        ? (lastTerminalOutput.isEmpty ? "" : lastTerminalOutput)
+                        : audioRecorder.recognizedText)
+                        .font(.body)
+                        .foregroundColor(.primary)
+                        .lineLimit(nil)
+                        .padding(16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.secondary.opacity(0.1))
+                        .cornerRadius(12)
+                        .padding(.horizontal, 20)
                     
-                    // Transcription indicator
-                    if audioRecorder.isTranscribing {
+                    // Statistics
+                    if audioRecorder.lastRecordingDuration > 0 {
                         VStack(spacing: 12) {
-                            ProgressView()
-                                .scaleEffect(1.2)
-                            Text("Transcribing...")
-                                .font(.headline)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(.vertical, 20)
-                    }
-                    
-                    // Display last transcription/terminal output and statistics
-                    if (!audioRecorder.recognizedText.isEmpty || !lastTerminalOutput.isEmpty) && !audioRecorder.isTranscribing {
-                        VStack(alignment: .leading, spacing: 16) {
-                            // Header
-                            HStack {
-                                Image(systemName: settingsManager.commandMode == .direct ? "terminal.fill" : "text.bubble.fill")
-                                    .foregroundColor(.blue)
-                                Text(settingsManager.commandMode == .direct ? "Command Result" : "Command Result")
-                                    .font(.headline)
-                                Spacer()
-                            }
-                            .padding(.horizontal, 20)
-                            
-                            // Display text based on mode
-                            // In both modes, show the result text (cleaned from ANSI codes)
-                            let displayText = settingsManager.commandMode == .direct && !lastTerminalOutput.isEmpty 
-                                ? lastTerminalOutput 
-                                : audioRecorder.recognizedText
-                            
-                            Text(displayText)
-                                .font(.body)
-                                .foregroundColor(.primary)
-                                .lineLimit(nil)
-                                .padding(16)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(Color.secondary.opacity(0.1))
-                                .cornerRadius(12)
+                            Divider()
                                 .padding(.horizontal, 20)
                             
-                            // Statistics
-                            if audioRecorder.lastRecordingDuration > 0 {
-                                VStack(spacing: 12) {
-                                    Divider()
-                                        .padding(.horizontal, 20)
-                                    
-                                    // First row: duration, cost, processing time
-                                    HStack(spacing: 16) {
-                                        // Recording duration
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "mic.fill")
-                                                    .font(.caption)
-                                                    .foregroundColor(.blue)
-                                                Text("Recording")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                            Text(String(format: "%.1f s", audioRecorder.lastRecordingDuration))
-                                                .font(.subheadline)
-                                                .fontWeight(.semibold)
-                                        }
-                                        
-                                        Spacer()
-                                        
-                                        // Cost
-                                        if audioRecorder.lastTranscriptionCost > 0 {
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "dollarsign.circle")
-                                                        .font(.caption)
-                                                        .foregroundColor(.green)
-                                                    Text("Cost")
-                                                        .font(.caption)
-                                                        .foregroundColor(.secondary)
-                                                }
-                                                Text(String(format: "$%.4f", audioRecorder.lastTranscriptionCost))
-                                                    .font(.subheadline)
-                                                    .fontWeight(.semibold)
-                                            }
-                                        }
-                                        
-                                        Spacer()
-                                        
-                                        // Processing time
-                                        if audioRecorder.lastTranscriptionDuration > 0 {
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                HStack(spacing: 4) {
-                                                    Image(systemName: "hourglass")
-                                                        .font(.caption)
-                                                        .foregroundColor(.orange)
-                                                    Text("Processing")
-                                                        .font(.caption)
-                                                        .foregroundColor(.secondary)
-                                                }
-                                                Text(String(format: "%.1f s", audioRecorder.lastTranscriptionDuration))
-                                                    .font(.subheadline)
-                                                    .fontWeight(.semibold)
-                                            }
-                                        }
+                            // First row: duration, cost, processing time
+                            HStack(spacing: 16) {
+                                // Recording duration
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "mic.fill")
+                                            .font(.caption)
+                                            .foregroundColor(.blue)
+                                        Text("Recording")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
                                     }
-                                    .padding(.horizontal, 20)
-                                    
-                                    // Second row: network traffic
-                                    if audioRecorder.lastNetworkUsage.sent > 0 || audioRecorder.lastNetworkUsage.received > 0 {
-                                        HStack(spacing: 16) {
-                                            // Sent
-                                            if audioRecorder.lastNetworkUsage.sent > 0 {
-                                                VStack(alignment: .leading, spacing: 4) {
-                                                    HStack(spacing: 4) {
-                                                        Image(systemName: "arrow.up.circle")
-                                                            .font(.caption)
-                                                            .foregroundColor(.purple)
-                                                        Text("Upload")
-                                                            .font(.caption)
-                                                            .foregroundColor(.secondary)
-                                                    }
-                                                    Text(formatBytes(audioRecorder.lastNetworkUsage.sent))
-                                                        .font(.subheadline)
-                                                        .fontWeight(.semibold)
-                                                }
-                                            }
-                                            
-                                            Spacer()
-                                            
-                                            // Received
-                                            if audioRecorder.lastNetworkUsage.received > 0 {
-                                                VStack(alignment: .leading, spacing: 4) {
-                                                    HStack(spacing: 4) {
-                                                        Image(systemName: "arrow.down.circle")
-                                                            .font(.caption)
-                                                            .foregroundColor(.purple)
-                                                        Text("Download")
-                                                            .font(.caption)
-                                                            .foregroundColor(.secondary)
-                                                    }
-                                                    Text(formatBytes(audioRecorder.lastNetworkUsage.received))
-                                                        .font(.subheadline)
-                                                        .fontWeight(.semibold)
-                                                }
-                                            }
-                                            
-                                            Spacer()
+                                    Text(String(format: "%.1f s", audioRecorder.lastRecordingDuration))
+                                        .font(.subheadline)
+                                        .fontWeight(.semibold)
+                                }
+                                
+                                Spacer()
+                                
+                                // Cost
+                                if audioRecorder.lastTranscriptionCost > 0 {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "dollarsign.circle")
+                                                .font(.caption)
+                                                .foregroundColor(.green)
+                                            Text("Cost")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
                                         }
-                                        .padding(.horizontal, 20)
+                                        Text(String(format: "$%.4f", audioRecorder.lastTranscriptionCost))
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
+                                    }
+                                }
+                                
+                                Spacer()
+                                
+                                // Processing time
+                                if audioRecorder.lastTranscriptionDuration > 0 {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: "hourglass")
+                                                .font(.caption)
+                                                .foregroundColor(.orange)
+                                            Text("Processing")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        Text(String(format: "%.1f s", audioRecorder.lastTranscriptionDuration))
+                                            .font(.subheadline)
+                                            .fontWeight(.semibold)
                                     }
                                 }
                             }
+                            .padding(.horizontal, 20)
+                            
+                            // Second row: network traffic
+                            if audioRecorder.lastNetworkUsage.sent > 0 || audioRecorder.lastNetworkUsage.received > 0 {
+                                HStack(spacing: 16) {
+                                    // Sent
+                                    if audioRecorder.lastNetworkUsage.sent > 0 {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "arrow.up.circle")
+                                                    .font(.caption)
+                                                    .foregroundColor(.purple)
+                                                Text("Upload")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            Text(formatBytes(audioRecorder.lastNetworkUsage.sent))
+                                                .font(.subheadline)
+                                                .fontWeight(.semibold)
+                                        }
+                                    }
+                                    
+                                    Spacer()
+                                    
+                                    // Received
+                                    if audioRecorder.lastNetworkUsage.received > 0 {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            HStack(spacing: 4) {
+                                                Image(systemName: "arrow.down.circle")
+                                                    .font(.caption)
+                                                    .foregroundColor(.purple)
+                                                Text("Download")
+                                                    .font(.caption)
+                                                    .foregroundColor(.secondary)
+                                            }
+                                            Text(formatBytes(audioRecorder.lastNetworkUsage.received))
+                                                .font(.subheadline)
+                                                .fontWeight(.semibold)
+                                        }
+                                    }
+                                    
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 20)
+                            }
                         }
-                        .padding(.top, 10)
                     }
-                    
+                }
+                .padding(.top, 10)
+                
                 Spacer()
                     .frame(height: 30)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 20)
         }
-        .onAppear {
-            // Configure AudioRecorder with settings
-            audioRecorder.configure(with: settingsManager)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 20)
+    }
+    
+    // MARK: - View Modifiers
+    private var viewModifiers: some View {
+        mainContentView
+            .onAppear {
+                // Configure AudioRecorder with settings
+                audioRecorder.configure(with: settingsManager)
             
             // Load terminal sessions
             if let config = settingsManager.laptopConfig {
@@ -492,6 +543,13 @@ struct RecordingView: View {
                 // Clear terminal output when switching to agent mode
                 // Ensure updates happen on main thread
                 Task { @MainActor in
+                    // Cancel any pending TTS
+                    self.ttsTimer?.invalidate()
+                    self.ttsTimer = nil
+                    self.lastTTSOutput = "" // Reset last spoken text
+                    self.accumulatedForTTS = "" // Reset accumulated TTS text
+                    
+                    // Clear terminal output when switching to agent mode
                     self.lastTerminalOutput = ""
                     self.accumulatedOutput = "" // Reset accumulated output
                     self.terminalScreen = nil // Reset terminal screen emulator
@@ -503,9 +561,17 @@ struct RecordingView: View {
             if settingsManager.commandMode == .direct {
                 // Ensure updates happen on main thread
                 Task { @MainActor in
-                    self.lastTerminalOutput = ""
+                    // Cancel any pending TTS
+                    self.ttsTimer?.invalidate()
+                    self.ttsTimer = nil
+                    self.lastTTSOutput = "" // Reset last spoken text
+                    self.accumulatedForTTS = "" // Reset accumulated TTS text
+                    
+                    // Don't clear lastTerminalOutput - keep accumulated output between commands
+                    // Only clear accumulated output and screen emulator
                     self.accumulatedOutput = "" // Reset accumulated output
                     self.terminalScreen = nil // Reset terminal screen emulator (new command = new screen state)
+                    self.lastSentCommand = notification.userInfo?["command"] as? String ?? "" // Store the command
                 }
                 
                 // Send command through WebSocket input instead of HTTP API
@@ -546,23 +612,38 @@ struct RecordingView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TranscriptionStarted"))) { _ in
+            // Clear all terminal output when transcription starts
+            Task { @MainActor in
+                self.lastTerminalOutput = ""
+                self.accumulatedOutput = ""
+                self.terminalScreen = nil
+                self.lastSentCommand = ""
+                self.lastTTSOutput = ""
+                self.accumulatedForTTS = ""
+                self.ttsTimer?.invalidate()
+                self.ttsTimer = nil
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TranscriptionStatsUpdated"))) { notification in
             print("📱 iOS RecordingView: Received TranscriptionStatsUpdated notification")
             if let userInfo = notification.userInfo {
                 print("   📊 Updating RecordingView with new transcription:")
                 print("      Text length: \((userInfo["text"] as? String ?? "").count) chars")
                 
-                // Update AudioRecorder with stats from Watch
-                audioRecorder.recognizedText = userInfo["text"] as? String ?? ""
-                audioRecorder.lastRecordingDuration = userInfo["recordingDuration"] as? TimeInterval ?? 0
-                audioRecorder.lastTranscriptionCost = userInfo["transcriptionCost"] as? Double ?? 0
-                audioRecorder.lastTranscriptionDuration = userInfo["processingTime"] as? TimeInterval ?? 0
-                audioRecorder.lastNetworkUsage = (
-                    sent: userInfo["uploadSize"] as? Int64 ?? 0,
-                    received: userInfo["downloadSize"] as? Int64 ?? 0
-                )
-                
-                print("   ✅ RecordingView updated successfully")
+                // Update AudioRecorder with stats from Watch (ensure main thread)
+                Task { @MainActor in
+                    self.audioRecorder.recognizedText = userInfo["text"] as? String ?? ""
+                    self.audioRecorder.lastRecordingDuration = userInfo["recordingDuration"] as? TimeInterval ?? 0
+                    self.audioRecorder.lastTranscriptionCost = userInfo["transcriptionCost"] as? Double ?? 0
+                    self.audioRecorder.lastTranscriptionDuration = userInfo["processingTime"] as? TimeInterval ?? 0
+                    self.audioRecorder.lastNetworkUsage = (
+                        sent: userInfo["uploadSize"] as? Int64 ?? 0,
+                        received: userInfo["downloadSize"] as? Int64 ?? 0
+                    )
+                    
+                    print("   ✅ RecordingView updated successfully")
+                }
             }
         }
     }
@@ -606,22 +687,43 @@ struct RecordingView: View {
                 
                 // Get current screen state (final rendered output)
                 if let screenOutput = self.terminalScreen?.getScreenContent() {
-                    // Filter out intermediate "Generating..." messages
+                    // Filter out only specific UI elements:
+                    // 1. Lines starting with vertical pipe (│) - box borders
+                    // 2. Lines with ANSI dim codes (semi-transparent UI text)
+                    // 3. Lines starting with hexagon symbols (⬢, ⬡) - status indicators
+                    // All other lines should be kept and appended
                     var filteredOutput = self.filterIntermediateMessages(screenOutput)
                     
                     // Filter out user's command if it appears in output
+                    // But be careful - only remove exact matches or very short lines that are just the command
                     if !self.lastSentCommand.isEmpty {
                         // Remove command text from output (it might appear as echo)
                         let commandLines = self.lastSentCommand.components(separatedBy: .newlines)
                         for commandLine in commandLines {
                             let trimmedCommand = commandLine.trimmingCharacters(in: .whitespaces)
-                            if !trimmedCommand.isEmpty {
-                                // Remove lines that match the command
+                            if !trimmedCommand.isEmpty && trimmedCommand.count > 3 {
+                                // Only remove lines that are exactly the command or very similar
+                                // Don't remove lines that contain the command as part of a larger result
                                 let lines = filteredOutput.components(separatedBy: .newlines)
                                 filteredOutput = lines.filter { line in
                                     let trimmed = line.trimmingCharacters(in: .whitespaces)
-                                    // Skip lines that exactly match or contain the command
-                                    return !trimmed.contains(trimmedCommand) || trimmed.count > trimmedCommand.count + 50
+                                    // Only skip if line is exactly the command or very close to it
+                                    // Keep lines that are significantly longer (likely results)
+                                    let normalizedLine = trimmed.lowercased()
+                                    let normalizedCommand = trimmedCommand.lowercased()
+                                    
+                                    // Skip only if:
+                                    // 1. Line exactly matches command (ignoring case)
+                                    // 2. Line is very short and contains command (likely just echo)
+                                    // 3. Line is command with just a few extra characters (like prompt)
+                                    if normalizedLine == normalizedCommand {
+                                        return false // Exact match - skip
+                                    }
+                                    if trimmed.count <= trimmedCommand.count + 5 && normalizedLine.contains(normalizedCommand) {
+                                        return false // Very short line containing command - likely echo
+                                    }
+                                    // Keep everything else - it's likely a result
+                                    return true
                                 }.joined(separator: "\n")
                             }
                         }
@@ -630,9 +732,21 @@ struct RecordingView: View {
                     // Extract result from filtered output
                     let result = self.extractCommandResult(from: filteredOutput)
                     
+                    // Debug logging
                     if !result.isEmpty {
-                        // Update terminal output with extracted result
-                        self.lastTerminalOutput = result
+                        print("✅ RecordingView: Extracted result (\(result.count) chars): \(result.prefix(200))")
+                    } else if !filteredOutput.isEmpty {
+                        print("⚠️ RecordingView: extractCommandResult returned empty, filteredOutput (\(filteredOutput.count) chars): \(filteredOutput.prefix(200))")
+                    }
+                    
+                    if !result.isEmpty {
+                        // Append to terminal output instead of replacing (accumulate between voice inputs)
+                        let newText = self.appendToTerminalOutput(result)
+                        if !newText.isEmpty {
+                            print("✅ RecordingView: Appended to terminal output: \(newText.prefix(200))")
+                            // Schedule auto TTS for new additions only
+                            self.scheduleAutoTTS(for: newText)
+                        }
                     } else if !filteredOutput.isEmpty {
                         // If extraction returned empty, use filtered text directly
                         let lines = filteredOutput.components(separatedBy: .newlines)
@@ -644,10 +758,14 @@ struct RecordingView: View {
                         if !meaningfulLines.isEmpty {
                             let meaningfulText = meaningfulLines.joined(separator: "\n")
                             // Take last 1000 characters to avoid memory issues
-                            if meaningfulText.count > 1000 {
-                                self.lastTerminalOutput = String(meaningfulText.suffix(1000))
-                            } else {
-                                self.lastTerminalOutput = meaningfulText
+                            let finalText = meaningfulText.count > 1000 
+                                ? String(meaningfulText.suffix(1000))
+                                : meaningfulText
+                            // Append to terminal output instead of replacing
+                            let newText = self.appendToTerminalOutput(finalText)
+                            if !newText.isEmpty {
+                                // Schedule auto TTS for new additions only
+                                self.scheduleAutoTTS(for: newText)
                             }
                         }
                     }
@@ -702,19 +820,17 @@ struct RecordingView: View {
         var resultLines: [String] = [] // Results not in boxes
         var currentBox: [String] = []
         var inBox = false
-        var boxStartIndex = -1
         
         // Box drawing characters
         let boxChars = ["┌", "┐", "└", "┘", "│", "─"]
         
-        for (index, line) in lines.enumerated() {
+        for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             
             // Check if line starts a box (contains ┌)
             if trimmed.contains("┌") && !inBox {
                 inBox = true
                 currentBox = []
-                boxStartIndex = index
                 continue
             }
             
@@ -762,7 +878,6 @@ struct RecordingView: View {
                     }
                 }
                 currentBox = []
-                boxStartIndex = -1
                 continue
             }
             
@@ -821,6 +936,16 @@ struct RecordingView: View {
                     }
                 }
                 
+                // Skip lines starting with progress symbols (⬢, ⬡)
+                if trimmed.hasPrefix("⬢") || trimmed.hasPrefix("⬡") {
+                    continue
+                }
+                
+                // Skip lines starting with vertical bar (│) - these are code lines
+                if trimmed.hasPrefix("│") {
+                    continue
+                }
+                
                 // Skip progress lines
                 if trimmed.range(of: "tokens", options: .caseInsensitive) != nil {
                     continue
@@ -831,12 +956,21 @@ struct RecordingView: View {
                 }
                 
                 // Skip user commands (not in boxes, but might be echoed)
+                // But be careful - only skip exact matches or very short lines
                 if !lastSentCommand.isEmpty {
                     let normalizedCommand = lastSentCommand.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
                     let normalizedLine = trimmed.lowercased()
-                    if normalizedLine == normalizedCommand || normalizedLine.contains(normalizedCommand) {
-                        continue
+                    
+                    // Only skip if:
+                    // 1. Line exactly matches command
+                    // 2. Line is very short and contains command (likely just echo)
+                    if normalizedLine == normalizedCommand {
+                        continue // Exact match - skip
                     }
+                    if trimmed.count <= normalizedCommand.count + 5 && normalizedLine.contains(normalizedCommand) {
+                        continue // Very short line containing command - likely echo
+                    }
+                    // Keep everything else - it's likely a result
                 }
                 
                 // This looks like a result line (not in a box, not a status, not a command)
@@ -857,185 +991,95 @@ struct RecordingView: View {
         return ""
     }
     
-    // Filter out intermediate messages like "Generating..." and status indicators
+    // Filter out only specific UI elements:
+    // 1. Lines with box drawing characters (┌, ┐, └, ┘, │, ─) - all box content
+    // 2. Lines with ANSI dim codes (semi-transparent UI text)
+    // 3. Lines starting with hexagon symbols (⬢, ⬡) - status indicators (after removing ANSI codes)
+    // 4. Lines containing UI phrases like "Auto ·", "/ commands", "@ files", "! shell", "review edits"
+    // All other lines should be kept and appended
     private func filterIntermediateMessages(_ output: String) -> String {
         let lines = output.components(separatedBy: .newlines)
         
-        // Filter out lines that contain intermediate status messages
-        let meaningfulLines = lines.filter { line in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+        var meaningfulLines: [String] = []
+        
+        // Box drawing characters - if line contains any of these, it's part of a box
+        let boxChars: Set<Character> = ["┌", "┐", "└", "┘", "│", "─"]
+        
+        // Filter out only the specific cases
+        for line in lines {
+            // First, remove ANSI codes to check the actual visible content
+            let cleanedLine = removeAnsiCodes(from: line)
+            let trimmed = cleanedLine.trimmingCharacters(in: .whitespaces)
             
             // Skip empty lines
             if trimmed.isEmpty {
-                return false
+                continue
             }
             
-            // Skip lines containing "Generating" (case insensitive)
-            if trimmed.range(of: "generating", options: .caseInsensitive) != nil {
-                return false
+            // 1. Skip lines with box drawing characters - these are box borders or content
+            // Check if line contains any box character
+            if trimmed.contains(where: { boxChars.contains($0) }) {
+                continue
             }
             
-            // Skip progress/status lines: "Reading", "Processing", "Analyzing", "Editing", etc.
-            // Note: Russian words are NOT filtered - they are part of the result, not system messages
-            let progressKeywords = ["reading", "processing", "analyzing", "thinking", "working", 
-                                   "loading", "calculating", "computing", "executing", "running",
-                                   "preparing", "initializing", "starting", "waiting", "checking",
-                                   "editing", "generating", "adding", "creating", "updating"]
-            
-            // Check for progress keywords in the line
-            for keyword in progressKeywords {
-                if trimmed.range(of: keyword, options: .caseInsensitive) != nil {
-                    // Skip if it's a progress line
-                    // Progress lines are usually:
-                    // 1. Short lines (< 100 chars) that start with the keyword
-                    // 2. Lines that are just status messages (contain symbols like ⬡, ⬢)
-                    // 3. Lines with "..." or ".." or "." at the end (indicating progress)
-                    let isShortProgress = trimmed.count < 100 && 
-                                         (trimmed.hasPrefix(keyword.capitalized) || 
-                                          trimmed.hasPrefix(keyword.uppercased()) ||
-                                          trimmed.lowercased().hasPrefix(keyword))
-                    
-                    let hasProgressSymbols = trimmed.contains("⬡") || trimmed.contains("⬢")
-                    let endsWithDots = trimmed.hasSuffix("...") || trimmed.hasSuffix("..") || trimmed.hasSuffix(".")
-                    
-                    if isShortProgress || (hasProgressSymbols && endsWithDots) {
-                        return false
-                    }
-                }
+            // 2. Skip lines with ANSI dim codes (semi-transparent UI text)
+            // ANSI dim codes: ESC[2m or ESC[2 followed by other codes
+            // Also check for dim codes in various formats: [2m, [2;...m, etc.
+            if line.contains("\u{001B}[2") || 
+               line.range(of: #"\x1b\[2[0-9;]*m"#, options: .regularExpression) != nil {
+                continue
             }
             
-            // Skip lines with "file edited", "files edited" - these are status messages
-            if trimmed.range(of: "file edited", options: .caseInsensitive) != nil ||
-               trimmed.range(of: "files edited", options: .caseInsensitive) != nil {
-                return false
+            // 3. Skip lines starting with hexagon symbols (⬢, ⬡) - status indicators
+            // Check the cleaned line (after removing ANSI codes) to see if it starts with ⬢ or ⬡
+            if trimmed.hasPrefix("⬢") || trimmed.hasPrefix("⬡") {
+                continue
             }
             
-            // Skip lines with "tokens" (e.g., "Reading    xyz tokens", "Editing     xyz tokens")
-            if trimmed.range(of: "tokens", options: .caseInsensitive) != nil {
-                return false
-            }
-            
-            // Don't filter Russian words - they are part of the result, not system messages
-            // System messages are in English, so Russian text is always part of the actual result
-            
-            // Skip lines that are just status updates (short lines with action verbs)
-            // Pattern: "Verb + object" (e.g., "Adding function", "Created file")
-            // Note: Russian words are NOT filtered - they are part of the result
-            let actionPatterns = [
-                "^\\s*(adding|created|updated|modified|deleted|removed|changed)\\s+"
+            // 4. Skip UI status lines (check cleaned text after removing ANSI codes)
+            // These are semi-transparent UI elements that should be filtered
+            // Check for partial matches to catch variations like "Auto · 3.7%"
+            let uiPhrases = [
+                "Auto",
+                "/ commands",
+                "@ files",
+                "! shell",
+                "review edits",
+                "add a follow-up",
+                "follow-up",
+                "ctrl+r to"
             ]
-            for pattern in actionPatterns {
-                if trimmed.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil {
-                    // If it's a short line (< 100 chars) and ends with dots or is just a status, skip it
-                    if trimmed.count < 100 || trimmed.hasSuffix("...") || trimmed.hasSuffix("..") {
-                        return false
-                    }
+            
+            var shouldSkip = false
+            for phrase in uiPhrases {
+                if trimmed.contains(phrase) {
+                    shouldSkip = true
+                    break
                 }
             }
             
-            // Skip status lines with "Auto" and percentage indicators
-            if trimmed.range(of: "Auto", options: .caseInsensitive) != nil &&
-               (trimmed.contains("·") || trimmed.contains("%") || trimmed.contains("/ commands")) {
-                return false
+            if shouldSkip {
+                continue
             }
             
-            // Skip lines with percentage indicators that indicate progress (e.g., "50%", "3.7%")
-            // But keep lines that might contain percentages as part of results (e.g., "Price: $100 (10% discount)")
-            if trimmed.range(of: "^\\s*[0-9]+\\.[0-9]+%\\s*$", options: .regularExpression) != nil ||
-               (trimmed.contains("%") && trimmed.count < 30 && !trimmed.contains(":") && !trimmed.contains("=")) {
-                return false
-            }
-            
-            // Skip lines that contain ANSI dim/faint escape sequences (semi-transparent text)
-            // Dim text is usually UI hints like "review edits" that should be filtered
-            // ANSI code 2 means dim/faint: \u{001B}[2m or \u{001B}[2;...m
-            if line.contains("\u{001B}[2") || line.contains("\u{001B}[2m") {
-                // Check if this is dim text (semi-transparent UI element)
-                // Extract text without ANSI codes to check content
-                let textWithoutAnsi = removeAnsiCodes(from: line)
-                let trimmedNoAnsi = textWithoutAnsi.trimmingCharacters(in: .whitespaces)
-                
-                // Skip dim text that looks like UI hints (short lines with common UI phrases)
-                if trimmedNoAnsi.count < 50 {
-                    // Common UI phrases in dim text
-                    let uiPhrases = ["review edits", "add a follow-up", "follow-up", 
-                                    "ctrl+r", "commands", "@ files", "! shell"]
-                    for phrase in uiPhrases {
-                        if trimmedNoAnsi.lowercased().contains(phrase.lowercased()) {
-                            return false
-                        }
-                    }
+            // 5. Skip lines that are just status indicators (like "Generating", "Reading", "Editing")
+            // These are progress indicators that should be filtered
+            let progressIndicators = ["Generating", "Reading", "Editing"]
+            let lowerTrimmed = trimmed.lowercased()
+            for indicator in progressIndicators {
+                if lowerTrimmed.contains(indicator.lowercased()) && trimmed.count < 50 {
+                    // Short line containing progress indicator - likely a status line
+                    shouldSkip = true
+                    break
                 }
             }
             
-            // Skip Cursor Agent menu lines: "/ commands · @ files · ! shell"
-            if trimmed.contains("/ commands") || 
-               (trimmed.contains("·") && trimmed.contains("@ files") && trimmed.contains("! shell")) {
-                return false
+            if shouldSkip {
+                continue
             }
             
-            // Skip "review edits" and similar Cursor Agent UI messages
-            if trimmed.range(of: "review edits", options: .caseInsensitive) != nil {
-                return false
-            }
-            
-            // Skip Cursor Agent UI boxes (lines with box drawing characters)
-            // Check for box drawing characters: ┌ ┐ └ ┘ │ ─
-            let boxChars = ["┌", "┐", "└", "┘", "│", "─", "├", "┤", "┬", "┴"]
-            let hasBoxChars = boxChars.contains { trimmed.contains($0) }
-            if hasBoxChars {
-                // Count box characters in the line
-                let boxCharCount = boxChars.reduce(0) { count, char in
-                    count + trimmed.components(separatedBy: char).count - 1
-                }
-                // If more than 1 box character, it's likely a UI box (including user command boxes)
-                // This will filter out:
-                // - Box borders (┌─┐, └─┘)
-                // - Box content lines (│ command text │)
-                // - All UI elements with boxes
-                if boxCharCount > 1 {
-                    return false
-                }
-                // Also skip lines with "→ Add a follow-up" or similar UI prompts
-                if trimmed.contains("→") && (trimmed.contains("Add a follow-up") || 
-                                             trimmed.contains("follow-up") ||
-                                             trimmed.range(of: "→.*", options: .regularExpression) != nil) {
-                    return false
-                }
-            }
-            
-            // Skip lines that are mostly symbols (⬡, ⬢) and formatting
-            if trimmed.contains("⬡") || trimmed.contains("⬢") {
-                // Check if line has meaningful content beyond the symbol
-                let withoutSymbols = trimmed.replacingOccurrences(of: "⬡", with: "")
-                let withoutSymbols2 = withoutSymbols.replacingOccurrences(of: "⬢", with: "")
-                let cleaned = withoutSymbols2.trimmingCharacters(in: .whitespaces)
-                
-                // If after removing symbols there's nothing meaningful, skip it
-                if cleaned.isEmpty || cleaned.count < 3 {
-                    return false
-                }
-                
-                // If the remaining text is just "Generating" variations, skip it
-                if cleaned.range(of: "generating", options: .caseInsensitive) != nil {
-                    return false
-                }
-            }
-            
-            // Skip lines that are mostly formatting characters and symbols
-            let printableChars = trimmed.unicodeScalars.filter { scalar in
-                let value = scalar.value
-                // Count printable ASCII and Unicode characters
-                return (value >= 32 && value <= 126) || (value >= 0x80 && value <= 0x10FFFF)
-            }
-            
-            // Skip lines with too few printable characters (likely just formatting)
-            if printableChars.count < 3 {
-                return false
-            }
-            
-            // Keep lines with meaningful content
-            return true
+            // Keep all other lines - they are normal content that should be displayed
+            meaningfulLines.append(line)
         }
         
         return meaningfulLines.joined(separator: "\n")
@@ -1052,8 +1096,138 @@ struct RecordingView: View {
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
     }
     
+    // Append new text to terminal output (accumulate between voice inputs)
+    private func appendToTerminalOutput(_ newText: String) -> String {
+        let trimmedNew = newText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedNew.isEmpty {
+            return ""
+        }
+        
+        // If lastTerminalOutput is empty, just set it
+        if lastTerminalOutput.isEmpty {
+            Task { @MainActor in
+                self.lastTerminalOutput = trimmedNew
+            }
+            return trimmedNew
+        }
+        
+        // Check if this is new text (not already in output)
+        let currentOutput = lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentOutput.contains(trimmedNew) {
+            // Text already exists, return empty to skip TTS
+            return ""
+        }
+        
+        // Append new text with separator
+        let separator = currentOutput.hasSuffix(".") || currentOutput.hasSuffix("!") || currentOutput.hasSuffix("?") 
+            ? " " 
+            : "\n\n"
+        let appended = currentOutput + separator + trimmedNew
+        
+        // Limit total output to prevent memory issues (keep last 5000 characters)
+        let finalOutput = appended.count > 5000 
+            ? String(appended.suffix(5000))
+            : appended
+        
+        Task { @MainActor in
+            self.lastTerminalOutput = finalOutput
+        }
+        
+        // Return only the new part for TTS
+        return trimmedNew
+    }
+    
+    // Schedule auto TTS if text remains stable for 3 seconds
+    private func scheduleAutoTTS(for text: String) {
+        // Cancel previous timer
+        ttsTimer?.invalidate()
+        ttsTimer = nil
+        
+        // Skip if text is empty or too short
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.count < 3 {
+            return
+        }
+        
+        // Skip if already spoken this exact text
+        if trimmed == lastTTSOutput {
+            return
+        }
+        
+        // Skip if audio is already playing
+        if audioPlayer.isPlaying {
+            return
+        }
+        
+        // Create new timer for 3 seconds
+        // Capture trimmed text to avoid using it in closure
+        let textToCheck = trimmed
+        ttsTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: false) { [self] _ in
+            // Check if text hasn't changed (still the same)
+            let currentText = self.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if currentText == textToCheck && !currentText.isEmpty {
+                // Text is stable, generate and play TTS
+                Task { @MainActor in
+                    await self.generateAndPlayTTS(for: currentText)
+                }
+            }
+        }
+    }
+    
+    // Generate TTS audio and play it
+    private func generateAndPlayTTS(for text: String) async {
+        // Skip if already playing
+        if audioPlayer.isPlaying {
+            return
+        }
+        
+        // Skip if already spoken this text
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == lastTTSOutput {
+            return
+        }
+        
+        // Check for ephemeral keys
+        guard let keys = settingsManager.ephemeralKeys else {
+            print("⚠️ No ephemeral keys for TTS")
+            return
+        }
+        
+        // Clean text for TTS (remove ANSI codes, etc.)
+        let cleanedText = cleanTerminalOutputForTTS(trimmed)
+        
+        // Skip if cleaned text is empty
+        if cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
+        
+        print("🔊 Auto-generating TTS for stable text (length: \(cleanedText.count))...")
+        
+        do {
+            let ttsHandler = LocalTTSHandler(apiKey: keys.openai)
+            let audioData = try await ttsHandler.synthesize(text: cleanedText)
+            
+            // Update last spoken text
+            await MainActor.run {
+                self.lastTTSOutput = trimmed
+            }
+            
+            // Play audio on main thread
+            await MainActor.run {
+                do {
+                    try self.audioPlayer.play(audioData: audioData)
+                    print("🔊 Auto-TTS playback started")
+                } catch {
+                    print("❌ Failed to play TTS audio: \(error)")
+                }
+            }
+        } catch {
+            print("❌ TTS generation error: \(error)")
+        }
+    }
+    
     // Clean terminal output for TTS (remove ANSI sequences, keep text readable)
-    private func cleanTerminalOutput(_ output: String) -> String {
+    private func cleanTerminalOutputForTTS(_ output: String) -> String {
         var cleaned = output
         
         // Remove ANSI escape sequences more aggressively

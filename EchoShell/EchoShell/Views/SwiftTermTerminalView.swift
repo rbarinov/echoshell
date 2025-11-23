@@ -83,14 +83,14 @@ struct SwiftTermTerminalView: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         // Ensure terminal view becomes first responder when view updates
         // This ensures keyboard appears when user taps on terminal
-        guard let container = uiView as? UIView else { return }
+        let container = uiView
         
         for subview in container.subviews {
             if let terminalView = subview as? SwiftTerm.TerminalView {
                 // Always try to become first responder if not already
                 if terminalView.canBecomeFirstResponder && !terminalView.isFirstResponder {
                     DispatchQueue.main.async {
-                        terminalView.becomeFirstResponder()
+                        _ = terminalView.becomeFirstResponder()
                     }
                 }
                 break

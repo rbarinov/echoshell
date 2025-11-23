@@ -373,6 +373,12 @@ extension AudioRecorder {
             self.recognizedText = ""
         }
         
+        // Notify RecordingView to clear terminal output when transcription starts
+        NotificationCenter.default.post(
+            name: NSNotification.Name("TranscriptionStarted"),
+            object: nil
+        )
+        
         let transcriptionStartTime = Date()
         
         // Get ephemeral key for transcription
@@ -509,15 +515,19 @@ extension AudioRecorder {
                     // Notify that command should be sent (will be sent via WebSocket in RecordingView)
                     // This allows RecordingView to send the command through WebSocket input
                     // which works better with interactive apps like cursor-agent
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("CommandSentToTerminal"),
-                        object: nil,
-                        userInfo: ["command": text, "sessionId": sessionId]
-                    )
+                    // Capture sessionId in a constant to avoid concurrency issues
+                    let capturedSessionId = sessionId
+                    await MainActor.run {
+                        NotificationCenter.default.post(
+                            name: NSNotification.Name("CommandSentToTerminal"),
+                            object: nil,
+                            userInfo: ["command": text, "sessionId": capturedSessionId]
+                        )
+                    }
                 }
                 
                 let commandMode = settings.commandMode
-                DispatchQueue.main.async {
+                await MainActor.run {
                     if commandMode == .direct {
                         // In direct mode, show command text initially
                         // Terminal output will be updated via WebSocket subscription
@@ -540,7 +550,7 @@ extension AudioRecorder {
                 }
                 
             } catch {
-                DispatchQueue.main.async {
+                await MainActor.run {
                     self.recognizedText = "Error executing command: \(error.localizedDescription)"
                 }
             }

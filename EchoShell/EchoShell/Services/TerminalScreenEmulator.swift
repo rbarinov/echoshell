@@ -74,7 +74,7 @@ class TerminalScreenEmulator {
         }
         
         let currentLine = screen[cursorRow]
-        let lineChars = Array(currentLine)
+        let _ = Array(currentLine) // Not used, but kept for potential future use
         
         // Handle newlines
         if text.contains("\n") {
