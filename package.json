@@ -1,0 +1,20 @@
+{
+  "name": "echoshell",
+  "version": "1.0.0",
+  "description": "Voice-Controlled Terminal Management System",
+  "private": true,
+  "author": "Roman Barinov <rbarinov@gmail.com>",
+  "license": "MIT",
+  "scripts": {
+    "prepare": "husky install",
+    "commitlint": "commitlint --edit"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^18.4.4",
+    "@commitlint/config-conventional": "^18.4.4",
+    "husky": "^8.0.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
