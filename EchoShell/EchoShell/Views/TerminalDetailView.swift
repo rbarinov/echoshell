@@ -31,7 +31,7 @@ struct TerminalDetailView: View {
                         .padding()
                     }
                     .background(Color.black)
-                    .onChange(of: wsClient.messages.count) { _ in
+                    .onChange(of: wsClient.messages.count) { oldValue, newValue in
                         if let lastMessage = wsClient.messages.last {
                             withAnimation {
                                 proxy.scrollTo(lastMessage.id, anchor: .bottom)
@@ -111,7 +111,7 @@ struct TerminalDetailView: View {
         Task {
             let apiClient = APIClient(config: config)
             do {
-                let output = try await apiClient.executeCommand(sessionId: session.id, command: command)
+                _ = try await apiClient.executeCommand(sessionId: session.id, command: command)
                 // Output will come via WebSocket, but we can also show it immediately
                 print("✅ Command executed: \(command)")
             } catch {

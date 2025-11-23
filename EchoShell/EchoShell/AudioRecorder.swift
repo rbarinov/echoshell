@@ -211,7 +211,7 @@ extension AudioRecorder {
     
     private func sendStatsToWatch(text: String, uploadSize: Int64, downloadSize: Int64) {
         // Post notification for Watch connectivity to pick up
-        let stats: [String: Any] = [
+        let _: [String: Any] = [
             "text": text,
             "recordingDuration": lastRecordingDuration,
             "transcriptionCost": lastTranscriptionCost,
@@ -233,7 +233,7 @@ extension AudioRecorder {
             return
         }
         
-        guard let client = apiClient else {
+        guard apiClient != nil else {
             recognizedText = "Error: Not connected to laptop"
             return
         }
@@ -284,7 +284,7 @@ extension AudioRecorder {
     // NEW: Send transcribed command to laptop
     private func sendCommandToLaptop(text: String) {
         guard let client = apiClient,
-              let settings = settingsManager else {
+              settingsManager != nil else {
             return
         }
         

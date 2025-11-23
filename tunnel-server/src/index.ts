@@ -100,7 +100,9 @@ wss.on('connection', (ws, req) => {
 // Proxy HTTP requests to connected laptop
 app.all('/api/:tunnelId/*', async (req, res) => {
   const { tunnelId } = req.params;
-  const path = req.params[0];
+  // Extract the path after /api/:tunnelId/
+  const fullPath = req.path;
+  const path = fullPath.replace(`/api/${tunnelId}`, '') || '/';
   
   const tunnel = tunnels.get(tunnelId);
   

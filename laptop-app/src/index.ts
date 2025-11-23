@@ -70,7 +70,7 @@ async function handleTunnelRequest(req: any): Promise<any> {
   try {
     // Route to appropriate handler
     if (path.startsWith('/keys/')) {
-      return handleKeyRequest(method, path, body, headers);
+      return handleKeyRequest(method, path, body, query, headers);
     } else if (path.startsWith('/terminal/')) {
       return handleTerminalRequest(method, path, body, query, headers);
     } else if (path.startsWith('/agent/')) {
@@ -85,7 +85,7 @@ async function handleTunnelRequest(req: any): Promise<any> {
 }
 
 // Key management endpoints
-function handleKeyRequest(method: string, path: string, body: any, headers: any): any {
+function handleKeyRequest(method: string, path: string, body: any, query: any, headers: any): any {
   if (path === '/keys/request' && method === 'POST') {
     const { device_id, tunnel_id, duration_seconds, permissions } = body;
     const keys = keyManager.issueEphemeralKeys(device_id, duration_seconds || 3600, permissions || ['stt', 'tts']);

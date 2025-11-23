@@ -78,6 +78,17 @@ extension WatchConnectivityManager: WCSessionDelegate {
         }
     }
     
+    #if os(iOS)
+    func sessionDidBecomeInactive(_ session: WCSession) {
+        print("⚠️ Watch: WCSession became inactive")
+    }
+    
+    func sessionDidDeactivate(_ session: WCSession) {
+        print("⚠️ Watch: WCSession deactivated, reactivating...")
+        session.activate()
+    }
+    #endif
+    
     func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             self.isPhoneConnected = session.isReachable

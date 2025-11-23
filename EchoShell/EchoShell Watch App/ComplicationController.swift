@@ -5,6 +5,7 @@
 //  Created by Roman Barinov on 2025.11.20.
 //
 
+#if os(watchOS)
 import ClockKit
 
 @objc(ComplicationController)
@@ -140,4 +141,5 @@ class ComplicationController: NSObject, CLKComplicationDataSource {
         }
     }
 }
+#endif
 

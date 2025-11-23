@@ -56,8 +56,8 @@ struct QRScannerView: View {
         .onDisappear {
             scanner.stopScanning()
         }
-        .onChange(of: scanner.scannedConfig) { config in
-            if let config = config {
+        .onChange(of: scanner.scannedConfig) { oldValue, newValue in
+            if let config = newValue {
                 scannedConfig = config
                 dismiss()
             }

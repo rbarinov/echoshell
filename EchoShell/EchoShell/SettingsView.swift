@@ -255,8 +255,8 @@ struct SettingsView: View {
             .sheet(isPresented: $showingQRScanner) {
                 QRScannerView(scannedConfig: $scannedConfig)
             }
-            .onChange(of: scannedConfig) { config in
-                if let config = config {
+            .onChange(of: scannedConfig) { oldValue, newValue in
+                if let config = newValue {
                     print("📱 QR Code scanned successfully")
                     print("   Tunnel ID: \(config.tunnelId)")
                     
