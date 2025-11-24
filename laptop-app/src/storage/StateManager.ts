@@ -15,6 +15,9 @@ interface TerminalSessionState {
   sessionId: string;
   workingDir: string;
   createdAt: number;
+  terminalType?: 'regular' | 'cursor_agent';
+  name?: string;
+  cursorAgentWorkingDir?: string;
 }
 
 interface AppState {

@@ -25,16 +25,14 @@ class AudioRecorder: NSObject, ObservableObject {
     private var transcriptionService: TranscriptionService?
     private var recordingStartTime: Date?
     
-    private let watchConnectivity = WatchConnectivityManager.shared
+    private let settingsManager = WatchSettingsManager()
     
     override init() {
         super.init()
         setupAudioSession()
         
         // Initialize transcription service with saved API key
-        if !watchConnectivity.apiKey.isEmpty {
-            self.transcriptionService = TranscriptionService(apiKey: watchConnectivity.apiKey)
-        }
+        updateTranscriptionService()
         
         // Listen for settings updates
         NotificationCenter.default.addObserver(
@@ -47,7 +45,7 @@ class AudioRecorder: NSObject, ObservableObject {
     
     @objc private func settingsUpdated() {
         updateTranscriptionService()
-        print("AudioRecorder: Settings updated from iPhone")
+        print("AudioRecorder: Settings updated")
     }
     
     deinit {
@@ -55,8 +53,10 @@ class AudioRecorder: NSObject, ObservableObject {
     }
     
     func updateTranscriptionService() {
-        if !watchConnectivity.apiKey.isEmpty {
-            self.transcriptionService = TranscriptionService(apiKey: watchConnectivity.apiKey)
+        // Use ephemeral keys if available, otherwise fall back to apiKey
+        let apiKey = settingsManager.ephemeralKeys?.openai ?? settingsManager.apiKey
+        if !apiKey.isEmpty {
+            self.transcriptionService = TranscriptionService(apiKey: apiKey)
         }
     }
     
@@ -88,6 +88,9 @@ class AudioRecorder: NSObject, ObservableObject {
         lastNetworkUsage = (0, 0)
         lastTranscriptionDuration = 0
         recordingStartTime = Date()
+        
+        // Notify that transcription started
+        NotificationCenter.default.post(name: NSNotification.Name("TranscriptionStarted"), object: nil)
         
         let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
@@ -169,8 +172,8 @@ extension AudioRecorder: AVAudioRecorderDelegate {
         
         let transcriptionStartTime = Date()
         
-        // Get language from WatchConnectivityManager
-        let language = watchConnectivity.transcriptionLanguage
+        // Get language from settings
+        let language = settingsManager.transcriptionLanguage.rawValue
         
         service.transcribe(audioFileURL: url, language: language) { [weak self] result in
             DispatchQueue.main.async {

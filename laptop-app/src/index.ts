@@ -10,6 +10,7 @@ import { KeyManager } from './keys/KeyManager.js';
 import { TunnelClient } from './tunnel/TunnelClient.js';
 import { AIAgent } from './agent/AIAgent.js';
 import { StateManager } from './storage/StateManager.js';
+import { RecordingStreamManager } from './output/RecordingStreamManager.js';
 
 // Get directory of current module (works with ES modules)
 const __filename = fileURLToPath(import.meta.url);
@@ -81,6 +82,8 @@ app.get('/terminal/list', async (req, res) => {
       sessions: sessions.map(s => ({
         session_id: s.sessionId,
         working_dir: s.workingDir,
+        terminal_type: s.terminalType,
+        name: s.name,
         created_at: s.createdAt || Date.now()
       }))
     });
@@ -91,11 +94,16 @@ app.get('/terminal/list', async (req, res) => {
 
 app.post('/terminal/create', async (req, res) => {
   try {
-    const { working_dir } = req.body;
-    const session = await terminalManager.createSession(working_dir);
+    const { terminal_type, working_dir, name } = req.body;
+    if (!terminal_type || (terminal_type !== 'regular' && terminal_type !== 'cursor_agent')) {
+      return res.status(400).json({ error: 'terminal_type must be "regular" or "cursor_agent"' });
+    }
+    const session = await terminalManager.createSession(terminal_type, working_dir, name);
     res.json({
       session_id: session.sessionId,
       working_dir: session.workingDir,
+      terminal_type: session.terminalType,
+      name: session.name,
       status: 'created'
     });
   } catch (error) {
@@ -128,6 +136,27 @@ app.post('/terminal/:sessionId/execute', async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ error: 'Failed to execute command' });
+  }
+});
+
+app.post('/terminal/:sessionId/rename', (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const { name } = req.body;
+    if (!name || typeof name !== 'string') {
+      return res.status(400).json({ error: 'name is required and must be a string' });
+    }
+    terminalManager.renameSession(sessionId, name);
+    res.json({
+      session_id: sessionId,
+      name,
+      status: 'renamed'
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === 'Session not found') {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    res.status(500).json({ error: 'Failed to rename session' });
   }
 });
 
@@ -228,6 +257,11 @@ let tunnelClient: TunnelClient | null = null;
 let tunnelConfig: TunnelConfig | null = null;
 let reconnectAttempt = 0;
 const maxReconnectAttempts = 10;
+
+const recordingStreamManager = new RecordingStreamManager(
+  terminalManager,
+  () => tunnelClient
+);
 
 console.log('🚀 Laptop Application starting...');
 
@@ -334,7 +368,7 @@ async function initializeTunnel(isRetry = false): Promise<void> {
     console.log('\n');
     
     // Connect to tunnel
-    tunnelClient = new TunnelClient(tunnelConfig, handleTunnelRequest);
+    tunnelClient = new TunnelClient(tunnelConfig, handleTunnelRequest, process.env.LAPTOP_AUTH_KEY);
     await tunnelClient.connect();
     
     // Set up terminal input handler
@@ -520,27 +554,65 @@ async function handleTerminalRequest(method: string, path: string, body: unknown
       body: {
         sessions: sessions.map(s => ({
           session_id: s.sessionId,
-          working_dir: s.workingDir
+          working_dir: s.workingDir,
+          terminal_type: s.terminalType,
+          name: s.name
         }))
       }
     };
   }
   
   if (path === '/terminal/create' && method === 'POST') {
-    const bodyObj = body as { working_dir?: string };
-    const { working_dir } = bodyObj;
-    const session = await terminalManager.createSession(working_dir);
+    const bodyObj = body as { terminal_type?: string; working_dir?: string; name?: string };
+    const { terminal_type, working_dir, name } = bodyObj;
     
-    console.log(`📟 Created terminal session: ${session.sessionId}`);
+    if (!terminal_type || (terminal_type !== 'regular' && terminal_type !== 'cursor_agent')) {
+      return { statusCode: 400, body: { error: 'terminal_type must be "regular" or "cursor_agent"' } };
+    }
+    
+    const session = await terminalManager.createSession(terminal_type, working_dir, name);
+    
+    console.log(`📟 Created terminal session: ${session.sessionId} (${terminal_type})`);
     
     return {
       statusCode: 200,
       body: {
         session_id: session.sessionId,
         working_dir: session.workingDir,
+        terminal_type: session.terminalType,
+        name: session.name,
         status: 'created'
       }
     };
+  }
+  
+  const renameMatch = path.match(/^\/terminal\/([^\/]+)\/rename$/);
+  if (renameMatch && method === 'POST') {
+    const sessionId = renameMatch[1];
+    const bodyObj = body as { name?: string };
+    const { name } = bodyObj;
+    
+    if (!name || typeof name !== 'string') {
+      return { statusCode: 400, body: { error: 'name is required and must be a string' } };
+    }
+    
+    try {
+      terminalManager.renameSession(sessionId, name);
+      console.log(`✏️  Renamed session ${sessionId} to: ${name}`);
+      return {
+        statusCode: 200,
+        body: {
+          session_id: sessionId,
+          name,
+          status: 'renamed'
+        }
+      };
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Session not found') {
+        return { statusCode: 404, body: { error: 'Session not found' } };
+      }
+      return { statusCode: 500, body: { error: 'Failed to rename session' } };
+    }
   }
   
   const historyMatch = path.match(/^\/terminal\/([^\/]+)\/history$/);

@@ -33,9 +33,7 @@ struct TerminalView: View {
                                 .foregroundColor(.secondary)
                             
                             Button {
-                                Task {
-                                    await viewModel.createNewSession(config: config)
-                                }
+                                showingNewSession = true
                             } label: {
                                 Label("Create Session", systemImage: "plus.circle.fill")
                                     .font(.headline)
@@ -108,10 +106,15 @@ struct TerminalView: View {
                 }
             }
             .sheet(isPresented: $showingNewSession) {
-                NewSessionView { workingDir in
+                NewSessionView { terminalType, workingDir, name in
                     if let config = settingsManager.laptopConfig {
                         Task {
-                            await viewModel.createNewSession(config: config, workingDir: workingDir)
+                            await viewModel.createNewSession(
+                                config: config,
+                                terminalType: terminalType,
+                                workingDir: workingDir,
+                                name: name
+                            )
                         }
                     }
                 }
@@ -134,8 +137,15 @@ struct SessionRow: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text(session.id)
-                    .font(.headline)
+                HStack(spacing: 6) {
+                    Text(session.name ?? session.id)
+                        .font(.headline)
+                    if session.terminalType == .cursorAgent {
+                        Image(systemName: "brain.head.profile")
+                            .font(.caption)
+                            .foregroundColor(.blue)
+                    }
+                }
                 Text(session.workingDir)
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -162,12 +172,30 @@ struct SessionRow: View {
 struct NewSessionView: View {
     @Environment(\.dismiss) var dismiss
     @State private var workingDir: String = ""
+    @State private var terminalType: TerminalType = .regular
+    @State private var name: String = ""
     
-    let onCreate: (String?) -> Void
+    let onCreate: (TerminalType, String?, String?) -> Void
     
     var body: some View {
         NavigationView {
             Form {
+                Section(header: Text("Terminal Type")) {
+                    Picker("Type", selection: $terminalType) {
+                        Label("Regular Terminal", systemImage: "terminal")
+                            .tag(TerminalType.regular)
+                        Label("Cursor Agent", systemImage: "brain.head.profile")
+                            .tag(TerminalType.cursorAgent)
+                    }
+                    .pickerStyle(.segmented)
+                }
+                
+                Section(header: Text("Name (Optional)")) {
+                    TextField("Terminal name", text: $name)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                }
+                
                 Section(header: Text("Working Directory")) {
                     TextField("Optional: /path/to/dir", text: $workingDir)
                         .autocapitalization(.none)
@@ -175,9 +203,15 @@ struct NewSessionView: View {
                 }
                 
                 Section {
-                    Text("Leave empty to use the default directory")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    if terminalType == .cursorAgent {
+                        Text("Cursor Agent terminal will automatically start the cursor-agent command")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Leave empty to use the default directory")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
             .navigationTitle("New Session")
@@ -192,7 +226,8 @@ struct NewSessionView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Create") {
                         let dir = workingDir.isEmpty ? nil : workingDir
-                        onCreate(dir)
+                        let sessionName = name.isEmpty ? nil : name
+                        onCreate(terminalType, dir, sessionName)
                         dismiss()
                     }
                 }

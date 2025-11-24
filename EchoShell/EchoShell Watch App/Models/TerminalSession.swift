@@ -1,6 +1,6 @@
 //
 //  TerminalSession.swift
-//  EchoShell
+//  EchoShell Watch App
 //
 //  Created for Voice-Controlled Terminal Management System
 //
@@ -98,3 +98,4 @@ struct TerminalSession: Identifiable, Codable, Hashable {
         case cursorAgentWorkingDir
     }
 }
+

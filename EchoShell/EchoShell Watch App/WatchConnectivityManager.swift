@@ -11,16 +11,14 @@ import WatchConnectivity
 class WatchConnectivityManager: NSObject, ObservableObject {
     static let shared = WatchConnectivityManager()
     
-    @Published var apiKey: String = ""
-    @Published var transcriptionLanguage: String = "auto"
     @Published var isPhoneConnected = false
     
+    private let settingsManager: WatchSettingsManager
+    
     private override init() {
+        // Initialize settings manager first
+        self.settingsManager = WatchSettingsManager()
         super.init()
-        
-        // Load saved values
-        apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
-        transcriptionLanguage = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
         
         if WCSession.isSupported() {
             let session = WCSession.default
@@ -29,9 +27,68 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         }
     }
     
-    private func saveSettings() {
-        UserDefaults.standard.set(apiKey, forKey: "apiKey")
-        UserDefaults.standard.set(transcriptionLanguage, forKey: "transcriptionLanguage")
+    // Expose settings manager
+    var settings: WatchSettingsManager {
+        return settingsManager
+    }
+    
+    // Legacy properties for backward compatibility
+    var apiKey: String {
+        get { settingsManager.apiKey }
+        set { settingsManager.apiKey = newValue }
+    }
+    
+    var transcriptionLanguage: String {
+        get { settingsManager.transcriptionLanguage.rawValue }
+        set { 
+            if let lang = TranscriptionLanguage(rawValue: newValue) {
+                settingsManager.transcriptionLanguage = lang
+            }
+        }
+    }
+    
+    private func updateSettings(from context: [String: Any]) {
+        DispatchQueue.main.async {
+            // Update ephemeral keys first (priority)
+            if let keysDict = context["ephemeralKeys"] as? [String: Any],
+               let keysData = try? JSONSerialization.data(withJSONObject: keysDict),
+               let keys = try? JSONDecoder().decode(KeyResponse.Keys.self, from: keysData) {
+                self.settingsManager.ephemeralKeys = keys
+                // Set apiKey from ephemeral keys for backward compatibility
+                self.settingsManager.apiKey = keys.openai
+                print("✅ Watch: Updated ephemeral keys and apiKey")
+            } else if let apiKey = context["apiKey"] as? String, !apiKey.isEmpty {
+                // Fallback to apiKey if ephemeral keys not available
+                self.settingsManager.apiKey = apiKey
+                print("✅ Watch: Updated apiKey (fallback)")
+            }
+            
+            if let language = context["language"] as? String,
+               let lang = TranscriptionLanguage(rawValue: language) {
+                self.settingsManager.transcriptionLanguage = lang
+            }
+            if let configDict = context["laptopConfig"] as? [String: Any],
+               let configData = try? JSONSerialization.data(withJSONObject: configDict),
+               let config = try? JSONDecoder().decode(TunnelConfig.self, from: configData) {
+                self.settingsManager.laptopConfig = config
+            }
+            if let expiresAt = context["keyExpiresAt"] as? TimeInterval {
+                self.settingsManager.keyExpiresAt = Date(timeIntervalSince1970: expiresAt)
+            }
+            if let modeRaw = context["commandMode"] as? String,
+               let mode = CommandMode(rawValue: modeRaw) {
+                self.settingsManager.commandMode = mode
+            }
+            if let sessionId = context["selectedSessionId"] as? String {
+                self.settingsManager.selectedSessionId = sessionId
+            }
+            if let speed = context["ttsSpeed"] as? Double {
+                self.settingsManager.ttsSpeed = max(0.8, min(2.0, speed))
+            }
+            
+            // Notify that settings changed
+            NotificationCenter.default.post(name: NSNotification.Name("SettingsUpdated"), object: nil)
+        }
     }
 }
 
@@ -52,24 +109,14 @@ extension WatchConnectivityManager: WCSessionDelegate {
             // Check for existing context after activation
             let context = session.applicationContext
             if !context.isEmpty {
-                print("📥 Watch: Found existing context on activation: \(context)")
-                DispatchQueue.main.async {
-                    if let apiKey = context["apiKey"] as? String {
-                        self.apiKey = apiKey
-                        print("   ✅ Loaded API key: \(apiKey.count) chars")
-                    }
-                    if let language = context["language"] as? String {
-                        self.transcriptionLanguage = language
-                        print("   ✅ Loaded language: \(language)")
-                    }
-                    self.saveSettings()
-                }
+                print("📥 Watch: Found existing context on activation")
+                self.updateSettings(from: context)
+                print("   ✅ Loaded all settings from context")
             } else {
                 print("⚠️ Watch: Application context data is nil")
                 print("   Checking UserDefaults for cached settings...")
-                if !self.apiKey.isEmpty {
-                    print("   ✅ Found cached API key: \(self.apiKey.count) chars")
-                    print("   ✅ Found cached language: \(self.transcriptionLanguage)")
+                if !self.settingsManager.apiKey.isEmpty {
+                    print("   ✅ Found cached settings")
                 } else {
                     print("   ❌ No cached settings found")
                     print("   💡 Please open iPhone app to configure")
@@ -97,59 +144,23 @@ extension WatchConnectivityManager: WCSessionDelegate {
     }
     
     func session(_ session: WCSession, didReceiveMessage message: [String : Any]) {
-        print("📨 Watch: Received message from iPhone: \(message)")
-        DispatchQueue.main.async {
-            if let apiKey = message["apiKey"] as? String {
-                self.apiKey = apiKey
-                print("   ✅ Updated API key from message: \(apiKey.count) chars")
-            }
-            if let language = message["language"] as? String {
-                self.transcriptionLanguage = language
-                print("   ✅ Updated language from message: \(language)")
-            }
-            self.saveSettings()
-            // Notify that settings changed
-            NotificationCenter.default.post(name: NSNotification.Name("SettingsUpdated"), object: nil)
-            print("   💾 Settings saved and notification sent")
-        }
+        print("📨 Watch: Received message from iPhone")
+        updateSettings(from: message)
+        print("   💾 Settings updated and notification sent")
     }
     
     func session(_ session: WCSession, didReceiveMessage message: [String : Any], replyHandler: @escaping ([String : Any]) -> Void) {
         print("📨 Watch: Received message with reply handler from iPhone")
-        // Process the message
-        DispatchQueue.main.async {
-            if let apiKey = message["apiKey"] as? String {
-                self.apiKey = apiKey
-                print("   ✅ Updated API key from message: \(apiKey.count) chars")
-            }
-            if let language = message["language"] as? String {
-                self.transcriptionLanguage = language
-                print("   ✅ Updated language from message: \(language)")
-            }
-            self.saveSettings()
-            // Notify that settings changed
-            NotificationCenter.default.post(name: NSNotification.Name("SettingsUpdated"), object: nil)
-            print("   💾 Settings saved and notification sent")
-        }
+        updateSettings(from: message)
+        print("   💾 Settings updated and notification sent")
         // Send reply
         replyHandler(["status": "received"])
     }
     
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
-        print("Received context from iPhone: \(applicationContext)")
-        DispatchQueue.main.async {
-            if let apiKey = applicationContext["apiKey"] as? String {
-                self.apiKey = apiKey
-                print("Updated API key, length: \(apiKey.count)")
-            }
-            if let language = applicationContext["language"] as? String {
-                self.transcriptionLanguage = language
-                print("Updated language: \(language)")
-            }
-            self.saveSettings()
-            // Notify that settings changed
-            NotificationCenter.default.post(name: NSNotification.Name("SettingsUpdated"), object: nil)
-        }
+        print("📥 Watch: Received application context from iPhone")
+        updateSettings(from: applicationContext)
+        print("   💾 Settings updated from context")
     }
     
     // Send transcription statistics to iPhone

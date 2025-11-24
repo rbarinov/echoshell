@@ -1,6 +1,6 @@
 //
 //  AudioPlayer.swift
-//  EchoShell
+//  EchoShell Watch App
 //
 //  Created for Voice-Controlled Terminal Management System
 //  Handles audio playback for TTS responses
@@ -65,3 +65,4 @@ extension AudioPlayer: AVAudioPlayerDelegate {
         }
     }
 }
+

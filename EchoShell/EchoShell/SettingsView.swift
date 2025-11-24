@@ -116,6 +116,34 @@ struct SettingsView: View {
                     .pickerStyle(.inline)
                 }
                 
+            Section(header: Text("Text-to-Speech"),
+                       footer: Text("Adjust the playback speed for voice responses. Range: 0.8x to 2.0x")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Image(systemName: "speaker.wave.2.fill")
+                                .foregroundColor(.blue)
+                            Text("Playback Speed")
+                            Spacer()
+                            Text(String(format: "%.1fx", settingsManager.ttsSpeed))
+                                .foregroundColor(.secondary)
+                                .font(.body)
+                                .monospacedDigit()
+                        }
+                        
+                        Slider(value: $settingsManager.ttsSpeed, in: 0.8...2.0, step: 0.1) {
+                            Text("Speed")
+                        } minimumValueLabel: {
+                            Text("0.8x")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } maximumValueLabel: {
+                            Text("2.0x")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+                
                 Section(header: Text("Audio Quality")) {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {

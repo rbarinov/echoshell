@@ -13,8 +13,10 @@ interface Intent {
   type: 'terminal_command' | 'file_operation' | 'git_operation' | 'system_info' | 'complex_task' | 'terminal_management' | 'question';
   command?: string;
   details?: unknown;
-  action?: 'create' | 'delete' | 'list' | 'change_directory';
+  action?: 'create' | 'delete' | 'list' | 'change_directory' | 'create_cursor_agent_terminal' | 'rename_terminal' | 'manage_terminals';
   target?: string; // session ID or directory path
+  terminal_type?: 'regular' | 'cursor_agent';
+  name?: string; // for renaming
 }
 
 export class AIAgent {
@@ -70,8 +72,10 @@ export class AIAgent {
         type: z.enum(['terminal_command', 'file_operation', 'git_operation', 'system_info', 'complex_task', 'terminal_management', 'question']),
         command: z.string().optional(),
         details: z.any().optional(),
-        action: z.enum(['create', 'delete', 'list', 'change_directory']).optional(),
-        target: z.string().optional()
+        action: z.enum(['create', 'delete', 'list', 'change_directory', 'create_cursor_agent_terminal', 'rename_terminal', 'manage_terminals']).optional(),
+        target: z.string().optional(),
+        terminal_type: z.enum(['regular', 'cursor_agent']).optional(),
+        name: z.string().optional()
       })
     );
     
@@ -88,12 +92,17 @@ Classify this command into one of these categories:
 - question: General questions that need answers (not commands to execute)
 
 For terminal_management, also specify:
-- action: 'create' (create new terminal), 'delete' (delete terminal), 'list' (list terminals), 'change_directory' (change terminal working directory)
-- target: session ID (for delete) or directory path (for change_directory)
+- action: 'create' (create regular terminal), 'create_cursor_agent_terminal' (create Cursor Agent terminal), 'delete' (delete terminal), 'list' (list terminals), 'change_directory' (change terminal working directory), 'rename_terminal' (rename terminal), 'manage_terminals' (bulk operations)
+- target: session ID (for delete/rename) or directory path (for change_directory/create)
+- terminal_type: 'regular' or 'cursor_agent' (for create actions)
+- name: new name for terminal (for rename_terminal action)
 
 Examples:
-- "create a new terminal" -> type: terminal_management, action: create
+- "create a new terminal" -> type: terminal_management, action: create, terminal_type: regular
+- "create a Cursor Agent terminal" -> type: terminal_management, action: create_cursor_agent_terminal, terminal_type: cursor_agent
+- "create a Cursor Agent terminal in /Users/me/projects" -> type: terminal_management, action: create_cursor_agent_terminal, terminal_type: cursor_agent, target: /Users/me/projects
 - "delete terminal session-123" -> type: terminal_management, action: delete, target: session-123
+- "rename terminal session-123 to dev" -> type: terminal_management, action: rename_terminal, target: session-123, name: dev
 - "list all terminals" -> type: terminal_management, action: list
 - "go to /Users/me/projects" -> type: terminal_management, action: change_directory, target: /Users/me/projects
 - "what is the current directory?" -> type: question
@@ -211,8 +220,17 @@ Example:
       switch (action) {
         case 'create': {
           const workingDir = intent.target || process.env.HOME || os.homedir();
-          const newSession = await terminalManager.createSession(workingDir);
-          return `✅ Created new terminal session: ${newSession.sessionId}\nWorking directory: ${newSession.workingDir}`;
+          const terminalType = intent.terminal_type || 'regular';
+          const name = intent.name;
+          const newSession = await terminalManager.createSession(terminalType, workingDir, name);
+          return `✅ Created new ${terminalType} terminal session: ${newSession.sessionId}${newSession.name ? ` (${newSession.name})` : ''}\nWorking directory: ${newSession.workingDir}`;
+        }
+        
+        case 'create_cursor_agent_terminal': {
+          const workingDir = intent.target || process.env.HOME || os.homedir();
+          const name = intent.name;
+          const newSession = await terminalManager.createSession('cursor_agent', workingDir, name);
+          return `✅ Created new Cursor Agent terminal: ${newSession.sessionId}${newSession.name ? ` (${newSession.name})` : ''}\nWorking directory: ${newSession.workingDir}\nCursor Agent is starting automatically...`;
         }
         
         case 'delete': {
@@ -230,6 +248,27 @@ Example:
           return `✅ Deleted terminal session: ${targetSessionId}`;
         }
         
+        case 'rename_terminal': {
+          const targetSessionId = intent.target || currentSessionId;
+          const newName = intent.name;
+          
+          if (!targetSessionId) {
+            return '❌ Please specify which terminal session to rename';
+          }
+          
+          if (!newName) {
+            return '❌ Please specify the new name for the terminal';
+          }
+          
+          const sessions = terminalManager.listSessions();
+          if (!sessions.find(s => s.sessionId === targetSessionId)) {
+            return `❌ Terminal session ${targetSessionId} not found`;
+          }
+          
+          terminalManager.renameSession(targetSessionId, newName);
+          return `✅ Renamed terminal session ${targetSessionId} to: ${newName}`;
+        }
+        
         case 'list': {
           const sessions = terminalManager.listSessions();
           if (sessions.length === 0) {
@@ -239,8 +278,29 @@ Example:
           let result = `📂 Active terminal sessions (${sessions.length}):\n\n`;
           sessions.forEach((s, index) => {
             const isCurrent = s.sessionId === currentSessionId ? ' (current)' : '';
-            result += `${index + 1}. ${s.sessionId}${isCurrent}\n   Directory: ${s.workingDir}\n\n`;
+            const typeLabel = s.terminalType === 'cursor_agent' ? ' [Cursor Agent]' : ' [Regular]';
+            const nameLabel = s.name ? ` "${s.name}"` : '';
+            result += `${index + 1}. ${s.sessionId}${nameLabel}${typeLabel}${isCurrent}\n   Directory: ${s.workingDir}\n\n`;
           });
+          return result;
+        }
+        
+        case 'manage_terminals': {
+          // Bulk operations - parse command for multiple actions
+          const sessions = terminalManager.listSessions();
+          if (sessions.length === 0) {
+            return '📂 No active terminal sessions to manage';
+          }
+          
+          // For now, just return list with management options
+          let result = `📂 Terminal Management\n\nActive sessions (${sessions.length}):\n\n`;
+          sessions.forEach((s, index) => {
+            const isCurrent = s.sessionId === currentSessionId ? ' (current)' : '';
+            const typeLabel = s.terminalType === 'cursor_agent' ? ' [Cursor Agent]' : ' [Regular]';
+            const nameLabel = s.name ? ` "${s.name}"` : '';
+            result += `${index + 1}. ${s.sessionId}${nameLabel}${typeLabel}${isCurrent}\n`;
+          });
+          result += '\nYou can delete, rename, or create new terminals.';
           return result;
         }
         

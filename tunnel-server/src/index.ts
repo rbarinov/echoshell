@@ -45,6 +45,7 @@ interface TunnelConnection {
   name: string;
   ws: WebSocket;
   createdAt: number;
+  clientAuthKey?: string;
 }
 
 const tunnels = new Map<string, TunnelConnection>();
@@ -54,6 +55,8 @@ const pendingRequests = new Map<string, express.Response>();
 
 // Store terminal stream connections (iPhone -> tunnel server)
 const terminalStreams = new Map<string, Set<WebSocket>>();
+const recordingWsStreams = new Map<string, Set<WebSocket>>();
+const recordingSseStreams = new Map<string, Set<express.Response>>();
 
 interface WebSocketMessage {
   type: string;
@@ -178,6 +181,19 @@ wss.on('connection', (ws, req) => {
           }
         }
         
+        // Handle client auth key registration
+        if (message.type === 'client_auth_key') {
+          const key = (message as any).key;
+          if (typeof key === 'string' && key.length > 0) {
+            const tunnel = tunnels.get(tunnelId);
+            if (tunnel) {
+              tunnel.clientAuthKey = key;
+              console.log(`🔐 Received client auth key for tunnel ${tunnelId}`);
+            }
+          }
+          return;
+        }
+        
         // Handle terminal output streaming from laptop
         if (message.type === 'terminal_output') {
           const sessionId = (message as any).sessionId;
@@ -198,6 +214,38 @@ wss.on('connection', (ws, req) => {
               if (client.readyState === WebSocket.OPEN) {
                 client.send(formattedMessage);
               }
+            });
+          }
+        }
+
+        // Handle recording output streaming from laptop
+        if (message.type === 'recording_output') {
+          const sessionId = (message as any).sessionId;
+          const streamKey = `${tunnelId}:${sessionId}:recording`;
+          const wsClients = recordingWsStreams.get(streamKey);
+          const payload = {
+            type: 'recording_output',
+            session_id: sessionId,
+            text: (message as any).text,
+            delta: (message as any).delta,
+            raw: (message as any).raw,
+            timestamp: (message as any).timestamp ?? Date.now()
+          };
+          const payloadString = JSON.stringify(payload);
+
+          if (wsClients && wsClients.size > 0) {
+            wsClients.forEach(client => {
+              if (client.readyState === WebSocket.OPEN) {
+                client.send(payloadString);
+              }
+            });
+          }
+
+          const sseClients = recordingSseStreams.get(streamKey);
+          if (sseClients && sseClients.size > 0) {
+            sseClients.forEach((client) => {
+              client.write(`event: recording_output\n`);
+              client.write(`data: ${payloadString}\n\n`);
             });
           }
         }
@@ -261,9 +309,77 @@ wss.on('connection', (ws, req) => {
     
     return;
   }
+
+  // Handle recording stream connection: /api/:tunnelId/recording/:sessionId/stream
+  if (pathParts[1] === 'api' && pathParts[2] && pathParts[3] === 'recording' && pathParts[4] && pathParts[5] === 'stream') {
+    const tunnelId = pathParts[2];
+    const sessionId = pathParts[4];
+    const streamKey = `${tunnelId}:${sessionId}:recording`;
+
+    console.log(`🎙️ Recording stream connected: ${streamKey}`);
+
+    if (!recordingWsStreams.has(streamKey)) {
+      recordingWsStreams.set(streamKey, new Set());
+    }
+    recordingWsStreams.get(streamKey)!.add(ws);
+
+    ws.on('close', () => {
+      console.log(`🎙️ Recording stream disconnected: ${streamKey}`);
+      recordingWsStreams.get(streamKey)?.delete(ws);
+      if (recordingWsStreams.get(streamKey)?.size === 0) {
+        recordingWsStreams.delete(streamKey);
+      }
+    });
+
+    return;
+  }
   
   // Unknown WebSocket path
   ws.close(1008, 'Invalid WebSocket path');
+});
+
+// SSE endpoint for recording stream
+app.get('/api/:tunnelId/recording/:sessionId/events', (req, res) => {
+  const { tunnelId, sessionId } = req.params;
+  const tunnel = tunnels.get(tunnelId);
+
+  if (!tunnel) {
+    return res.status(404).json({ error: 'Tunnel not found or not connected' });
+  }
+
+  if (!tunnel.clientAuthKey) {
+    return res.status(503).json({ error: 'Tunnel auth key not registered yet' });
+  }
+
+  const providedKey = req.header('X-Laptop-Auth-Key');
+  if (!providedKey || providedKey !== tunnel.clientAuthKey) {
+    return res.status(401).json({ error: 'Unauthorized: Invalid or missing X-Laptop-Auth-Key header' });
+  }
+
+  const streamKey = `${tunnelId}:${sessionId}:recording`;
+  console.log(`🎙️ SSE recording stream connected: ${streamKey}`);
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  req.socket.setTimeout(0);
+  req.socket.setKeepAlive(true);
+  res.write('\n');
+
+  if (!recordingSseStreams.has(streamKey)) {
+    recordingSseStreams.set(streamKey, new Set());
+  }
+  recordingSseStreams.get(streamKey)!.add(res);
+
+  req.on('close', () => {
+    console.log(`🎙️ SSE recording stream disconnected: ${streamKey}`);
+    res.end();
+    recordingSseStreams.get(streamKey)?.delete(res);
+    if (recordingSseStreams.get(streamKey)?.size === 0) {
+      recordingSseStreams.delete(streamKey);
+    }
+  });
 });
 
 // Proxy HTTP requests to connected laptop

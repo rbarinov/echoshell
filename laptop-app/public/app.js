@@ -34,14 +34,19 @@ async function loadSessions() {
         const sessionsList = document.getElementById('sessionsList');
         
         if (data.sessions && data.sessions.length > 0) {
-            sessionsList.innerHTML = data.sessions.map(session => `
+            sessionsList.innerHTML = data.sessions.map(session => {
+                const typeLabel = session.terminal_type === 'cursor_agent' ? '🤖 Cursor Agent' : '💻 Regular';
+                const nameLabel = session.name ? escapeHtml(session.name) : session.session_id;
+                return `
                 <div class="session-card" onclick="openSession('${session.session_id}')">
-                    <h3>Session</h3>
+                    <h3>${nameLabel}</h3>
                     <div class="session-id">${session.session_id}</div>
+                    <div class="session-type">${typeLabel}</div>
                     <div class="session-dir">${escapeHtml(session.working_dir)}</div>
                     <div class="session-time">Created: ${new Date(session.created_at || Date.now()).toLocaleString()}</div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         } else {
             sessionsList.innerHTML = '<div class="loading">No active sessions. Create a new one!</div>';
         }
@@ -54,11 +59,20 @@ async function loadSessions() {
 
 async function createSession() {
     try {
+        const terminalType = confirm('Create Cursor Agent terminal?\n\nOK = Cursor Agent\nCancel = Regular Terminal') 
+            ? 'cursor_agent' 
+            : 'regular';
+        const name = prompt('Terminal name (optional):') || undefined;
         const workingDir = prompt('Working directory (leave empty for home):') || undefined;
+        
         const response = await fetch(`${API_BASE}/terminal/create`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ working_dir: workingDir })
+            body: JSON.stringify({ 
+                terminal_type: terminalType,
+                working_dir: workingDir,
+                name: name
+            })
         });
         
         const data = await response.json();
@@ -85,8 +99,12 @@ function openSession(sessionId) {
             .then(data => {
                 const session = data.sessions.find(s => s.session_id === sessionId);
                 if (session) {
-                    document.getElementById('sessionTitle').textContent = `Session: ${sessionId}`;
+                    const sessionTitle = session.name || sessionId;
+                    const typeLabel = session.terminal_type === 'cursor_agent' ? '🤖 Cursor Agent' : '💻 Regular';
+                    document.getElementById('sessionTitle').textContent = `Session: ${sessionTitle}`;
                     document.getElementById('sessionId').textContent = sessionId;
+                    document.getElementById('sessionName').textContent = session.name || '-';
+                    document.getElementById('terminalType').textContent = typeLabel;
                     document.getElementById('workingDir').textContent = session.working_dir;
                     document.getElementById('createdAt').textContent = new Date(session.created_at || Date.now()).toLocaleString();
                 }

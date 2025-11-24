@@ -90,6 +90,15 @@ class SettingsManager: ObservableObject {
         }
     }
     
+    // TTS playback speed (0.8 to 2.0, default 1.2)
+    @Published var ttsSpeed: Double {
+        didSet {
+            // Slider already constrains values to 0.8...2.0, so just save
+            UserDefaults.standard.set(ttsSpeed, forKey: "ttsSpeed")
+            print("📱 SettingsManager: TTS speed updated to: \(ttsSpeed)")
+        }
+    }
+    
     // Last terminal output for direct mode display
     @Published var lastTerminalOutput: String = ""
     
@@ -133,16 +142,26 @@ class SettingsManager: ObservableObject {
         // Load selected session
         self.selectedSessionId = UserDefaults.standard.string(forKey: "selectedSessionId")
         
+        // Load TTS speed (default 1.2)
+        if UserDefaults.standard.object(forKey: "ttsSpeed") != nil {
+            self.ttsSpeed = UserDefaults.standard.double(forKey: "ttsSpeed")
+            // Clamp to valid range
+            self.ttsSpeed = max(0.8, min(2.0, self.ttsSpeed))
+        } else {
+            self.ttsSpeed = 1.2 // Default speed
+        }
+        
         print("📱 SettingsManager: Initialized with API key length: \(self.apiKey.count)")
         print("📱 SettingsManager: Language: \(self.transcriptionLanguage.displayName)")
         print("📱 SettingsManager: Command mode: \(self.commandMode.displayName)")
+        print("📱 SettingsManager: TTS speed: \(self.ttsSpeed)")
         print("📱 SettingsManager: Operation mode: Laptop Mode (Terminal Control)")
     }
     
     private func syncToWatch() {
         // Only sync if Watch app is installed (silently skip if not)
         if WatchConnectivityManager.shared.isWatchAppInstalled {
-            WatchConnectivityManager.shared.updateContext(apiKey: apiKey, language: transcriptionLanguage.rawValue, laptopConfig: laptopConfig)
+            WatchConnectivityManager.shared.updateContext(apiKey: apiKey, language: transcriptionLanguage.rawValue, laptopConfig: laptopConfig, settingsManager: self)
         }
     }
 }

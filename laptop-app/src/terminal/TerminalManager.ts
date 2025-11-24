@@ -9,6 +9,9 @@ interface TerminalSession {
   workingDir: string;
   createdAt: number;
   outputBuffer: string[];
+  terminalType: 'regular' | 'cursor_agent';
+  name?: string;
+  cursorAgentWorkingDir?: string;
 }
 
 export class TerminalManager {
@@ -16,6 +19,9 @@ export class TerminalManager {
   private outputListeners = new Map<string, Set<(data: string) => void>>();
   private tunnelClient: TunnelClient | null = null;
   private stateManager: StateManager;
+  private globalOutputListeners = new Set<(session: TerminalSession, data: string) => void>();
+  private globalInputListeners = new Set<(session: TerminalSession, data: string) => void>();
+  private sessionDestroyedListeners = new Set<(sessionId: string) => void>();
   
   constructor(stateManager: StateManager) {
     this.stateManager = stateManager;
@@ -42,7 +48,10 @@ export class TerminalManager {
     const sessions: TerminalSessionState[] = Array.from(this.sessions.values()).map(s => ({
       sessionId: s.sessionId,
       workingDir: s.workingDir,
-      createdAt: s.createdAt
+      createdAt: s.createdAt,
+      terminalType: s.terminalType,
+      name: s.name,
+      cursorAgentWorkingDir: s.cursorAgentWorkingDir
     }));
     
     await this.stateManager.saveSessionsState(sessions);
@@ -96,6 +105,15 @@ export class TerminalManager {
       // Write to PTY - this is what actually sends data to the terminal
       // For cursor-agent, the command should be sent as-is with \r at the end
       session.pty.write(normalizedData);
+
+      // Notify global input listeners (recording stream manager, etc.)
+      this.globalInputListeners.forEach(listener => {
+        try {
+          listener(session, normalizedData);
+        } catch (error) {
+          console.error('❌ Global input listener error:', error);
+        }
+      });
       
       // Log what was actually written to PTY
       console.log(`📝 Written to PTY: ${normalizedData.length} bytes, ends with: ${normalizedData.slice(-5).split('').map(c => `'${c}'(${c.charCodeAt(0)})`).join(' ')}`);
@@ -123,7 +141,11 @@ export class TerminalManager {
     }
   }
   
-  async createSession(workingDir?: string): Promise<{ sessionId: string; workingDir: string }> {
+  async createSession(
+    terminalType: 'regular' | 'cursor_agent' = 'regular',
+    workingDir?: string,
+    name?: string
+  ): Promise<{ sessionId: string; workingDir: string; terminalType: 'regular' | 'cursor_agent'; name?: string }> {
     const sessionId = `session-${Date.now()}`;
     const cwd = workingDir || process.env.HOME || os.homedir();
     
@@ -170,7 +192,10 @@ export class TerminalManager {
       pty,
       workingDir: cwd,
       createdAt: Date.now(),
-      outputBuffer: []
+      outputBuffer: [],
+      terminalType,
+      name,
+      cursorAgentWorkingDir: terminalType === 'cursor_agent' ? cwd : undefined
     };
     
     // Capture output
@@ -192,6 +217,15 @@ export class TerminalManager {
       if (listeners) {
         listeners.forEach(listener => listener(data));
       }
+
+      // Notify global output listeners
+      this.globalOutputListeners.forEach(listener => {
+        try {
+          listener(session, data);
+        } catch (error) {
+          console.error('❌ Global output listener error:', error);
+        }
+      });
     });
     
     
@@ -200,9 +234,18 @@ export class TerminalManager {
     // Save sessions to state file
     await this.saveSessionsState();
     
-    console.log(`✅ Created terminal session: ${sessionId} in ${cwd}`);
+    console.log(`✅ Created terminal session: ${sessionId} (${terminalType}) in ${cwd}`);
     
-    return { sessionId, workingDir: cwd };
+    // If cursor_agent type, automatically start cursor-agent command
+    if (terminalType === 'cursor_agent') {
+      // Wait a bit for shell to initialize, then start cursor-agent
+      setTimeout(() => {
+        console.log(`🚀 Starting cursor-agent in session ${sessionId}...`);
+        this.writeInput(sessionId, 'cursor-agent\r', true);
+      }, 500);
+    }
+    
+    return { sessionId, workingDir: cwd, terminalType, name };
   }
   
   executeCommand(sessionId: string, command: string): Promise<string> {
@@ -233,12 +276,27 @@ export class TerminalManager {
     });
   }
   
-  listSessions(): Array<{ sessionId: string; workingDir: string; createdAt: number }> {
+  listSessions(): Array<{ sessionId: string; workingDir: string; createdAt: number; terminalType: 'regular' | 'cursor_agent'; name?: string }> {
     return Array.from(this.sessions.values()).map(s => ({
       sessionId: s.sessionId,
       workingDir: s.workingDir,
-      createdAt: s.createdAt
+      createdAt: s.createdAt,
+      terminalType: s.terminalType,
+      name: s.name
     }));
+  }
+  
+  renameSession(sessionId: string, name: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.name = name;
+      this.saveSessionsState().catch(err => {
+        console.error('Failed to save sessions state:', err);
+      });
+      console.log(`✏️  Renamed session ${sessionId} to: ${name}`);
+    } else {
+      throw new Error('Session not found');
+    }
   }
   
   getSession(sessionId: string): TerminalSession | undefined {
@@ -272,6 +330,14 @@ export class TerminalManager {
       session.pty.kill();
       this.sessions.delete(sessionId);
       this.outputListeners.delete(sessionId);
+
+       this.sessionDestroyedListeners.forEach(listener => {
+         try {
+           listener(sessionId);
+         } catch (error) {
+           console.error('❌ Session destroyed listener error:', error);
+         }
+       });
       
       // Update state file
       this.saveSessionsState().catch(err => {
@@ -288,5 +354,17 @@ export class TerminalManager {
     });
     this.sessions.clear();
     this.outputListeners.clear();
+  }
+
+  addGlobalOutputListener(listener: (session: TerminalSession, data: string) => void): void {
+    this.globalOutputListeners.add(listener);
+  }
+
+  addGlobalInputListener(listener: (session: TerminalSession, data: string) => void): void {
+    this.globalInputListeners.add(listener);
+  }
+
+  addSessionDestroyedListener(listener: (sessionId: string) => void): void {
+    this.sessionDestroyedListeners.add(listener);
   }
 }

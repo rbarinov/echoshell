@@ -1,6 +1,6 @@
 //
 //  TerminalViewModel.swift
-//  EchoShell
+//  EchoShell Watch App
 //
 //  Created for Voice-Controlled Terminal Management System
 //  ViewModel for managing terminal sessions
@@ -64,22 +64,6 @@ class TerminalViewModel: ObservableObject {
         }
     }
     
-    func renameSession(_ session: TerminalSession, name: String, config: TunnelConfig) async {
-        if apiClient == nil {
-            apiClient = APIClient(config: config)
-        }
-        
-        do {
-            try await apiClient!.renameSession(sessionId: session.id, name: name)
-            // Note: TerminalSession has immutable properties, so we need to refresh the list
-            await refreshSessions(config: config)
-            print("✅ Renamed session: \(session.id) to \(name)")
-        } catch {
-            self.error = error.localizedDescription
-            print("❌ Error renaming session: \(error)")
-        }
-    }
-    
     func deleteSession(_ session: TerminalSession, config: TunnelConfig) async {
         if apiClient == nil {
             apiClient = APIClient(config: config)
@@ -87,7 +71,6 @@ class TerminalViewModel: ObservableObject {
         
         do {
             try await apiClient!.deleteSession(sessionId: session.id)
-            // Remove from local list
             sessions.removeAll { $0.id == session.id }
             print("✅ Deleted session: \(session.id)")
         } catch {
@@ -96,3 +79,4 @@ class TerminalViewModel: ObservableObject {
         }
     }
 }
+

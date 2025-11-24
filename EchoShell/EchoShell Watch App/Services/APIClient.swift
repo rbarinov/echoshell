@@ -1,13 +1,12 @@
 //
 //  APIClient.swift
-//  EchoShell
+//  EchoShell Watch App
 //
 //  Created for Voice-Controlled Terminal Management System
 //  Handles HTTP communication with laptop app
 //
 
 import Foundation
-import UIKit
 
 class APIClient: ObservableObject {
     @Published var isConnected = false
@@ -18,7 +17,12 @@ class APIClient: ObservableObject {
     
     init(config: TunnelConfig) {
         self.config = config
-        self.deviceId = UIDevice.current.identifierForVendor?.uuidString ?? UUID().uuidString
+        // Use Watch-specific device identifier
+        self.deviceId = UserDefaults.standard.string(forKey: "watchDeviceId") ?? {
+            let id = UUID().uuidString
+            UserDefaults.standard.set(id, forKey: "watchDeviceId")
+            return id
+        }()
     }
     
     // Helper to add auth header to requests
@@ -33,7 +37,7 @@ class APIClient: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        addAuthHeader(to: &request)  // Add auth header for laptop authentication
+        addAuthHeader(to: &request)
         
         let body: [String: Any] = [
             "device_id": deviceId,
@@ -48,7 +52,6 @@ class APIClient: ObservableObject {
         do {
             (data, response) = try await URLSession.shared.data(for: request)
         } catch {
-            // Handle network errors
             if let urlError = error as? URLError {
                 print("❌ APIClient: Network error - \(urlError.localizedDescription)")
                 if urlError.code == .cannotConnectToHost || urlError.code == .networkConnectionLost {
@@ -119,7 +122,6 @@ class APIClient: ObservableObject {
             }
         }
         
-        // Handle empty or missing response gracefully
         guard let response = try? JSONDecoder().decode(SessionsResponse.self, from: data),
               let sessions = response.sessions else {
             print("ℹ️ No sessions found or invalid response, returning empty list")
@@ -188,28 +190,6 @@ class APIClient: ObservableObject {
             name: response.name,
             cursorAgentWorkingDir: responseTerminalType == .cursorAgent ? response.working_dir : nil
         )
-    }
-    
-    func renameSession(sessionId: String, name: String) async throws {
-        let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)/rename")!
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
-        addAuthHeader(to: &request)
-        
-        let body: [String: Any] = [
-            "name": name
-        ]
-        
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        
-        let (_, response) = try await URLSession.shared.data(for: request)
-        
-        guard let httpResponse = response as? HTTPURLResponse,
-              httpResponse.statusCode == 200 else {
-            throw APIError.requestFailed
-        }
     }
     
     func getHistory(sessionId: String) async throws -> String {
@@ -289,6 +269,27 @@ class APIClient: ObservableObject {
         }
     }
     
+    func renameSession(sessionId: String, name: String) async throws {
+        let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)/rename")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
+        
+        let body: [String: Any] = [
+            "name": name
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw APIError.requestFailed
+        }
+    }
+    
     func executeAgentCommand(sessionId: String, command: String) async throws -> String {
         let url = URL(string: "\(config.apiBaseUrl)/agent/execute")!
         var request = URLRequest(url: url)
@@ -350,3 +351,4 @@ enum APIError: Error, LocalizedError {
         }
     }
 }
+

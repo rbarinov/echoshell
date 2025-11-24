@@ -12,13 +12,13 @@ struct RecordingView: View {
     @StateObject private var audioRecorder = AudioRecorder()
     @StateObject private var terminalViewModel = TerminalViewModel()
     @StateObject private var wsClient = WebSocketClient()
+    @StateObject private var recordingStreamClient = RecordingStreamClient()
     @EnvironmentObject var settingsManager: SettingsManager
     @Environment(\.colorScheme) var colorScheme
     @State private var showSessionPicker = false
     @State private var showModeTooltip: CommandMode? = nil
-    @State private var lastTerminalOutput: String = "" // Accumulated output (not replaced, but appended)
+    // Use settingsManager.lastTerminalOutput instead of local state to persist across navigation
     @State private var accumulatedOutput: String = "" // Accumulate output chunks
-    @State private var terminalScreen: TerminalScreenEmulator? = nil // Terminal screen emulator
     @State private var lastSentCommand: String = "" // Track last sent command to filter it from output
     @State private var ttsTimer: Timer? = nil // Timer for auto TTS after 5 seconds of silence
     @State private var lastTTSOutput: String = "" // Track what was last spoken to avoid duplicates
@@ -26,6 +26,64 @@ struct RecordingView: View {
     @StateObject private var audioPlayer = AudioPlayer() // Audio player for TTS
     @State private var ttsQueue: [String] = [] // Queue for TTS messages
     @State private var lastOutputSnapshot: String = "" // Snapshot of output when timer started
+    @State private var recordingStreamSessionId: String?
+    
+    // Centralized state reset function
+    private func resetState() {
+        // Don't clear lastTerminalOutput - keep it for history
+        // settingsManager.lastTerminalOutput is preserved
+        accumulatedOutput = ""
+        lastSentCommand = ""
+        lastTTSOutput = ""
+        accumulatedForTTS = ""
+        lastOutputSnapshot = ""
+        ttsQueue = []
+        ttsTimer?.invalidate()
+        ttsTimer = nil
+    }
+    
+    // Stop all TTS tasks and clear output
+    private func stopAllTTSAndClearOutput() {
+        print("🛑 stopAllTTSAndClearOutput: Stopping all TTS tasks and clearing output")
+        
+        // Stop audio playback if playing
+        if audioPlayer.isPlaying {
+            print("🛑 Stopping audio playback")
+            audioPlayer.stop()
+        }
+        
+        // Cancel TTS timer
+        ttsTimer?.invalidate()
+        ttsTimer = nil
+        
+        // Clear all TTS state
+        ttsQueue = []
+        accumulatedForTTS = ""
+        lastTTSOutput = ""
+        lastOutputSnapshot = ""
+        
+        // Don't clear lastTerminalOutput - keep it for history
+        // settingsManager.lastTerminalOutput is preserved
+        accumulatedOutput = ""
+        
+        print("🛑 All TTS tasks stopped and output cleared")
+    }
+    
+    // Get selected session
+    private var selectedSession: TerminalSession? {
+        guard let sessionId = settingsManager.selectedSessionId else { return nil }
+        return terminalViewModel.sessions.first { $0.id == sessionId }
+    }
+    
+    // Check if selected session is Cursor Agent terminal
+    private var isCursorAgentTerminal: Bool {
+        return selectedSession?.terminalType == .cursorAgent
+    }
+    
+    // Filter sessions for direct mode (only cursor_agent terminals)
+    private var availableSessionsForDirectMode: [TerminalSession] {
+        return terminalViewModel.sessions.filter { $0.terminalType == .cursorAgent }
+    }
     
     private func toggleRecording() {
         if audioRecorder.isRecording {
@@ -33,16 +91,7 @@ struct RecordingView: View {
         } else {
             // Clear previous output when starting new recording
             Task { @MainActor in
-                self.lastTerminalOutput = ""
-                self.accumulatedOutput = ""
-                self.terminalScreen = nil
-                self.lastSentCommand = ""
-                self.lastTTSOutput = ""
-                self.accumulatedForTTS = ""
-                self.lastOutputSnapshot = ""
-                self.ttsQueue = []
-                self.ttsTimer?.invalidate()
-                self.ttsTimer = nil
+                self.resetState()
             }
             audioRecorder.startRecording()
         }
@@ -58,7 +107,18 @@ struct RecordingView: View {
                 topBarView
                 
                 if settingsManager.laptopConfig != nil {
+                    if settingsManager.commandMode == .direct {
+                        // In direct mode, only show cursor_agent terminals
+                        if !availableSessionsForDirectMode.isEmpty {
                     sessionSelectorView
+                        } else {
+                            // No cursor_agent terminals, show create button
+                            createCursorAgentTerminalView
+                        }
+                    } else {
+                        // In agent mode, show all terminals
+                        sessionSelectorView
+                    }
                 }
                 
                 Spacer()
@@ -186,14 +246,21 @@ struct RecordingView: View {
             if terminalViewModel.isLoading {
                 ProgressView()
                     .scaleEffect(0.8)
-            } else if terminalViewModel.sessions.isEmpty {
+            } else {
+                // Get sessions based on mode
+                let validSessions = settingsManager.commandMode == .direct 
+                    ? availableSessionsForDirectMode 
+                    : terminalViewModel.sessions
+                
+                if validSessions.isEmpty {
                 Button(action: {
                     Task {
                         if let config = settingsManager.laptopConfig {
                             if terminalViewModel.apiClient == nil {
                                 terminalViewModel.apiClient = APIClient(config: config)
                             }
-                            let _ = try? await terminalViewModel.apiClient?.createSession()
+                                let terminalType: TerminalType = settingsManager.commandMode == .direct ? .cursorAgent : .regular
+                                let _ = try? await terminalViewModel.apiClient?.createSession(terminalType: terminalType)
                             await terminalViewModel.refreshSessions(config: config)
                         }
                     }
@@ -207,8 +274,6 @@ struct RecordingView: View {
                     .foregroundColor(.blue)
                 }
             } else {
-                // Filter out invalid sessions and ensure selected session exists
-                let validSessions = terminalViewModel.sessions
                 let selectedId = settingsManager.selectedSessionId ?? validSessions.first?.id
                 let validSelectedId = validSessions.contains(where: { $0.id == selectedId }) ? selectedId : validSessions.first?.id
                 
@@ -226,8 +291,14 @@ struct RecordingView: View {
                         }
                     )) {
                         ForEach(validSessions) { session in
-                            Text(session.id)
+                                HStack {
+                                    if session.terminalType == .cursorAgent {
+                                        Image(systemName: "brain.head.profile")
+                                            .font(.system(size: 10))
+                                    }
+                                    Text(session.name ?? session.id)
                                 .tag(session.id)
+                                }
                         }
                     }
                     .pickerStyle(.menu)
@@ -252,16 +323,45 @@ struct RecordingView: View {
                 .frame(maxWidth: .infinity)
                 .onChange(of: terminalViewModel.sessions) { oldSessions, newSessions in
                     // Validate selected session when sessions list changes
+                        let validSessions = settingsManager.commandMode == .direct 
+                            ? newSessions.filter { $0.terminalType == .cursorAgent }
+                            : newSessions
+                        
                     if let currentSelected = settingsManager.selectedSessionId,
-                       !newSessions.contains(where: { $0.id == currentSelected }) {
-                        // Selected session no longer exists, select first available
-                        settingsManager.selectedSessionId = newSessions.first?.id
-                    } else if settingsManager.selectedSessionId == nil && !newSessions.isEmpty {
+                           !validSessions.contains(where: { $0.id == currentSelected }) {
+                            // Selected session no longer exists or is invalid for current mode, select first available
+                            settingsManager.selectedSessionId = validSessions.first?.id
+                        } else if settingsManager.selectedSessionId == nil && !validSessions.isEmpty {
                         // No session selected, select first available
-                        settingsManager.selectedSessionId = newSessions.first?.id
+                            settingsManager.selectedSessionId = validSessions.first?.id
+                        }
                     }
                 }
             }
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 4)
+    }
+    
+    private var createCursorAgentTerminalView: some View {
+        Button(action: {
+            Task {
+                if let config = settingsManager.laptopConfig {
+                    if terminalViewModel.apiClient == nil {
+                        terminalViewModel.apiClient = APIClient(config: config)
+                    }
+                    let _ = try? await terminalViewModel.apiClient?.createSession(terminalType: .cursorAgent)
+                    await terminalViewModel.refreshSessions(config: config)
+                }
+            }
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "plus.circle.fill")
+                    .font(.system(size: 14))
+                Text("Create Cursor Agent Terminal")
+                    .font(.subheadline)
+            }
+            .foregroundColor(.blue)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 4)
@@ -303,7 +403,8 @@ struct RecordingView: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(audioRecorder.isTranscribing || settingsManager.laptopConfig == nil)
+        .disabled(audioRecorder.isTranscribing || settingsManager.laptopConfig == nil || 
+                 (settingsManager.commandMode == .direct && !isCursorAgentTerminal))
         .scaleEffect(audioRecorder.isRecording ? 1.05 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: audioRecorder.isRecording)
         .padding(.horizontal, 30)
@@ -319,6 +420,12 @@ struct RecordingView: View {
                     .fontWeight(.semibold)
             } else if settingsManager.laptopConfig == nil {
                 Text("Please connect to laptop in Settings")
+                    .font(.subheadline)
+                    .foregroundColor(.orange)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            } else if settingsManager.commandMode == .direct && !isCursorAgentTerminal {
+                Text("Select a Cursor Agent terminal")
                     .font(.subheadline)
                     .foregroundColor(.orange)
                     .multilineTextAlignment(.center)
@@ -349,8 +456,14 @@ struct RecordingView: View {
     
     private var resultDisplayView: some View {
         // Display last transcription/terminal output and statistics
+        // In direct mode: show when cursor_agent terminal is selected
+        // In agent mode: show when there's recognized text
         Group {
-            if (!audioRecorder.recognizedText.isEmpty || !lastTerminalOutput.isEmpty) && !audioRecorder.isTranscribing {
+            let shouldShow = settingsManager.commandMode == .direct 
+                ? isCursorAgentTerminal
+                : !audioRecorder.recognizedText.isEmpty
+            
+            if shouldShow && !audioRecorder.isTranscribing {
                 VStack(alignment: .leading, spacing: 16) {
                     // Header
                     HStack {
@@ -365,9 +478,20 @@ struct RecordingView: View {
                     // Display text based on mode
                     // In direct mode, show terminal output (result), not the command
                     // In agent mode, show the result from audioRecorder
-                    Text(settingsManager.commandMode == .direct 
-                        ? (lastTerminalOutput.isEmpty ? "" : lastTerminalOutput)
-                        : audioRecorder.recognizedText)
+                    let displayText = settingsManager.commandMode == .direct 
+                        ? (settingsManager.lastTerminalOutput.isEmpty ? "Waiting for command output..." : settingsManager.lastTerminalOutput)
+                        : audioRecorder.recognizedText
+                    
+                    Text(displayText)
+                        .onAppear {
+                            print("📱 resultDisplayView: Displaying text (length: \(displayText.count), mode: \(settingsManager.commandMode))")
+                        }
+                        .onChange(of: settingsManager.lastTerminalOutput) { oldValue, newValue in
+                            print("📱 resultDisplayView: lastTerminalOutput changed (old: \(oldValue.count), new: \(newValue.count))")
+                        }
+                        .onChange(of: audioRecorder.recognizedText) { oldValue, newValue in
+                            print("📱 resultDisplayView: recognizedText changed (old: \(oldValue.count), new: \(newValue.count), mode: \(settingsManager.commandMode))")
+                        }
                         .font(.body)
                         .foregroundColor(.primary)
                         .lineLimit(nil)
@@ -515,6 +639,7 @@ struct RecordingView: View {
                     // Connect WebSocket for terminal output tracking in direct mode
                     if let sessionId = settingsManager.selectedSessionId {
                         connectToTerminalStream(config: config, sessionId: sessionId)
+                        connectToRecordingStream(config: config, sessionId: sessionId)
                     }
                 }
             }
@@ -526,24 +651,31 @@ struct RecordingView: View {
                     // Reconnect WebSocket if session selected
                     if let sessionId = settingsManager.selectedSessionId {
                         connectToTerminalStream(config: config, sessionId: sessionId)
+                        connectToRecordingStream(config: config, sessionId: sessionId)
                     }
                 }
             } else {
                 wsClient.disconnect()
-                terminalScreen = nil
+                recordingStreamClient.disconnect()
             }
         }
         .onChange(of: settingsManager.selectedSessionId) { oldValue, newValue in
             // Reconnect WebSocket when session changes
             if let config = settingsManager.laptopConfig, let sessionId = newValue {
                 connectToTerminalStream(config: config, sessionId: sessionId)
+                connectToRecordingStream(config: config, sessionId: sessionId)
             }
         }
         .onChange(of: settingsManager.commandMode) { oldValue, newValue in
             // Reconnect WebSocket when mode changes to track output in direct mode
             if newValue == .direct, let config = settingsManager.laptopConfig, let sessionId = settingsManager.selectedSessionId {
+                // Only connect if selected session is cursor_agent
+                if terminalViewModel.sessions.first(where: { $0.id == sessionId })?.terminalType == .cursorAgent {
                 connectToTerminalStream(config: config, sessionId: sessionId)
+                    connectToRecordingStream(config: config, sessionId: sessionId)
+                }
             } else if newValue == .agent {
+                recordingStreamClient.disconnect()
                 // Clear terminal output when switching to agent mode
                 // Ensure updates happen on main thread
                 Task { @MainActor in
@@ -554,31 +686,29 @@ struct RecordingView: View {
                     self.accumulatedForTTS = "" // Reset accumulated TTS text
                     self.lastOutputSnapshot = "" // Reset output snapshot
                     self.ttsQueue = [] // Clear TTS queue
-                    
-                    // Clear terminal output when switching to agent mode
-                    self.lastTerminalOutput = ""
+                        // Don't clear lastTerminalOutput when switching modes - keep history
+                        // settingsManager.lastTerminalOutput is preserved
                     self.accumulatedOutput = "" // Reset accumulated output
-                    self.terminalScreen = nil // Reset terminal screen emulator
                 }
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CommandSentToTerminal"))) { notification in
             // Clear previous output when new command is sent in direct mode
-            if settingsManager.commandMode == .direct {
+            if settingsManager.commandMode == .direct && isCursorAgentTerminal {
                 // Ensure updates happen on main thread
                 Task { @MainActor in
+                    print("📤 Command sent to cursor_agent terminal")
+                    
                     // Cancel any pending TTS
                     self.ttsTimer?.invalidate()
                     self.ttsTimer = nil
-                    self.lastTTSOutput = "" // Reset last spoken text
-                    self.accumulatedForTTS = "" // Reset accumulated TTS text
-                    self.lastOutputSnapshot = "" // Reset output snapshot
-                    self.ttsQueue = [] // Clear TTS queue
+                    self.lastTTSOutput = ""
+                    self.accumulatedForTTS = ""
+                    self.lastOutputSnapshot = ""
+                    self.ttsQueue = []
                     
                     // Don't clear lastTerminalOutput - keep accumulated output between commands
-                    // Only clear accumulated output and screen emulator
                     self.accumulatedOutput = "" // Reset accumulated output
-                    self.terminalScreen = nil // Reset terminal screen emulator (new command = new screen state)
                     self.lastSentCommand = notification.userInfo?["command"] as? String ?? "" // Store the command
                 }
                 
@@ -598,16 +728,30 @@ struct RecordingView: View {
                         // Reconnect if needed or if session changed
                         if !wsClient.isConnected || settingsManager.selectedSessionId != sessionId {
                             connectToTerminalStream(config: config, sessionId: sessionId)
-                            // Wait a bit for connection to establish
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            // Wait longer for connection to establish (increased from 0.2 to 0.5)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                // Retry up to 3 times if not connected
+                                var retryCount = 0
+                                let maxRetries = 3
+                                
+                                func trySend() {
                                 if self.wsClient.isConnected {
                                     // Send command as a single string with \r at the end
                                     // This matches what xterm.js sends when user presses Enter
                                     self.sendCommandToTerminal(command, to: self.wsClient)
                                     print("📤 Sent command via WebSocket input: \(command)")
+                                    } else if retryCount < maxRetries {
+                                        retryCount += 1
+                                        print("⚠️ WebSocket not connected, retrying (\(retryCount)/\(maxRetries))...")
+                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                            trySend()
+                                        }
                                 } else {
-                                    print("⚠️ WebSocket not connected, command not sent")
+                                        print("❌ WebSocket not connected after \(maxRetries) retries, command not sent")
                                 }
+                                }
+                                
+                                trySend()
                             }
                         } else {
                             // WebSocket is connected, send command immediately
@@ -623,9 +767,11 @@ struct RecordingView: View {
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TranscriptionStarted"))) { _ in
             // Clear all terminal output when transcription starts
             Task { @MainActor in
-                self.lastTerminalOutput = ""
+                print("🎤 Transcription started")
+                
+                // Don't clear lastTerminalOutput - keep it for history
+                // settingsManager.lastTerminalOutput is preserved
                 self.accumulatedOutput = ""
-                self.terminalScreen = nil
                 self.lastSentCommand = ""
                 self.lastTTSOutput = ""
                 self.accumulatedForTTS = ""
@@ -656,6 +802,39 @@ struct RecordingView: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TTSPlaybackFinished"))) { _ in
+            // When TTS playback finishes, process queue if there are items
+            print("🔊 TTS playback finished, checking queue...")
+            Task { @MainActor in
+                await self.processQueueAfterPlayback()
+            }
+        }
+        .onDisappear {
+            // Stop all TTS and audio playback when leaving the page
+            print("📱 RecordingView: onDisappear - stopping TTS and audio")
+            recordingStreamClient.disconnect()
+            recordingStreamSessionId = nil
+            Task { @MainActor in
+                // Stop audio playback if playing
+                if self.audioPlayer.isPlaying {
+                    print("🛑 Stopping audio playback on disappear")
+                    self.audioPlayer.stop()
+                }
+                
+                // Cancel TTS timer
+                self.ttsTimer?.invalidate()
+                self.ttsTimer = nil
+                
+                // Clear TTS queue
+                self.ttsQueue = []
+                self.accumulatedForTTS = ""
+                self.lastTTSOutput = ""
+                self.lastOutputSnapshot = ""
+                
+                // Don't clear lastTerminalOutput - keep it for history
+                // settingsManager.lastTerminalOutput is preserved
+            }
+        }
     }
     
     // Format bytes to readable format
@@ -671,133 +850,41 @@ struct RecordingView: View {
         }
     }
     
-    // Connect to terminal WebSocket stream for output tracking
+    // Maintain terminal connection for sending commands, but ignore raw output (clean output comes from backend)
     private func connectToTerminalStream(config: TunnelConfig, sessionId: String) {
-        wsClient.disconnect() // Disconnect previous connection
-        terminalScreen = nil // Reset terminal screen emulator
-        
-        // Only connect if in direct mode
-        guard settingsManager.commandMode == .direct else {
-            return
+        wsClient.disconnect()
+        guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }) else { return }
+        guard session.terminalType == .cursorAgent else { return }
+
+        wsClient.connect(config: config, sessionId: sessionId) { _ in
+            // Intentionally ignore raw output for recording view - clean output is streamed separately
         }
+    }
+    
+    // Connect to the backend-provided recording stream that already contains cleaned output
+    private func connectToRecordingStream(config: TunnelConfig, sessionId: String) {
+        guard settingsManager.commandMode == .direct else {
+            recordingStreamClient.disconnect()
+            recordingStreamSessionId = nil
+                                return
+                            }
         
-        wsClient.connect(config: config, sessionId: sessionId) { text in
-            // Process output through terminal screen emulator
-            // This properly handles ANSI escape sequences that delete/overwrite text
-            // Ensure all @State updates happen on main thread
+        guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }),
+              session.terminalType == .cursorAgent else {
+            recordingStreamClient.disconnect()
+            recordingStreamSessionId = nil
+                        return
+                    }
+                    
+        if recordingStreamSessionId == sessionId && recordingStreamClient.isConnected {
+                        return
+                    }
+        recordingStreamSessionId = sessionId
+        
+        recordingStreamClient.connect(config: config, sessionId: sessionId) { message in
             Task { @MainActor in
-                // Initialize terminal screen emulator if needed
-                if self.terminalScreen == nil {
-                    self.terminalScreen = TerminalScreenEmulator()
-                }
-                
-                // Process the text through terminal emulator
-                // This handles ANSI sequences like [2K (clear line), [1A (move up), [G (move to start)
-                self.terminalScreen?.processOutput(text)
-                
-                // Get current screen state (final rendered output)
-                if let screenOutput = self.terminalScreen?.getScreenContent() {
-                    // Debug: log raw screen output
-                    if !screenOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        print("📺 Raw screen output (\(screenOutput.count) chars): \(screenOutput.prefix(300))")
-                    }
-                    
-                    // Filter out only specific UI elements:
-                    // 1. Lines starting with vertical pipe (│) - box borders
-                    // 2. Lines with ANSI dim codes (semi-transparent UI text)
-                    // 3. Lines starting with hexagon symbols (⬢, ⬡) - status indicators
-                    // All other lines should be kept and appended
-                    var filteredOutput = self.filterIntermediateMessages(screenOutput)
-                    
-                    // Debug: log filtered output
-                    if !filteredOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        print("🔍 Filtered output (\(filteredOutput.count) chars): \(filteredOutput.prefix(300))")
-                    }
-                    
-                    // Filter out user's command if it appears in output
-                    // But be careful - only remove exact matches or very short lines that are just the command
-                    if !self.lastSentCommand.isEmpty {
-                        // Remove command text from output (it might appear as echo)
-                        let commandLines = self.lastSentCommand.components(separatedBy: .newlines)
-                        for commandLine in commandLines {
-                            let trimmedCommand = commandLine.trimmingCharacters(in: .whitespaces)
-                            if !trimmedCommand.isEmpty && trimmedCommand.count > 3 {
-                                // Only remove lines that are exactly the command or very similar
-                                // Don't remove lines that contain the command as part of a larger result
-                                let lines = filteredOutput.components(separatedBy: .newlines)
-                                filteredOutput = lines.filter { line in
-                                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                                    // Only skip if line is exactly the command or very close to it
-                                    // Keep lines that are significantly longer (likely results)
-                                    let normalizedLine = trimmed.lowercased()
-                                    let normalizedCommand = trimmedCommand.lowercased()
-                                    
-                                    // Skip only if:
-                                    // 1. Line exactly matches command (ignoring case)
-                                    // 2. Line is very short and contains command (likely just echo)
-                                    // 3. Line is command with just a few extra characters (like prompt)
-                                    if normalizedLine == normalizedCommand {
-                                        return false // Exact match - skip
-                                    }
-                                    if trimmed.count <= trimmedCommand.count + 5 && normalizedLine.contains(normalizedCommand) {
-                                        return false // Very short line containing command - likely echo
-                                    }
-                                    // Keep everything else - it's likely a result
-                                    return true
-                                }.joined(separator: "\n")
-                            }
-                        }
-                    }
-                    
-                    // Extract result from filtered output
-                    let result = self.extractCommandResult(from: filteredOutput)
-                    
-                    // Debug logging
-                    if !result.isEmpty {
-                        print("✅ RecordingView: Extracted result (\(result.count) chars): \(result.prefix(200))")
-                    } else if !filteredOutput.isEmpty {
-                        print("⚠️ RecordingView: extractCommandResult returned empty, filteredOutput (\(filteredOutput.count) chars): \(filteredOutput.prefix(200))")
-                    }
-                    
-                    // Always try to update output, even if extraction returns empty
-                    var textToAppend: String = ""
-                    
-                    if !result.isEmpty {
-                        // Use extracted result
-                        textToAppend = result
-                    } else if !filteredOutput.isEmpty {
-                        // If extraction returned empty, use filtered text directly
-                        let lines = filteredOutput.components(separatedBy: .newlines)
-                        let meaningfulLines = lines.filter { line in
-                            let trimmed = line.trimmingCharacters(in: .whitespaces)
-                            return trimmed.count > 3 // At least 3 characters
-                        }
-                        
-                        if !meaningfulLines.isEmpty {
-                            let meaningfulText = meaningfulLines.joined(separator: "\n")
-                            // Take last 1000 characters to avoid memory issues
-                            textToAppend = meaningfulText.count > 1000 
-                                ? String(meaningfulText.suffix(1000))
-                                : meaningfulText
-                        }
-                    }
-                    
-                    // Update output if we have text
-                    if !textToAppend.isEmpty {
-                        let newText = self.appendToTerminalOutput(textToAppend)
-                        if !newText.isEmpty {
-                            print("✅ RecordingView: Appended to terminal output: \(newText.prefix(200))")
-                            // Schedule auto TTS for new additions only
-                            self.scheduleAutoTTS(for: newText)
-                        } else {
-                            // Even if newText is empty (duplicate), ensure lastTerminalOutput is set
-                            // This ensures UI updates even for duplicate content
-                            if self.lastTerminalOutput.isEmpty {
-                                self.lastTerminalOutput = textToAppend
-                            }
-                        }
-                    }
-                }
+                self.settingsManager.lastTerminalOutput = message.text
+                self.scheduleAutoTTS(for: message.text)
             }
         }
     }
@@ -932,36 +1019,50 @@ struct RecordingView: View {
                 }
                 
                 // Skip lines with box characters (they're part of boxes we already processed)
-                if boxChars.contains(where: { trimmed.contains($0) }) {
+                // BUT: if line contains text AFTER box characters, it might be a result
+                let hasBoxChars = boxChars.contains(where: { trimmed.contains($0) })
+                if hasBoxChars {
+                    // Check if there's meaningful text after box characters
+                    var textAfterBox = trimmed
+                    for boxChar in boxChars {
+                        textAfterBox = textAfterBox.replacingOccurrences(of: boxChar, with: "")
+                    }
+                    textAfterBox = textAfterBox.trimmingCharacters(in: .whitespaces)
+                    if textAfterBox.count < 3 {
+                        continue // Only box characters, skip
+                    }
+                    // Has text after box chars, might be a result - continue processing
+                }
+                
+                // Remove dim text segments first (semi-transparent UI text)
+                // This removes ALL dim text content, regardless of position or model name
+                let withoutDim = removeDimText(from: line)
+                
+                // Check if line had dim text - if it did and after removal it's empty or very short, skip it
+                if line.contains("\u{001B}[2") || line.contains("\u{001B}[2m") {
+                    let textWithoutAnsi = removeAnsiCodes(from: withoutDim)
+                    let trimmedNoAnsi = textWithoutAnsi.trimmingCharacters(in: .whitespaces)
+                    
+                    // If after removing dim text the line is empty or very short, it was mostly dim text - skip it
+                    if trimmedNoAnsi.isEmpty || trimmedNoAnsi.count < 3 {
+                                continue
+                            }
+                        }
+                
+                // Skip UI status lines with model name and percentage (after removing dim text)
+                // Universal check for pattern "· X%" (works for Auto, Composer 1, Composer 2, etc.)
+                let uiStatusPattern = #"·\s*\d+\.?\d*%"#
+                if trimmed.range(of: uiStatusPattern, options: .regularExpression) != nil {
+                    // This is a UI status line with model name and percentage - skip it
                     continue
                 }
                 
-                // Skip status lines
-                if trimmed.contains("Auto") && trimmed.contains("·") {
-                    continue
-                }
+                // Skip other UI status lines
                 if trimmed.contains("/ commands") || trimmed.contains("@ files") {
                     continue
                 }
                 if trimmed.contains("review edits") {
                     continue
-                }
-                
-                // Skip lines with ANSI dim codes (semi-transparent UI text)
-                if line.contains("\u{001B}[2") || line.contains("\u{001B}[2m") {
-                    let textWithoutAnsi = removeAnsiCodes(from: line)
-                    let trimmedNoAnsi = textWithoutAnsi.trimmingCharacters(in: .whitespaces)
-                    
-                    // Skip dim text that looks like UI hints
-                    if trimmedNoAnsi.count < 50 {
-                        let uiPhrases = ["review edits", "add a follow-up", "follow-up", 
-                                        "ctrl+r", "commands", "@ files", "! shell"]
-                        for phrase in uiPhrases {
-                            if trimmedNoAnsi.lowercased().contains(phrase.lowercased()) {
-                                continue
-                            }
-                        }
-                    }
                 }
                 
                 // Skip lines starting with progress symbols (⬢, ⬡)
@@ -1002,22 +1103,52 @@ struct RecordingView: View {
                 }
                 
                 // This looks like a result line (not in a box, not a status, not a command)
-                // Examples: "3 + 3 = 6", function definitions, etc.
-                resultLines.append(trimmed)
+                // Examples: "3 + 3 = 6", "Один плюс один равно два (1 + 1 = 2).", etc.
+                // Use cleaned version (without dim text and ANSI codes) - we want ONLY normal text
+                let textWithoutAnsi = removeAnsiCodes(from: withoutDim)
+                let cleanedLine = textWithoutAnsi.trimmingCharacters(in: .whitespaces)
+                if !cleanedLine.isEmpty && cleanedLine.count >= 3 {
+                    resultLines.append(cleanedLine)
+                }
             }
         }
         
         // Priority: code boxes first, then result lines
-        if !codeBoxes.isEmpty {
-            // Return the last (most recent) code box
-            return codeBoxes.last!
-        } else if !resultLines.isEmpty {
-            // Return result lines (like "3 + 3 = 6")
-            return resultLines.joined(separator: "\n")
+        // But also include result lines that appear after boxes (like Cursor Agent responses)
+        var allResults: [String] = []
+        
+        // Add code boxes
+        allResults.append(contentsOf: codeBoxes)
+        
+        // Add result lines (these often appear after boxes in Cursor Agent)
+        // Filter out duplicates, very short lines, and UI status lines
+        let meaningfulResultLines = resultLines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            // Skip very short lines
+            if trimmed.count < 5 || trimmed.isEmpty {
+                return false
+            }
+            
+            // Skip UI status lines with model name and percentage
+            let uiStatusPattern = #"·\s*\d+\.?\d*%"#
+            if trimmed.range(of: uiStatusPattern, options: .regularExpression) != nil {
+                return false
+            }
+            
+            return true
+        }
+        allResults.append(contentsOf: meaningfulResultLines)
+        
+        if !allResults.isEmpty {
+            // Return all results joined, prioritizing the most recent
+            // For Cursor Agent, the result is usually the last meaningful line
+            return allResults.joined(separator: "\n\n")
         }
         
         return ""
     }
+    
     
     // Filter out only specific UI elements:
     // 1. Lines with box drawing characters (┌, ┐, └, ┘, │, ─) - all box content
@@ -1035,11 +1166,16 @@ struct RecordingView: View {
         
         // Filter out only the specific cases
         for line in lines {
-            // First, remove ANSI codes to check the actual visible content
-            let cleanedLine = removeAnsiCodes(from: line)
+            // First, remove dim text segments (semi-transparent UI text)
+            // This removes ALL dim text content, regardless of position or model name
+            // Dim text is semi-transparent UI text - we want to show ONLY normal text
+            let withoutDim = removeDimText(from: line)
+            
+            // Then remove remaining ANSI codes to check the actual visible content
+            let cleanedLine = removeAnsiCodes(from: withoutDim)
             let trimmed = cleanedLine.trimmingCharacters(in: .whitespaces)
             
-            // Skip empty lines
+            // Skip empty lines (after removing dim text and ANSI codes)
             if trimmed.isEmpty {
                 continue
             }
@@ -1050,25 +1186,23 @@ struct RecordingView: View {
                 continue
             }
             
-            // 2. Skip lines with ANSI dim codes (semi-transparent UI text)
-            // ANSI dim codes: ESC[2m or ESC[2 followed by other codes
-            // Also check for dim codes in various formats: [2m, [2;...m, etc.
-            if line.contains("\u{001B}[2") || 
-               line.range(of: #"\x1b\[2[0-9;]*m"#, options: .regularExpression) != nil {
+            // 3. Skip UI status lines with model name and percentage (after removing dim text)
+            // Universal check for pattern "· X%" (works for Auto, Composer 1, Composer 2, etc.)
+            let uiStatusPattern = #"·\s*\d+\.?\d*%"#
+            if trimmed.range(of: uiStatusPattern, options: .regularExpression) != nil {
+                // This is a UI status line with model name and percentage - skip it
                 continue
             }
             
-            // 3. Skip lines starting with hexagon symbols (⬢, ⬡) - status indicators
+            // 4. Skip lines starting with hexagon symbols (⬢, ⬡) - status indicators
             // Check the cleaned line (after removing ANSI codes) to see if it starts with ⬢ or ⬡
             if trimmed.hasPrefix("⬢") || trimmed.hasPrefix("⬡") {
                 continue
             }
             
-            // 4. Skip UI status lines (check cleaned text after removing ANSI codes)
+            // 5. Skip other UI status lines (check cleaned text after removing ANSI codes)
             // These are semi-transparent UI elements that should be filtered
-            // Check for partial matches to catch variations like "Auto · 3.7%"
             let uiPhrases = [
-                "Auto",
                 "/ commands",
                 "@ files",
                 "! shell",
@@ -1107,7 +1241,8 @@ struct RecordingView: View {
             }
             
             // Keep all other lines - they are normal content that should be displayed
-            meaningfulLines.append(line)
+            // Use cleanedLine (without dim text and ANSI codes) instead of original line
+            meaningfulLines.append(cleanedLine)
         }
         
         let result = meaningfulLines.joined(separator: "\n")
@@ -1131,6 +1266,48 @@ struct RecordingView: View {
         return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: "")
     }
     
+    // Helper function to remove all dim text segments (semi-transparent UI text)
+    // Dim text starts with ESC[2m (or ESC[2;...m) and ends with ESC[0m (or other reset codes)
+    // This removes ALL dim text content, not just specific patterns
+    private func removeDimText(from text: String) -> String {
+        var result = text
+        
+        // Pattern: Remove dim text segments: ESC[2m ... ESC[0m (or ESC[22m, ESC[27m, ESC[m, etc.)
+        // This matches: ESC[2m or ESC[2;...m followed by any content until reset code
+        // Reset codes: ESC[0m, ESC[22m (normal intensity), ESC[27m (not inverse), ESC[m (default)
+        // The pattern uses non-greedy matching to find the first reset code after dim start
+        let dimPattern = #"\x1b\[2[0-9;]*m.*?\x1b\[([0-9;]*m|m)"#
+        
+        // Use while loop to remove all dim segments (they can be multiple)
+        var previousLength = result.count
+        var iterations = 0
+        repeat {
+            previousLength = result.count
+            if let regex = try? NSRegularExpression(pattern: dimPattern, options: [.dotMatchesLineSeparators]) {
+                let range = NSRange(result.startIndex..., in: result)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+            }
+            iterations += 1
+        } while result.count < previousLength && iterations < 100 // Safety limit
+        
+        // Also handle cases where dim text doesn't have explicit reset (continues to end of line/string)
+        // Pattern: ESC[2m followed by everything until end of string or newline
+        let dimToEndPattern = #"\x1b\[2[0-9;]*m[^\n]*"#
+        if let endRegex = try? NSRegularExpression(pattern: dimToEndPattern, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = endRegex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+        }
+        
+        // Also remove standalone dim codes (ESC[2m without matching reset) - these might be at end of line
+        let standaloneDimPattern = #"\x1b\[2[0-9;]*m"#
+        if let dimRegex = try? NSRegularExpression(pattern: standaloneDimPattern, options: []) {
+            let range = NSRange(result.startIndex..., in: result)
+            result = dimRegex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: "")
+        }
+        
+        return result
+    }
+    
     // Append new text to terminal output (accumulate between voice inputs)
     private func appendToTerminalOutput(_ newText: String) -> String {
         let trimmedNew = newText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1140,18 +1317,47 @@ struct RecordingView: View {
         
         // Since we're already in Task { @MainActor in }, we can update directly
         // If lastTerminalOutput is empty, just set it
-        if self.lastTerminalOutput.isEmpty {
-            self.lastTerminalOutput = trimmedNew
+        if self.settingsManager.lastTerminalOutput.isEmpty {
+            self.settingsManager.lastTerminalOutput = trimmedNew
+            print("📝 appendToTerminalOutput: Set initial output (\(trimmedNew.count) chars)")
             return trimmedNew
         }
         
         // Check if this is new text (not already in output)
-        let currentOutput = self.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let currentOutput = self.settingsManager.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
         
-        // More lenient check - only skip if the exact same text is at the end
-        if currentOutput.hasSuffix(trimmedNew) && currentOutput.count == trimmedNew.count {
-            // Exact duplicate, skip
+        // Only skip if the entire current output is exactly equal to new text (complete duplicate)
+        if currentOutput == trimmedNew {
+            print("📝 appendToTerminalOutput: Skipping exact duplicate")
             return ""
+        }
+        
+        // Check if new text is already at the end of current output
+        // Only skip if it's a very large portion (more than 90% of current output)
+        // This is more conservative to avoid filtering legitimate updates
+        if currentOutput.hasSuffix(trimmedNew) {
+            let suffixLength = trimmedNew.count
+            let currentLength = currentOutput.count
+            
+            // Only skip if new text is more than 90% of current output (very likely a duplicate)
+            if currentLength > 0 && suffixLength > Int(Double(currentLength) * 0.9) {
+                print("📝 appendToTerminalOutput: Skipping very large duplicate suffix (\(suffixLength)/\(currentLength) chars)")
+                return ""
+            }
+        }
+        
+        // Check if new text is already contained in current output (not just at the end)
+        // Only skip if it's an extremely large portion (more than 95% of current output)
+        // This is very conservative to avoid false positives
+        if currentOutput.contains(trimmedNew) {
+            let newLength = trimmedNew.count
+            let currentLength = currentOutput.count
+            
+            // Only skip if new text is more than 95% of current output (almost certainly a duplicate)
+            if currentLength > 0 && newLength > Int(Double(currentLength) * 0.95) {
+                print("📝 appendToTerminalOutput: Skipping extremely large duplicate (\(newLength)/\(currentLength) chars)")
+                return ""
+            }
         }
         
         // Append new text with separator
@@ -1160,73 +1366,92 @@ struct RecordingView: View {
             : "\n\n"
         let appended = currentOutput + separator + trimmedNew
         
-        // Limit total output to prevent memory issues (keep last 5000 characters)
-        let finalOutput = appended.count > 5000 
-            ? String(appended.suffix(5000))
+        // Limit total output to prevent memory issues (keep last 10000 characters)
+        let finalOutput = appended.count > 10000 
+            ? String(appended.suffix(10000))
             : appended
         
-        self.lastTerminalOutput = finalOutput
+        self.settingsManager.lastTerminalOutput = finalOutput
+        print("📝 appendToTerminalOutput: Appended new text (\(trimmedNew.count) chars), total now: \(finalOutput.count) chars")
         
         // Return only the new part for TTS
         return trimmedNew
     }
     
-    // Schedule auto TTS with new logic:
-    // 1. Accumulate all messages
+    // Schedule auto TTS with reactive logic:
+    // 1. Always update accumulated text and set timer (even if playing)
     // 2. Wait 5 seconds without new messages (command completion)
-    // 3. Play all accumulated messages at 1.5x speed
-    // 4. If new message arrives during playback, add it to queue
+    // 3. If playing: add new content to queue after threshold
+    // 4. If not playing: start playback after threshold
+    // 5. After playback finishes, process queue and check for more new content
     private func scheduleAutoTTS(for text: String) {
+        // Use full accumulated output (not just the passed text)
+        let fullOutput = settingsManager.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if fullOutput.isEmpty {
+            print("🔇 scheduleAutoTTS: Skipped - no output to speak")
+            return
+        }
+        
+        // Check if we're in a cursor_agent terminal
+        guard isCursorAgentTerminal else {
+            print("⚠️ scheduleAutoTTS: Not in cursor_agent terminal, skipping TTS")
+            return
+        }
+        
+            print("🔊 scheduleAutoTTS: Scheduling TTS for output (\(fullOutput.count) chars)")
+        
         // Cancel previous timer
         ttsTimer?.invalidate()
         ttsTimer = nil
         
-        // Skip if text is empty or too short
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || trimmed.count < 3 {
-            return
-        }
-        
-        // Use full accumulated output
-        let fullOutput = lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-        if fullOutput.isEmpty {
-            return
-        }
-        
-        // Update accumulated TTS text with full output
+        // Always update accumulated TTS text with full output
         accumulatedForTTS = fullOutput
         
-        // If already playing, add new content to queue for later
-        if audioPlayer.isPlaying {
-            // Find new content that hasn't been spoken yet
-            let newContent = extractNewContent(from: fullOutput, after: lastTTSOutput)
-            if !newContent.isEmpty {
-                let cleaned = cleanTerminalOutputForTTS(newContent)
-                if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    // Add to queue if not already there
-                    if !ttsQueue.contains(cleaned) {
-                        ttsQueue.append(cleaned)
-                    }
-                }
-            }
-            return
-        }
-        
-        // Not playing - wait 5 seconds for command completion
+        // Always set timer, regardless of playback state
         lastOutputSnapshot = fullOutput
         let threshold: TimeInterval = 5.0 // 5 seconds
         
+        print("🔊 scheduleAutoTTS: Timer set for \(threshold) seconds")
+        
         ttsTimer = Timer.scheduledTimer(withTimeInterval: threshold, repeats: false) { [self] _ in
             // Check if output hasn't changed (command completed)
-            let currentOutput = self.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            let currentOutput = self.settingsManager.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("🔊 scheduleAutoTTS: Timer fired, checking output (current: \(currentOutput.count), snapshot: \(self.lastOutputSnapshot.count))")
+            
             if currentOutput == self.lastOutputSnapshot && !currentOutput.isEmpty {
-                // Command completed - play all accumulated messages
-                Task { @MainActor in
-                    await self.playAccumulatedTTS()
+                print("🔊 scheduleAutoTTS: Output stable, starting TTS")
+                // Command completed - check if we're playing
+                if self.audioPlayer.isPlaying {
+                    // Playing - extract new content and add to queue
+                    let newContent = self.extractNewContent(from: currentOutput, after: self.lastTTSOutput)
+                    if !newContent.isEmpty {
+                        let cleaned = self.cleanTerminalOutputForTTS(newContent)
+                        if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            // Add to queue if not already there
+                            if !self.ttsQueue.contains(cleaned) {
+                                self.ttsQueue.append(cleaned)
+                                print("🔊 Added new content to TTS queue (length: \(cleaned.count))")
+                            }
+                        }
+                    }
+                } else {
+                    // Not playing - start playback
+                    // Check if we're still in cursor_agent terminal
+                    guard self.isCursorAgentTerminal else {
+                        print("⚠️ scheduleAutoTTS: No longer in cursor_agent terminal, skipping playback")
+                        return
+                    }
+                    print("🔊 scheduleAutoTTS: Starting playback")
+                    Task { @MainActor in
+                        await self.playAccumulatedTTS()
+                    }
                 }
+            } else {
+                print("🔊 scheduleAutoTTS: Output changed, rescheduling")
             }
         }
     }
+    
     
     // Extract new content that hasn't been spoken yet
     private func extractNewContent(from fullOutput: String, after spokenOutput: String) -> String {
@@ -1244,16 +1469,23 @@ struct RecordingView: View {
         return fullOutput
     }
     
-    // Play all accumulated TTS messages at 1.5x speed
+    // Play all accumulated TTS messages at configured speed
     private func playAccumulatedTTS() async {
-        // Skip if already playing
-        if audioPlayer.isPlaying {
+        // Check if we have output to play
+        let accumulated = accumulatedForTTS.trimmingCharacters(in: .whitespacesAndNewlines)
+        if accumulated.isEmpty {
+            print("🔇 playAccumulatedTTS: Skipped - no accumulated text")
             return
         }
         
-        // Get accumulated text
-        let accumulated = accumulatedForTTS.trimmingCharacters(in: .whitespacesAndNewlines)
-        if accumulated.isEmpty {
+        // Check if we're in a cursor_agent terminal
+        guard isCursorAgentTerminal else {
+            print("⚠️ playAccumulatedTTS: Not in cursor_agent terminal, skipping")
+            return
+        }
+        
+        // Skip if already playing
+        if audioPlayer.isPlaying {
             return
         }
         
@@ -1269,14 +1501,14 @@ struct RecordingView: View {
             return
         }
         
-        print("🔊 Generating TTS for accumulated output (length: \(cleanedText.count)) at 1.5x speed...")
+        print("🔊 Generating TTS for accumulated output (length: \(cleanedText.count)) at \(settingsManager.ttsSpeed)x speed...")
         
         do {
             let ttsHandler = LocalTTSHandler(apiKey: keys.openai)
             let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             
-            // Use 1.5x speed
-            let audioData = try await ttsHandler.synthesize(text: cleanedText, voice: voice, speed: 1.5)
+            // Use speed from settings
+            let audioData = try await ttsHandler.synthesize(text: cleanedText, voice: voice, speed: settingsManager.ttsSpeed)
             
             // Update last spoken text
             await MainActor.run {
@@ -1287,7 +1519,7 @@ struct RecordingView: View {
             await MainActor.run {
                 do {
                     try self.audioPlayer.play(audioData: audioData)
-                    print("🔊 TTS playback started at 1.5x speed")
+                    print("🔊 TTS playback started at \(self.settingsManager.ttsSpeed)x speed")
                 } catch {
                     print("❌ Failed to play TTS audio: \(error)")
                 }
@@ -1305,6 +1537,18 @@ struct RecordingView: View {
         
         // Process queue if there are items
         while !ttsQueue.isEmpty {
+            // Check if we're still in cursor_agent terminal
+            guard isCursorAgentTerminal else {
+                print("🔇 processQueueAfterPlayback: No longer in cursor_agent terminal, clearing queue and stopping playback")
+                await MainActor.run {
+                    self.ttsQueue = []
+                    if self.audioPlayer.isPlaying {
+                        self.audioPlayer.stop()
+                    }
+                }
+                return
+            }
+            
             let queuedText = ttsQueue.removeFirst()
             
             // Generate and play TTS for queued text
@@ -1312,20 +1556,73 @@ struct RecordingView: View {
             
             // Wait for playback to finish
             while audioPlayer.isPlaying {
+                // Check again if we're still in cursor_agent terminal
+                if !isCursorAgentTerminal {
+                    print("🔇 processQueueAfterPlayback: No longer in cursor_agent terminal during playback, stopping")
+                    await MainActor.run {
+                        self.ttsQueue = []
+                        if self.audioPlayer.isPlaying {
+                            self.audioPlayer.stop()
+                        }
+                    }
+                    return
+                }
                 try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
             }
+        }
+        
+        // After queue is processed, check if there's more new content
+        // (new messages might have arrived during queue processing)
+        let currentOutput = settingsManager.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let newContent = extractNewContent(from: currentOutput, after: lastTTSOutput)
+        if !newContent.isEmpty {
+            // New content arrived - set timer again to wait for completion
+            print("🔊 New content detected after queue processing (length: \(newContent.count)), setting timer...")
+            accumulatedForTTS = currentOutput
+            lastOutputSnapshot = currentOutput
+            let threshold: TimeInterval = 5.0
+            
+            ttsTimer = Timer.scheduledTimer(withTimeInterval: threshold, repeats: false) { [self] _ in
+                let finalOutput = self.settingsManager.lastTerminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                if finalOutput == self.lastOutputSnapshot && !finalOutput.isEmpty {
+                    let finalNewContent = self.extractNewContent(from: finalOutput, after: self.lastTTSOutput)
+                    if !finalNewContent.isEmpty {
+                        let cleaned = self.cleanTerminalOutputForTTS(finalNewContent)
+                        if !cleaned.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            // Start playback for new content
+                            Task { @MainActor in
+                                await self.generateAndPlayTTS(for: cleaned, isFromQueue: false)
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            print("🔊 No new content after queue processing")
         }
     }
     
     // Generate TTS audio and play it
     private func generateAndPlayTTS(for text: String, isFromQueue: Bool = false) async {
+        // Check if text is valid
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            print("🔇 generateAndPlayTTS: Skipped - empty text")
+            return
+        }
+        
+        // Check if we're in a cursor_agent terminal (unless from queue, which was already validated)
+        if !isFromQueue && !isCursorAgentTerminal {
+            print("⚠️ generateAndPlayTTS: Not in cursor_agent terminal, skipping")
+            return
+        }
+        
         // Skip if already playing (unless called from queue)
         if audioPlayer.isPlaying && !isFromQueue {
             return
         }
         
         // Skip if already spoken this text
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed == lastTTSOutput {
             return
         }
@@ -1340,40 +1637,43 @@ struct RecordingView: View {
         let cleanedText = cleanTerminalOutputForTTS(trimmed)
         
         // Skip if cleaned text is empty
-        if cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if cleanedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
             return
         }
         
-        print("🔊 Generating TTS (length: \(cleanedText.count))...")
+        print("🔊 Generating TTS (length: \(cleanedText.count)) at \(settingsManager.ttsSpeed)x speed...")
         
         do {
             let ttsHandler = LocalTTSHandler(apiKey: keys.openai)
             let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             
-            // Use 1.5x speed for all TTS
-            let audioData = try await ttsHandler.synthesize(text: cleanedText, voice: voice, speed: 1.5)
+            // Use speed from settings
+            let audioData = try await ttsHandler.synthesize(text: cleanedText, voice: voice, speed: settingsManager.ttsSpeed)
             
             // Update last spoken text
+            // For queue items, we need to track what was actually spoken
+            // Since queued items are already new content, we append them to lastTTSOutput
             await MainActor.run {
-                self.lastTTSOutput = trimmed
+                if isFromQueue && !self.lastTTSOutput.isEmpty {
+                    // Append queued text to lastTTSOutput to track all spoken content
+                    let separator = self.lastTTSOutput.hasSuffix(".") || self.lastTTSOutput.hasSuffix("!") || self.lastTTSOutput.hasSuffix("?") 
+                        ? " " 
+                        : "\n\n"
+                    self.lastTTSOutput = self.lastTTSOutput + separator + trimmed
+                } else {
+                    // For new content (not from queue), update to current accumulated output
+                    // This ensures we track all spoken content correctly
+                    self.lastTTSOutput = self.accumulatedForTTS.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
             }
             
             // Play audio on main thread
             await MainActor.run {
                 do {
                     try self.audioPlayer.play(audioData: audioData)
-                    print("🔊 TTS playback started at 1.5x speed")
+                    print("🔊 TTS playback started at \(self.settingsManager.ttsSpeed)x speed")
                     
-                    // If there's a queue, process it after playback finishes
-                    if !self.ttsQueue.isEmpty {
-                        Task { @MainActor in
-                            // Wait for playback to finish, then process queue
-                            while self.audioPlayer.isPlaying {
-                                try? await Task.sleep(nanoseconds: 100_000_000) // 100ms
-                            }
-                            await self.processQueueAfterPlayback()
-                        }
-                    }
+                    // Queue processing will be handled by notification observer
                 } catch {
                     print("❌ Failed to play TTS audio: \(error)")
                 }

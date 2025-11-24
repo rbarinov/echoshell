@@ -29,7 +29,8 @@ export class TunnelClient {
   
   constructor(
     private config: TunnelConfig,
-    private requestHandler: (req: TunnelRequest) => Promise<TunnelResponse>
+    private requestHandler: (req: TunnelRequest) => Promise<TunnelResponse>,
+    private clientAuthKey?: string
   ) {}
   
   setTerminalInputHandler(handler: (sessionId: string, data: string) => void): void {
@@ -45,6 +46,19 @@ export class TunnelClient {
       }));
     }
   }
+
+  sendRecordingOutput(
+    sessionId: string,
+    payload: { text: string; delta: string; raw?: string; timestamp: number }
+  ): void {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({
+        type: 'recording_output',
+        sessionId,
+        ...payload
+      }));
+    }
+  }
   
   async connect(): Promise<void> {
     const wsUrl = `${this.config.wsUrl}?api_key=${this.config.apiKey}`;
@@ -56,6 +70,13 @@ export class TunnelClient {
     this.ws.on('open', () => {
       console.log('✅ Tunnel connected');
       this.reconnectAttempts = 0;
+      
+      if (this.clientAuthKey) {
+        this.ws?.send(JSON.stringify({
+          type: 'client_auth_key',
+          key: this.clientAuthKey
+        }));
+      }
     });
     
     this.ws.on('message', async (data) => {

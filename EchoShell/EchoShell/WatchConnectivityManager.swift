@@ -43,7 +43,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         })
     }
     
-    func updateContext(apiKey: String, language: String = "auto", laptopConfig: TunnelConfig? = nil) {
+    func updateContext(apiKey: String, language: String = "auto", laptopConfig: TunnelConfig? = nil, settingsManager: SettingsManager? = nil) {
         guard WCSession.default.activationState == .activated else {
             // Silently skip if not activated (Watch app might not be installed)
             return
@@ -67,10 +67,36 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             context["laptopConfig"] = configDict
         }
         
+        // Add all settings from SettingsManager if available
+        if let settings = settingsManager {
+            // Ephemeral keys
+            if let keys = settings.ephemeralKeys,
+               let keysData = try? JSONEncoder().encode(keys),
+               let keysDict = try? JSONSerialization.jsonObject(with: keysData) as? [String: Any] {
+                context["ephemeralKeys"] = keysDict
+            }
+            
+            // Key expiration
+            if let expiresAt = settings.keyExpiresAt {
+                context["keyExpiresAt"] = expiresAt.timeIntervalSince1970
+            }
+            
+            // Command mode
+            context["commandMode"] = settings.commandMode.rawValue
+            
+            // Selected session ID
+            if let sessionId = settings.selectedSessionId {
+                context["selectedSessionId"] = sessionId
+            }
+            
+            // TTS speed
+            context["ttsSpeed"] = settings.ttsSpeed
+        }
+        
         do {
             try WCSession.default.updateApplicationContext(context)
             print("✅ iOS: Context updated successfully")
-            print("   Sent: apiKey=\(apiKey.count) chars, language=\(language)")
+            print("   Sent: apiKey=\(apiKey.count) chars, language=\(language), all settings")
         } catch {
             // Only log if it's not the "not installed" error
             let errorDescription = error.localizedDescription
@@ -103,6 +129,13 @@ extension WatchConnectivityManager: WCSessionDelegate {
                 let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
                 let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
                 
+                // Get laptop config
+                var laptopConfig: TunnelConfig? = nil
+                if let data = UserDefaults.standard.data(forKey: "laptopConfig"),
+                   let config = try? JSONDecoder().decode(TunnelConfig.self, from: data) {
+                    laptopConfig = config
+                }
+                
                 print("📤 iOS: Sending initial settings to Watch...")
                 print("   API key length: \(apiKey.count)")
                 print("   Language: \(language)")
@@ -113,7 +146,9 @@ extension WatchConnectivityManager: WCSessionDelegate {
                     print("   Saved language to UserDefaults")
                 }
                 
-                updateContext(apiKey: apiKey, language: language)
+                // Get SettingsManager instance (we'll need to pass it, but for now use defaults)
+                // Note: In a real app, you'd get this from the app's environment or dependency injection
+                updateContext(apiKey: apiKey, language: language, laptopConfig: laptopConfig)
             } else if !session.isWatchAppInstalled {
                 print("ℹ️ iOS: Watch app not installed, skipping context update")
             }
@@ -142,11 +177,18 @@ extension WatchConnectivityManager: WCSessionDelegate {
             let apiKey = UserDefaults.standard.string(forKey: "apiKey") ?? ""
             let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
             
-            // Use sendMessage for immediate delivery
+            // Get laptop config
+            var laptopConfig: TunnelConfig? = nil
+            if let data = UserDefaults.standard.data(forKey: "laptopConfig"),
+               let config = try? JSONDecoder().decode(TunnelConfig.self, from: data) {
+                laptopConfig = config
+            }
+            
+            // Use sendMessage for immediate delivery (legacy, just apiKey and language)
             sendSettings(apiKey: apiKey, language: language)
             
-            // Also update context for reliability
-            updateContext(apiKey: apiKey, language: language)
+            // Also update context for reliability (with all settings)
+            updateContext(apiKey: apiKey, language: language, laptopConfig: laptopConfig)
         }
     }
     

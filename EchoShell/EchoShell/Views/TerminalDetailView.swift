@@ -74,8 +74,12 @@ struct TerminalDetailView: View {
                 // SwiftTerm handles \r\n, \r, tabs, and all ANSI sequences properly
                 // Callback is dispatched to main thread in WebSocketClient
                 if let coordinator = self.terminalCoordinator {
-                    // feed() already handles auto-scrolling
+                    // feed() already handles auto-scrolling, but ensure we scroll after each feed
                     coordinator.feed(cleanedText)
+                    // Additional scroll to ensure we're at the bottom
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                        coordinator.scrollToBottom()
+                    }
                 } else {
                     // Terminal not ready yet - buffer the data
                     self.pendingData.append(cleanedText)
@@ -86,10 +90,6 @@ struct TerminalDetailView: View {
             Task {
                 try? await Task.sleep(nanoseconds: 400_000_000) // 0.4 second
                 await loadHistory()
-                // After loading history, ensure terminal has focus
-                await MainActor.run {
-                    self.terminalCoordinator?.focus()
-                }
             }
         }
         .onDisappear {
@@ -109,9 +109,19 @@ struct TerminalDetailView: View {
                         // Filter out zsh's % symbol from history as well
                         let cleanedHistory = self.removeZshPercentSymbol(history)
                         // Don't reset - just feed history to preserve terminal state
-                        // feed() already handles auto-scrolling
                         coordinator.feed(cleanedHistory)
                         print("✅ Loaded terminal history: \(history.count) characters")
+                        
+                        // Explicitly scroll to bottom after loading history
+                        // Wait a bit longer to ensure terminal has rendered the content
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            coordinator.scrollToBottom()
+                        }
+                    } else {
+                        // Even if no history, scroll to bottom to show cursor
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            coordinator.scrollToBottom()
+                        }
                     }
                     // Always ensure terminal has focus to show keyboard and cursor
                     coordinator.focus()
@@ -119,9 +129,14 @@ struct TerminalDetailView: View {
             }
         } catch {
             print("❌ Error loading history: \(error)")
-            // Even if history load fails, ensure terminal has focus
+            // Even if history load fails, ensure terminal has focus and scroll to bottom
             await MainActor.run {
-                self.terminalCoordinator?.focus()
+                if let coordinator = self.terminalCoordinator {
+                    coordinator.focus()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                        coordinator.scrollToBottom()
+                    }
+                }
             }
         }
     }
