@@ -458,45 +458,33 @@ extension AudioRecorder {
         
         Task {
             do {
-                // Get or select session
-                var sessionId: String
+                var sessions = try await client.listSessions()
+                var targetSession: TerminalSession?
                 
-                if let selectedId = settings.selectedSessionId {
-                    // Verify session still exists
-                    let sessions = try await client.listSessions()
-                    if sessions.contains(where: { $0.id == selectedId }) {
-                        sessionId = selectedId
-                    } else {
-                        // Session no longer exists, get or create default
-                        print("⚠️ Selected session no longer exists, getting default session")
-                        var sessions = try await client.listSessions()
-                        if sessions.isEmpty {
-                            let newSession = try await client.createSession()
-                            sessions = [newSession]
-                        }
-                        sessionId = sessions.first!.id
-                        // Update on main thread - capture value before async call
-                        let capturedSessionId = sessionId
-                        await MainActor.run {
-                            settings.selectedSessionId = capturedSessionId
-                        }
-                    }
+                if let selectedId = settings.selectedSessionId,
+                   let existing = sessions.first(where: { $0.id == selectedId }) {
+                    targetSession = existing
                 } else {
-                    // No session selected, get or create default
-                    var sessions = try await client.listSessions()
+                    print("⚠️ Selected session missing, selecting default")
                     if sessions.isEmpty {
                         let newSession = try await client.createSession()
                         sessions = [newSession]
                     }
-                    sessionId = sessions.first!.id
-                    // Update on main thread - capture value before async call
-                    let capturedSessionId = sessionId
-                    await MainActor.run {
-                        settings.selectedSessionId = capturedSessionId
+                    targetSession = sessions.first
+                    if let capturedSession = targetSession {
+                        let capturedSessionId = capturedSession.id
+                        await MainActor.run {
+                            settings.selectedSessionId = capturedSessionId
+                        }
                     }
                 }
                 
-                print("   Session: \(sessionId)")
+                guard let activeSession = targetSession else {
+                    throw NSError(domain: "AudioRecorder", code: -1, userInfo: [NSLocalizedDescriptionKey: "No terminal session available"])
+                }
+                
+                let sessionId = activeSession.id
+                print("   Session: \(sessionId) [type: \(activeSession.terminalType.rawValue)]")
                 
                 let result: String
                 
@@ -507,22 +495,26 @@ extension AudioRecorder {
                     result = try await client.executeAgentCommand(sessionId: sessionId, command: text)
                     
                 case .direct:
-                    // Send command directly to terminal via WebSocket input (not HTTP API)
-                    // This ensures commands work with cursor-agent and other interactive apps
-                    // The command will be sent through WebSocket in RecordingView's notification handler
                     result = ""
-                    
-                    // Notify that command should be sent (will be sent via WebSocket in RecordingView)
-                    // This allows RecordingView to send the command through WebSocket input
-                    // which works better with interactive apps like cursor-agent
-                    // Capture sessionId in a constant to avoid concurrency issues
                     let capturedSessionId = sessionId
-                    await MainActor.run {
-                        NotificationCenter.default.post(
-                            name: NSNotification.Name("CommandSentToTerminal"),
-                            object: nil,
-                            userInfo: ["command": text, "sessionId": capturedSessionId]
-                        )
+                    
+                    if activeSession.terminalType.isHeadless {
+                        _ = try await client.executeCommand(sessionId: sessionId, command: text)
+                        await MainActor.run {
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("CommandSentToTerminal"),
+                                object: nil,
+                                userInfo: ["command": text, "sessionId": capturedSessionId, "transport": "headless"]
+                            )
+                        }
+                    } else {
+                        await MainActor.run {
+                            NotificationCenter.default.post(
+                                name: NSNotification.Name("CommandSentToTerminal"),
+                                object: nil,
+                                userInfo: ["command": text, "sessionId": capturedSessionId, "transport": "interactive"]
+                            )
+                        }
                     }
                 }
                 

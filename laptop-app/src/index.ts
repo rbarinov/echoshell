@@ -48,6 +48,13 @@ const terminalManager = new TerminalManager(stateManager);
 const keyManager = new KeyManager(process.env.OPENAI_API_KEY!, process.env.ELEVENLABS_API_KEY);
 const aiAgent = new AIAgent(process.env.OPENAI_API_KEY!);
 
+const ALLOWED_TERMINAL_TYPES = ['regular', 'cursor_agent', 'cursor_cli', 'claude_cli'] as const;
+type AllowedTerminalType = (typeof ALLOWED_TERMINAL_TYPES)[number];
+
+function isAllowedTerminalType(value: unknown): value is AllowedTerminalType {
+  return typeof value === 'string' && (ALLOWED_TERMINAL_TYPES as readonly string[]).includes(value);
+}
+
 // Localhost-only web interface
 const WEB_PORT = parseInt(process.env.WEB_INTERFACE_PORT || '8002', 10);
 const publicDir = path.resolve(__dirname, '../public');
@@ -95,8 +102,8 @@ app.get('/terminal/list', async (req, res) => {
 app.post('/terminal/create', async (req, res) => {
   try {
     const { terminal_type, working_dir, name } = req.body;
-    if (!terminal_type || (terminal_type !== 'regular' && terminal_type !== 'cursor_agent')) {
-      return res.status(400).json({ error: 'terminal_type must be "regular" or "cursor_agent"' });
+    if (!isAllowedTerminalType(terminal_type)) {
+      return res.status(400).json({ error: `terminal_type must be one of: ${ALLOWED_TERMINAL_TYPES.join(', ')}` });
     }
     const session = await terminalManager.createSession(terminal_type, working_dir, name);
     res.json({
@@ -566,8 +573,8 @@ async function handleTerminalRequest(method: string, path: string, body: unknown
     const bodyObj = body as { terminal_type?: string; working_dir?: string; name?: string };
     const { terminal_type, working_dir, name } = bodyObj;
     
-    if (!terminal_type || (terminal_type !== 'regular' && terminal_type !== 'cursor_agent')) {
-      return { statusCode: 400, body: { error: 'terminal_type must be "regular" or "cursor_agent"' } };
+    if (!isAllowedTerminalType(terminal_type)) {
+      return { statusCode: 400, body: { error: `terminal_type must be one of: ${ALLOWED_TERMINAL_TYPES.join(', ')}` } };
     }
     
     const session = await terminalManager.createSession(terminal_type, working_dir, name);

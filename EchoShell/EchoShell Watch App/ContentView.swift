@@ -34,10 +34,15 @@ struct ContentView: View {
     private var isCursorAgentTerminal: Bool {
         return selectedSession?.terminalType == .cursorAgent
     }
+
+    private var isHeadlessTerminal: Bool {
+        guard let type = selectedSession?.terminalType else { return false }
+        return type.isHeadless
+    }
     
     // Filter sessions for direct mode (only cursor_agent terminals)
     private var availableSessionsForDirectMode: [TerminalSession] {
-        return terminalViewModel.sessions.filter { $0.terminalType == .cursorAgent }
+        return terminalViewModel.sessions.filter { $0.terminalType.isHeadless }
     }
     
     private func toggleRecording() {
@@ -125,11 +130,14 @@ struct ContentView: View {
             // When transcription completes (isTranscribing becomes false), execute command
             if oldValue == true && newValue == false && !audioRecorder.recognizedText.isEmpty {
                 Task {
-                    if settingsManager.commandMode == .direct && isCursorAgentTerminal {
-                        // Direct mode: send command via WebSocket
-                        sendCommandToTerminal(audioRecorder.recognizedText)
-                    } else if settingsManager.commandMode == .agent {
-                        // Agent mode: use agent endpoint
+                    switch settingsManager.commandMode {
+                    case .direct:
+                        if isHeadlessTerminal {
+                            await executeCommand(audioRecorder.recognizedText)
+                        } else if isCursorAgentTerminal {
+                            sendCommandToTerminal(audioRecorder.recognizedText)
+                        }
+                    case .agent:
                         await executeCommand(audioRecorder.recognizedText)
                     }
                 }
@@ -239,7 +247,7 @@ struct ContentView: View {
                 
                 if validSessions.isEmpty {
                     if settingsManager.commandMode == .direct {
-                        createCursorAgentTerminalView
+                        createHeadlessTerminalView
                     } else {
                         VStack(spacing: 4) {
                             Text("No sessions available")
@@ -282,7 +290,7 @@ struct ContentView: View {
                             onSelect: { sessionId in
                                 settingsManager.selectedSessionId = sessionId
                             },
-                            onCreateCursorAgent: settingsManager.commandMode == .direct ? createCursorAgentSession : nil,
+                            onCreateHeadless: settingsManager.commandMode == .direct ? { createHeadlessSession(.cursorCLI) } : nil,
                             onCreateRegular: settingsManager.commandMode == .agent ? createRegularSession : nil
                         )
                     }
@@ -296,12 +304,12 @@ struct ContentView: View {
         settingsManager.commandMode == .direct ? availableSessionsForDirectMode : terminalViewModel.sessions
     }
     
-    private func createCursorAgentSession() {
+    private func createHeadlessSession(_ type: TerminalType = .cursorCLI) {
         Task {
             guard let config = settingsManager.laptopConfig else { return }
             await terminalViewModel.createNewSession(
                 config: config,
-                terminalType: .cursorAgent
+                terminalType: type
             )
             if let newSession = terminalViewModel.sessions.last {
                 await MainActor.run {
@@ -326,14 +334,19 @@ struct ContentView: View {
         }
     }
     
-    private var createCursorAgentTerminalView: some View {
-        Button(action: {
-            createCursorAgentSession()
-        }) {
+    private var createHeadlessTerminalView: some View {
+        Menu {
+            Button("Create Cursor CLI") {
+                createHeadlessSession(.cursorCLI)
+            }
+            Button("Create Claude CLI") {
+                createHeadlessSession(.claudeCLI)
+            }
+        } label: {
             HStack(spacing: 4) {
                 Image(systemName: "plus.circle.fill")
                     .font(.system(size: 10))
-                Text("Create Cursor Agent")
+                Text("Create Headless")
                     .font(.caption2)
             }
             .foregroundColor(.blue)
@@ -373,7 +386,7 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
         .disabled(audioRecorder.isTranscribing || settingsManager.laptopConfig == nil || 
-                 (settingsManager.commandMode == .direct && !isCursorAgentTerminal))
+                 (settingsManager.commandMode == .direct && !isHeadlessTerminal))
                 .scaleEffect(audioRecorder.isRecording ? 1.05 : 1.0)
                 .animation(.spring(response: 0.3, dampingFraction: 0.6), value: audioRecorder.isRecording)
     }
@@ -388,8 +401,8 @@ struct ContentView: View {
                 Text("Setup on iPhone")
                     .font(.caption2)
                     .foregroundColor(.orange)
-            } else if settingsManager.commandMode == .direct && !isCursorAgentTerminal {
-                Text("Select Cursor Agent")
+            } else if settingsManager.commandMode == .direct && !isHeadlessTerminal {
+                Text("Select Headless")
                     .font(.caption2)
                     .foregroundColor(.orange)
             } else {
@@ -423,7 +436,7 @@ struct ContentView: View {
         guard let sessionId = settingsManager.selectedSessionId ?? terminalViewModel.sessions.first?.id else {
             // No session available, try to create one
             if settingsManager.commandMode == .direct {
-                await terminalViewModel.createNewSession(config: config, terminalType: .cursorAgent)
+                await terminalViewModel.createNewSession(config: config, terminalType: .cursorCLI)
                 if let newSession = terminalViewModel.sessions.last {
                     settingsManager.selectedSessionId = newSession.id
                     await executeCommand(command)
@@ -446,6 +459,8 @@ struct ContentView: View {
                 terminalViewModel.apiClient = APIClient(config: config)
             }
             
+            let activeSession = terminalViewModel.sessions.first(where: { $0.id == sessionId })
+            
             if settingsManager.commandMode == .agent {
                 // Agent mode: use agent endpoint
                 let result = try await terminalViewModel.apiClient!.executeAgentCommand(
@@ -458,11 +473,12 @@ struct ContentView: View {
                 // Trigger TTS for result
                 await playTTS(for: result)
             } else {
-                // Direct mode: commands are sent via WebSocket in sendCommandToTerminal
-                // This should not be called in direct mode, but handle it gracefully
-                if isCursorAgentTerminal {
-                    // In direct mode, commands are sent via WebSocket
-                    // Output processing and TTS are handled by WebSocket callback
+                if activeSession?.terminalType.isHeadless == true {
+                    _ = try await terminalViewModel.apiClient!.executeCommand(
+                        sessionId: sessionId,
+                        command: command
+                    )
+                } else if isCursorAgentTerminal {
                     print("⚠️ executeCommand called in direct mode - should use WebSocket")
                 }
             }
@@ -581,7 +597,7 @@ struct ContentView: View {
         }
         
         guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }),
-              session.terminalType == .cursorAgent else {
+              (session.terminalType == .cursorAgent || session.terminalType.isHeadless) else {
             recordingStreamClient.disconnect()
             recordingStreamSessionId = nil
             return
@@ -633,7 +649,7 @@ struct ContentView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         
-        guard isCursorAgentTerminal else { return }
+        guard isHeadlessTerminal else { return }
         
         ttsTimer?.invalidate()
         
@@ -654,7 +670,7 @@ private struct SessionPickerSheet: View {
     let sessions: [TerminalSession]
     let selectedId: String?
     let onSelect: (String) -> Void
-    let onCreateCursorAgent: (() -> Void)?
+    let onCreateHeadless: (() -> Void)?
     let onCreateRegular: (() -> Void)?
     
     @Environment(\.dismiss) private var dismiss
@@ -677,7 +693,7 @@ private struct SessionPickerSheet: View {
                                     Text(session.name ?? session.id)
                                         .font(.caption)
                                         .foregroundColor(.primary)
-                                    Text(session.terminalType == .cursorAgent ? "Cursor Agent" : "Regular")
+                                    Text(label(for: session.terminalType))
                                         .font(.system(size: 9))
                                         .foregroundColor(.secondary)
                                 }
@@ -692,12 +708,12 @@ private struct SessionPickerSheet: View {
                     }
                 }
                 
-                if let createCursorAgent = onCreateCursorAgent {
+                if let createHeadless = onCreateHeadless {
                     Button(action: {
-                        createCursorAgent()
+                        createHeadless()
                         dismiss()
                     }) {
-                        Label("Create Cursor Agent", systemImage: "plus.circle")
+                        Label("Create Headless", systemImage: "plus.circle")
                     }
                 }
                 
@@ -711,6 +727,19 @@ private struct SessionPickerSheet: View {
                 }
             }
             .navigationTitle("Sessions")
+        }
+    }
+    
+    private func label(for type: TerminalType) -> String {
+        switch type {
+        case .cursorAgent:
+            return "Cursor Agent"
+        case .cursorCLI:
+            return "Cursor CLI"
+        case .claudeCLI:
+            return "Claude CLI"
+        case .regular:
+            return "Regular"
         }
     }
 }

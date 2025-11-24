@@ -112,6 +112,29 @@ npm run dev
 
 ---
 
+## 🧠 Headless CLI Sessions
+
+Direct (voice) control on iPhone and Apple Watch now runs against _headless_ CLI sessions that stream structured JSON output:
+
+- **`cursor_cli`** – wraps `cursor-agent --output-format stream-json --stream-partial-output`
+- **`claude_cli`** – wraps `claude -p --output-format stream-json`
+- Classic `regular` / `cursor_agent` sessions remain for desktop/web use but are no longer required for mobile voice loops.
+
+Create headless sessions from the mobile/Watch UI (or via `POST /terminal/create` with `terminal_type` `cursor_cli` / `claude_cli`). The laptop app parses the streaming JSON (`assistant`, `result`, etc.) and forwards only the clean deltas to the recording stream so iOS/watchOS can TTS without brittle ANSI filtering.
+
+### Optional CLI Overrides
+
+```
+CURSOR_HEADLESS_BIN=/usr/local/bin/cursor-agent
+CURSOR_HEADLESS_EXTRA_ARGS=--force
+CLAUDE_HEADLESS_BIN=/usr/local/bin/claude
+CLAUDE_HEADLESS_EXTRA_ARGS=--verbose
+```
+
+Add these to `laptop-app/.env` if your binaries live outside `$PATH` or need extra flags.
+
+---
+
 ## 💡 Usage Examples
 
 ### Simple Commands

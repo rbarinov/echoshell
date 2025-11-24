@@ -2,16 +2,22 @@ import { spawn, IPty } from 'node-pty';
 import os from 'os';
 import type { TunnelClient } from '../tunnel/TunnelClient.js';
 import { StateManager, type TerminalSessionState } from '../storage/StateManager.js';
+import { HeadlessCliRunner, type HeadlessTerminalType } from './HeadlessCliRunner.js';
+
+type TerminalType = 'regular' | 'cursor_agent' | HeadlessTerminalType;
 
 interface TerminalSession {
   sessionId: string;
-  pty: IPty;
+  pty?: IPty;
   workingDir: string;
   createdAt: number;
   outputBuffer: string[];
-  terminalType: 'regular' | 'cursor_agent';
+  terminalType: TerminalType;
   name?: string;
   cursorAgentWorkingDir?: string;
+  headless?: {
+    isRunning: boolean;
+  };
 }
 
 export class TerminalManager {
@@ -22,6 +28,7 @@ export class TerminalManager {
   private globalOutputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private globalInputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private sessionDestroyedListeners = new Set<(sessionId: string) => void>();
+  private headlessRunner = new HeadlessCliRunner();
   
   constructor(stateManager: StateManager) {
     this.stateManager = stateManager;
@@ -64,6 +71,10 @@ export class TerminalManager {
   writeInput(sessionId: string, data: string, isCommand: boolean = false): void {
     const session = this.sessions.get(sessionId);
     if (session) {
+      if (!session.pty) {
+        console.warn(`⚠️  Cannot write input to non-interactive session ${sessionId}`);
+        return;
+      }
       // Normalize input: convert \n to \r for Enter key
       // This fixes issues when cursor-agent or other tools modify Enter key behavior
       // Terminal expects \r (carriage return) to execute commands, not \n (newline)
@@ -123,6 +134,10 @@ export class TerminalManager {
   resizeTerminal(sessionId: string, cols: number, rows: number): void {
     const session = this.sessions.get(sessionId);
     if (session) {
+      if (!session.pty) {
+        console.warn(`⚠️  Cannot resize non-interactive session ${sessionId}`);
+        return;
+      }
       try {
         // Resize the PTY
         session.pty.resize(cols, rows);
@@ -142,13 +157,35 @@ export class TerminalManager {
   }
   
   async createSession(
-    terminalType: 'regular' | 'cursor_agent' = 'regular',
+    terminalType: TerminalType = 'regular',
     workingDir?: string,
     name?: string
-  ): Promise<{ sessionId: string; workingDir: string; terminalType: 'regular' | 'cursor_agent'; name?: string }> {
+  ): Promise<{ sessionId: string; workingDir: string; terminalType: TerminalType; name?: string }> {
     const sessionId = `session-${Date.now()}`;
     const cwd = workingDir || process.env.HOME || os.homedir();
     
+    const session: TerminalSession = {
+      sessionId,
+      workingDir: cwd,
+      createdAt: Date.now(),
+      outputBuffer: [],
+      terminalType,
+      name,
+      cursorAgentWorkingDir: terminalType === 'cursor_agent' ? cwd : undefined,
+      headless: this.isHeadlessTerminal(terminalType)
+        ? {
+            isRunning: false
+          }
+        : undefined
+    };
+
+    if (this.isHeadlessTerminal(terminalType)) {
+      this.sessions.set(sessionId, session);
+      await this.saveSessionsState();
+      console.log(`✅ Created headless session: ${sessionId} (${terminalType}) in ${cwd}`);
+      return { sessionId, workingDir: cwd, terminalType, name };
+    }
+
     // Create direct PTY session (no tmux)
     const shell = process.env.SHELL || (os.platform() === 'win32' ? 'powershell.exe' : 'bash');
     
@@ -158,24 +195,17 @@ export class TerminalManager {
       TERM: 'xterm-256color',
       TERM_PROGRAM: '',
       VTE_VERSION: '',
-      // Don't override prompt - let user's default shell prompt be used
-      // For zsh: ensure it knows it's interactive
       ZDOTDIR: process.env.ZDOTDIR || process.env.HOME,
-      // Disable zsh's auto-detection of non-interactive mode
       ZSH_DISABLE_COMPFIX: 'true',
     } as Record<string, string>;
     
-    // Remove any variables that might make shell think it's non-interactive
     delete env.BASH_ENV;
     delete env.ENV;
     
-    // Create direct PTY session with interactive flag for zsh
     const shellArgs: string[] = [];
     if (shell.includes('zsh')) {
-      // Force zsh to run in interactive mode
       shellArgs.push('-i');
     } else if (shell.includes('bash')) {
-      // Force bash to run in interactive mode
       shellArgs.push('-i');
     }
     
@@ -186,17 +216,7 @@ export class TerminalManager {
       cwd,
       env
     });
-    
-    const session: TerminalSession = {
-      sessionId,
-      pty,
-      workingDir: cwd,
-      createdAt: Date.now(),
-      outputBuffer: [],
-      terminalType,
-      name,
-      cursorAgentWorkingDir: terminalType === 'cursor_agent' ? cwd : undefined
-    };
+    session.pty = pty;
     
     // Capture output
     pty.onData((data) => {
@@ -228,7 +248,6 @@ export class TerminalManager {
       });
     });
     
-    
     this.sessions.set(sessionId, session);
     
     // Save sessions to state file
@@ -254,6 +273,10 @@ export class TerminalManager {
     if (!session) {
       throw new Error('Session not found');
     }
+
+    if (this.isHeadlessTerminal(session.terminalType)) {
+      return this.executeHeadlessCommand(session, command);
+    }
     
     console.log(`📝 executeCommand called for ${sessionId}: ${JSON.stringify(command)}`);
     console.log(`📝 Command length: ${command.length}, bytes: ${Array.from(command).map(c => c.charCodeAt(0)).join(', ')}`);
@@ -275,8 +298,87 @@ export class TerminalManager {
       }, 100);
     });
   }
+
+  private async executeHeadlessCommand(session: TerminalSession, command: string): Promise<string> {
+    const prompt = command.trim();
+    if (!prompt) {
+      throw new Error('Command is required for headless sessions');
+    }
+
+    if (!session.headless) {
+      session.headless = { isRunning: false };
+    }
+
+    if (session.headless.isRunning) {
+      throw new Error('Headless session is busy. Please wait for the current command to finish.');
+    }
+
+    session.headless.isRunning = true;
+    this.notifyHeadlessCommand(session, prompt);
+
+    this.headlessRunner
+      .run({
+        sessionId: session.sessionId,
+        workingDir: session.workingDir,
+        terminalType: session.terminalType as HeadlessTerminalType,
+        prompt,
+        onDelta: (text) => this.emitHeadlessOutput(session, text),
+        onError: (message) => this.emitHeadlessOutput(session, `⚠️ ${message}`)
+      })
+      .then(() => {
+        session.headless!.isRunning = false;
+        this.emitHeadlessOutput(session, '✅ Completed');
+      })
+      .catch((error) => {
+        session.headless!.isRunning = false;
+        const message = error instanceof Error ? error.message : String(error);
+        this.emitHeadlessOutput(session, `❌ ${message}`);
+      });
+
+    return 'Headless command started';
+  }
   
-  listSessions(): Array<{ sessionId: string; workingDir: string; createdAt: number; terminalType: 'regular' | 'cursor_agent'; name?: string }> {
+  private notifyHeadlessCommand(session: TerminalSession, command: string): void {
+    const normalized = `${command}\r`;
+    this.globalInputListeners.forEach(listener => {
+      try {
+        listener(session, normalized);
+      } catch (error) {
+        console.error('❌ Global input listener error:', error);
+      }
+    });
+  }
+
+  private emitHeadlessOutput(session: TerminalSession, data: string): void {
+    const text = data?.trim();
+    if (!text) {
+      return;
+    }
+
+    session.outputBuffer.push(text);
+    if (session.outputBuffer.length > 10000) {
+      session.outputBuffer.shift();
+    }
+
+    if (this.tunnelClient) {
+      this.tunnelClient.sendTerminalOutput(session.sessionId, text);
+    }
+
+    const listeners = this.outputListeners.get(session.sessionId);
+    if (listeners) {
+      listeners.forEach(listener => listener(text));
+    }
+
+    this.globalOutputListeners.forEach(listener => {
+      try {
+        listener(session, text);
+      } catch (error) {
+        console.error('❌ Global output listener error:', error);
+      }
+    });
+  }
+  
+  listSessions(): Array<{ sessionId: string; workingDir: string; createdAt: number; terminalType: TerminalType; name?: string }> {
     return Array.from(this.sessions.values()).map(s => ({
       sessionId: s.sessionId,
       workingDir: s.workingDir,
@@ -327,7 +429,7 @@ export class TerminalManager {
   destroySession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
     if (session) {
-      session.pty.kill();
+      session.pty?.kill();
       this.sessions.delete(sessionId);
       this.outputListeners.delete(sessionId);
 
@@ -350,7 +452,7 @@ export class TerminalManager {
   
   cleanup(): void {
     this.sessions.forEach((session) => {
-      session.pty.kill();
+      session.pty?.kill();
     });
     this.sessions.clear();
     this.outputListeners.clear();
@@ -367,4 +469,10 @@ export class TerminalManager {
   addSessionDestroyedListener(listener: (sessionId: string) => void): void {
     this.sessionDestroyedListeners.add(listener);
   }
+
+  private isHeadlessTerminal(type: TerminalType): type is HeadlessTerminalType {
+    return type === 'cursor_cli' || type === 'claude_cli';
+  }
 }
+
+export type { TerminalType };

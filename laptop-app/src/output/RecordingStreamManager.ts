@@ -1,4 +1,4 @@
-import { TerminalManager } from '../terminal/TerminalManager.js';
+import { TerminalManager, type TerminalType } from '../terminal/TerminalManager.js';
 import type { TunnelClient } from '../tunnel/TunnelClient.js';
 import { TerminalScreenEmulator } from './TerminalScreenEmulator.js';
 import { TerminalOutputProcessor } from './TerminalOutputProcessor.js';
@@ -10,6 +10,8 @@ interface SessionState {
   recordingProcessor: RecordingOutputProcessor;
   hasBroadcast: boolean;
   pendingInput: string;
+  headlessFullText: string;
+  lastHeadlessDelta: string;
 }
 
 type TunnelClientResolver = () => TunnelClient | null;
@@ -42,7 +44,9 @@ export class RecordingStreamManager {
         outputProcessor: new TerminalOutputProcessor(),
         recordingProcessor: new RecordingOutputProcessor(),
         hasBroadcast: false,
-        pendingInput: ''
+        pendingInput: '',
+        headlessFullText: '',
+        lastHeadlessDelta: ''
       };
       this.sessionStates.set(sessionId, state);
     }
@@ -74,13 +78,20 @@ export class RecordingStreamManager {
     state.recordingProcessor.reset();
     state.emulator = new TerminalScreenEmulator();
     state.hasBroadcast = false;
+    state.headlessFullText = '';
+    state.lastHeadlessDelta = '';
 
     const lastCommand = commands[commands.length - 1];
     state.recordingProcessor.setLastCommand(lastCommand);
     console.log(`🎙️ Recording stream: captured command for ${sessionId}: ${lastCommand.slice(0, 120)}`);
   }
 
-  private handleTerminalOutput(sessionId: string, terminalType: 'regular' | 'cursor_agent', data: string): void {
+  private handleTerminalOutput(sessionId: string, terminalType: TerminalType, data: string): void {
+    if (terminalType === 'cursor_cli' || terminalType === 'claude_cli') {
+      this.handleHeadlessOutput(sessionId, data);
+      return;
+    }
+
     if (terminalType !== 'cursor_agent') {
       return;
     }
@@ -124,6 +135,28 @@ export class RecordingStreamManager {
       );
     }
     this.broadcastRecordingOutput(sessionId, result);
+  }
+
+  private handleHeadlessOutput(sessionId: string, data: string): void {
+    const text = data?.trim();
+    if (!text) {
+      return;
+    }
+
+    const state = this.getSessionState(sessionId);
+    if (state.lastHeadlessDelta === text) {
+      return;
+    }
+
+    state.lastHeadlessDelta = text;
+    state.headlessFullText =
+      state.headlessFullText.length > 0 ? `${state.headlessFullText}\n\n${text}` : text;
+
+    this.broadcastRecordingOutput(sessionId, {
+      fullText: state.headlessFullText,
+      delta: text,
+      rawFiltered: text
+    });
   }
 
   private logRawChunk(sessionId: string, raw: string): void {

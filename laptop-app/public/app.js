@@ -5,6 +5,17 @@ let ws = null;
 let term = null;
 let fitAddon = null;
 
+const TERMINAL_TYPE_LABELS = {
+    regular: '💻 Regular',
+    cursor_agent: '🤖 Cursor Agent',
+    cursor_cli: '🤖 Cursor CLI (headless)',
+    claude_cli: '🪄 Claude CLI (headless)'
+};
+
+function getTypeLabel(type) {
+    return TERMINAL_TYPE_LABELS[type] || TERMINAL_TYPE_LABELS.regular;
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     loadSessions();
@@ -35,7 +46,7 @@ async function loadSessions() {
         
         if (data.sessions && data.sessions.length > 0) {
             sessionsList.innerHTML = data.sessions.map(session => {
-                const typeLabel = session.terminal_type === 'cursor_agent' ? '🤖 Cursor Agent' : '💻 Regular';
+                const typeLabel = getTypeLabel(session.terminal_type);
                 const nameLabel = session.name ? escapeHtml(session.name) : session.session_id;
                 return `
                 <div class="session-card" onclick="openSession('${session.session_id}')">
@@ -59,9 +70,9 @@ async function loadSessions() {
 
 async function createSession() {
     try {
-        const terminalType = confirm('Create Cursor Agent terminal?\n\nOK = Cursor Agent\nCancel = Regular Terminal') 
-            ? 'cursor_agent' 
-            : 'regular';
+        const typeInput = prompt('Terminal type (regular, cursor_agent, cursor_cli, claude_cli):', 'cursor_cli');
+        const normalizedType = (typeInput || '').trim().toLowerCase();
+        const terminalType = TERMINAL_TYPE_LABELS[normalizedType] ? normalizedType : 'regular';
         const name = prompt('Terminal name (optional):') || undefined;
         const workingDir = prompt('Working directory (leave empty for home):') || undefined;
         
@@ -100,7 +111,7 @@ function openSession(sessionId) {
                 const session = data.sessions.find(s => s.session_id === sessionId);
                 if (session) {
                     const sessionTitle = session.name || sessionId;
-                    const typeLabel = session.terminal_type === 'cursor_agent' ? '🤖 Cursor Agent' : '💻 Regular';
+                    const typeLabel = getTypeLabel(session.terminal_type);
                     document.getElementById('sessionTitle').textContent = `Session: ${sessionTitle}`;
                     document.getElementById('sessionId').textContent = sessionId;
                     document.getElementById('sessionName').textContent = session.name || '-';

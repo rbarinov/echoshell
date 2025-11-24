@@ -10,6 +10,8 @@ import Foundation
 enum TerminalType: String, Codable {
     case regular = "regular"
     case cursorAgent = "cursor_agent"
+    case cursorCLI = "cursor_cli"
+    case claudeCLI = "claude_cli"
 }
 
 struct TerminalSession: Identifiable, Codable, Hashable {
@@ -96,5 +98,16 @@ struct TerminalSession: Identifiable, Codable, Hashable {
         case terminalType
         case name
         case cursorAgentWorkingDir
+    }
+}
+
+extension TerminalType {
+    var isHeadless: Bool {
+        switch self {
+        case .cursorCLI, .claudeCLI:
+            return true
+        default:
+            return false
+        }
     }
 }

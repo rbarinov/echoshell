@@ -79,10 +79,15 @@ struct RecordingView: View {
     private var isCursorAgentTerminal: Bool {
         return selectedSession?.terminalType == .cursorAgent
     }
+
+    private var isHeadlessTerminal: Bool {
+        guard let type = selectedSession?.terminalType else { return false }
+        return type.isHeadless
+    }
     
     // Filter sessions for direct mode (only cursor_agent terminals)
     private var availableSessionsForDirectMode: [TerminalSession] {
-        return terminalViewModel.sessions.filter { $0.terminalType == .cursorAgent }
+        return terminalViewModel.sessions.filter { $0.terminalType.isHeadless }
     }
     
     private func toggleRecording() {
@@ -113,7 +118,7 @@ struct RecordingView: View {
                     sessionSelectorView
                         } else {
                             // No cursor_agent terminals, show create button
-                            createCursorAgentTerminalView
+                            createHeadlessTerminalView
                         }
                     } else {
                         // In agent mode, show all terminals
@@ -259,7 +264,7 @@ struct RecordingView: View {
                             if terminalViewModel.apiClient == nil {
                                 terminalViewModel.apiClient = APIClient(config: config)
                             }
-                                let terminalType: TerminalType = settingsManager.commandMode == .direct ? .cursorAgent : .regular
+                                let terminalType: TerminalType = settingsManager.commandMode == .direct ? .cursorCLI : .regular
                                 let _ = try? await terminalViewModel.apiClient?.createSession(terminalType: terminalType)
                             await terminalViewModel.refreshSessions(config: config)
                         }
@@ -343,28 +348,37 @@ struct RecordingView: View {
         .padding(.vertical, 4)
     }
     
-    private var createCursorAgentTerminalView: some View {
-        Button(action: {
-            Task {
-                if let config = settingsManager.laptopConfig {
-                    if terminalViewModel.apiClient == nil {
-                        terminalViewModel.apiClient = APIClient(config: config)
-                    }
-                    let _ = try? await terminalViewModel.apiClient?.createSession(terminalType: .cursorAgent)
-                    await terminalViewModel.refreshSessions(config: config)
-                }
+    private var createHeadlessTerminalView: some View {
+        Menu {
+            Button("Create Cursor CLI") {
+                createHeadlessSession(.cursorCLI)
             }
-        }) {
+            Button("Create Claude CLI") {
+                createHeadlessSession(.claudeCLI)
+            }
+        } label: {
             HStack(spacing: 6) {
                 Image(systemName: "plus.circle.fill")
                     .font(.system(size: 14))
-                Text("Create Cursor Agent Terminal")
+                Text("Create Headless Terminal")
                     .font(.subheadline)
             }
             .foregroundColor(.blue)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 4)
+    }
+
+    private func createHeadlessSession(_ type: TerminalType) {
+        Task {
+            if let config = settingsManager.laptopConfig {
+                if terminalViewModel.apiClient == nil {
+                    terminalViewModel.apiClient = APIClient(config: config)
+                }
+                let _ = try? await terminalViewModel.apiClient?.createSession(terminalType: type)
+                await terminalViewModel.refreshSessions(config: config)
+            }
+        }
     }
     
     private var recordButtonView: some View {
@@ -404,7 +418,7 @@ struct RecordingView: View {
         }
         .buttonStyle(.plain)
         .disabled(audioRecorder.isTranscribing || settingsManager.laptopConfig == nil || 
-                 (settingsManager.commandMode == .direct && !isCursorAgentTerminal))
+                 (settingsManager.commandMode == .direct && !isHeadlessTerminal))
         .scaleEffect(audioRecorder.isRecording ? 1.05 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: audioRecorder.isRecording)
         .padding(.horizontal, 30)
@@ -424,8 +438,8 @@ struct RecordingView: View {
                     .foregroundColor(.orange)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 20)
-            } else if settingsManager.commandMode == .direct && !isCursorAgentTerminal {
-                Text("Select a Cursor Agent terminal")
+            } else if settingsManager.commandMode == .direct && !isHeadlessTerminal {
+                Text("Select a headless terminal")
                     .font(.subheadline)
                     .foregroundColor(.orange)
                     .multilineTextAlignment(.center)
@@ -460,7 +474,7 @@ struct RecordingView: View {
         // In agent mode: show when there's recognized text
         Group {
             let shouldShow = settingsManager.commandMode == .direct 
-                ? isCursorAgentTerminal
+                ? isHeadlessTerminal
                 : !audioRecorder.recognizedText.isEmpty
             
             if shouldShow && !audioRecorder.isTranscribing {
@@ -693,78 +707,69 @@ struct RecordingView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CommandSentToTerminal"))) { notification in
-            // Clear previous output when new command is sent in direct mode
-            if settingsManager.commandMode == .direct && isCursorAgentTerminal {
-                // Ensure updates happen on main thread
-                Task { @MainActor in
-                    print("📤 Command sent to cursor_agent terminal")
-                    
-                    // Cancel any pending TTS
-                    self.ttsTimer?.invalidate()
-                    self.ttsTimer = nil
-                    self.lastTTSOutput = ""
-                    self.accumulatedForTTS = ""
-                    self.lastOutputSnapshot = ""
-                    self.ttsQueue = []
-                    
-                    // Don't clear lastTerminalOutput - keep accumulated output between commands
-                    self.accumulatedOutput = "" // Reset accumulated output
-                    self.lastSentCommand = notification.userInfo?["command"] as? String ?? "" // Store the command
-                }
+            guard settingsManager.commandMode == .direct else { return }
+            
+            Task { @MainActor in
+                print("📤 Command sent notification received")
                 
-                // Send command through WebSocket input instead of HTTP API
-                // This ensures commands work with cursor-agent and other interactive apps
-                if let userInfo = notification.userInfo,
-                   let command = userInfo["command"] as? String,
-                   let sessionId = userInfo["sessionId"] as? String {
-                    
-                    // Store command to filter it from output
-                    Task { @MainActor in
-                        self.lastSentCommand = command
-                    }
-                    
-                    // Ensure WebSocket is connected to the correct session
-                    if let config = settingsManager.laptopConfig {
-                        // Reconnect if needed or if session changed
-                        if !wsClient.isConnected || settingsManager.selectedSessionId != sessionId {
-                            connectToTerminalStream(config: config, sessionId: sessionId)
-                            // Wait longer for connection to establish (increased from 0.2 to 0.5)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                // Retry up to 3 times if not connected
-                                var retryCount = 0
-                                let maxRetries = 3
-                                
-                                func trySend() {
-                                if self.wsClient.isConnected {
-                                    // Send command as a single string with \r at the end
-                                    // This matches what xterm.js sends when user presses Enter
-                                    self.sendCommandToTerminal(command, to: self.wsClient)
-                                    print("📤 Sent command via WebSocket input: \(command)")
-                                    } else if retryCount < maxRetries {
-                                        retryCount += 1
-                                        print("⚠️ WebSocket not connected, retrying (\(retryCount)/\(maxRetries))...")
-                                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                                            trySend()
-                                        }
-                                } else {
-                                        print("❌ WebSocket not connected after \(maxRetries) retries, command not sent")
+                self.ttsTimer?.invalidate()
+                self.ttsTimer = nil
+                self.lastTTSOutput = ""
+                self.accumulatedForTTS = ""
+                self.lastOutputSnapshot = ""
+                self.ttsQueue = []
+                self.accumulatedOutput = ""
+                self.lastSentCommand = notification.userInfo?["command"] as? String ?? ""
+            }
+            
+            guard let userInfo = notification.userInfo,
+                  let command = userInfo["command"] as? String,
+                  let sessionId = userInfo["sessionId"] as? String else {
+                return
+            }
+            
+            let transport = userInfo["transport"] as? String ?? "interactive"
+            if transport == "headless" {
+                return
+            }
+            
+            guard isCursorAgentTerminal else { return }
+            
+            Task { @MainActor in
+                self.lastSentCommand = command
+            }
+            
+            if let config = settingsManager.laptopConfig {
+                if !wsClient.isConnected || settingsManager.selectedSessionId != sessionId {
+                    connectToTerminalStream(config: config, sessionId: sessionId)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        var retryCount = 0
+                        let maxRetries = 3
+                        
+                        func trySend() {
+                            if self.wsClient.isConnected {
+                                self.sendCommandToTerminal(command, to: self.wsClient)
+                                print("📤 Sent command via WebSocket input: \(command)")
+                            } else if retryCount < maxRetries {
+                                retryCount += 1
+                                print("⚠️ WebSocket not connected, retrying (\(retryCount)/\(maxRetries))...")
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                                    trySend()
                                 }
-                                }
-                                
-                                trySend()
+                            } else {
+                                print("❌ WebSocket not connected after \(maxRetries) retries, command not sent")
                             }
-                        } else {
-                            // WebSocket is connected, send command immediately
-                            // Send command as a single string with \r at the end
-                            // This matches what xterm.js sends when user presses Enter
-                            sendCommandToTerminal(command, to: wsClient)
-                            print("📤 Sent command via WebSocket input: \(command)")
                         }
+                        
+                        trySend()
                     }
+                } else {
+                    sendCommandToTerminal(command, to: wsClient)
+                    print("📤 Sent command via WebSocket input: \(command)")
                 }
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TranscriptionStarted"))) { _ in
+.onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TranscriptionStarted"))) { _ in
             // Clear all terminal output when transcription starts
             Task { @MainActor in
                 print("🎤 Transcription started")
@@ -870,7 +875,7 @@ struct RecordingView: View {
                             }
         
         guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }),
-              session.terminalType == .cursorAgent else {
+              (session.terminalType == .cursorAgent || session.terminalType.isHeadless) else {
             recordingStreamClient.disconnect()
             recordingStreamSessionId = nil
                         return
@@ -1392,9 +1397,9 @@ struct RecordingView: View {
             return
         }
         
-        // Check if we're in a cursor_agent terminal
-        guard isCursorAgentTerminal else {
-            print("⚠️ scheduleAutoTTS: Not in cursor_agent terminal, skipping TTS")
+        // Require a headless terminal for automatic TTS
+        guard isHeadlessTerminal else {
+            print("⚠️ scheduleAutoTTS: Not in headless terminal, skipping TTS")
             return
         }
         
@@ -1436,9 +1441,9 @@ struct RecordingView: View {
                     }
                 } else {
                     // Not playing - start playback
-                    // Check if we're still in cursor_agent terminal
-                    guard self.isCursorAgentTerminal else {
-                        print("⚠️ scheduleAutoTTS: No longer in cursor_agent terminal, skipping playback")
+                    // Check if we're still in headless terminal
+                    guard self.isHeadlessTerminal else {
+                        print("⚠️ scheduleAutoTTS: No longer in headless terminal, skipping playback")
                         return
                     }
                     print("🔊 scheduleAutoTTS: Starting playback")
@@ -1479,8 +1484,8 @@ struct RecordingView: View {
         }
         
         // Check if we're in a cursor_agent terminal
-        guard isCursorAgentTerminal else {
-            print("⚠️ playAccumulatedTTS: Not in cursor_agent terminal, skipping")
+        guard isHeadlessTerminal else {
+            print("⚠️ playAccumulatedTTS: Not in headless terminal, skipping")
             return
         }
         
@@ -1537,9 +1542,9 @@ struct RecordingView: View {
         
         // Process queue if there are items
         while !ttsQueue.isEmpty {
-            // Check if we're still in cursor_agent terminal
-            guard isCursorAgentTerminal else {
-                print("🔇 processQueueAfterPlayback: No longer in cursor_agent terminal, clearing queue and stopping playback")
+            // Check if we're still in a headless terminal
+            guard isHeadlessTerminal else {
+                print("🔇 processQueueAfterPlayback: No longer in headless terminal, clearing queue and stopping playback")
                 await MainActor.run {
                     self.ttsQueue = []
                     if self.audioPlayer.isPlaying {
@@ -1556,9 +1561,9 @@ struct RecordingView: View {
             
             // Wait for playback to finish
             while audioPlayer.isPlaying {
-                // Check again if we're still in cursor_agent terminal
-                if !isCursorAgentTerminal {
-                    print("🔇 processQueueAfterPlayback: No longer in cursor_agent terminal during playback, stopping")
+                // Check again if we're still in a headless terminal
+                if !isHeadlessTerminal {
+                    print("🔇 processQueueAfterPlayback: No longer in headless terminal during playback, stopping")
                     await MainActor.run {
                         self.ttsQueue = []
                         if self.audioPlayer.isPlaying {
@@ -1611,9 +1616,9 @@ struct RecordingView: View {
             return
         }
         
-        // Check if we're in a cursor_agent terminal (unless from queue, which was already validated)
-        if !isFromQueue && !isCursorAgentTerminal {
-            print("⚠️ generateAndPlayTTS: Not in cursor_agent terminal, skipping")
+        // Check if we're in a headless terminal (unless from queue, which was already validated)
+        if !isFromQueue && !isHeadlessTerminal {
+            print("⚠️ generateAndPlayTTS: Not in headless terminal, skipping")
             return
         }
         
