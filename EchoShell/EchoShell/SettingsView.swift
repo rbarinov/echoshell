@@ -10,9 +10,18 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @StateObject private var watchManager = WatchConnectivityManager.shared
+    @StateObject private var laptopHealthChecker = LaptopHealthChecker()
     @State private var showingQRScanner = false
     @State private var scannedConfig: TunnelConfig?
     @State private var hasProcessedScan = false // Prevent processing the same scan multiple times
+    
+    // Get connection state for header
+    private var connectionState: ConnectionState {
+        if settingsManager.laptopConfig != nil {
+            return laptopHealthChecker.connectionState
+        }
+        return .disconnected
+    }
     
     var body: some View {
         Form {
@@ -139,11 +148,33 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
                 }
+        }
+        .sheet(isPresented: $showingQRScanner) {
+            QRScannerView(scannedConfig: $scannedConfig)
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            RecordingHeaderView(
+                connectionState: connectionState,
+                leftButtonType: .none
+            )
+            .background(Color(.systemBackground))
+        }
+        .task {
+            if let config = settingsManager.laptopConfig {
+                laptopHealthChecker.start(config: config)
             }
-            .sheet(isPresented: $showingQRScanner) {
-                QRScannerView(scannedConfig: $scannedConfig)
+        }
+        .onChange(of: settingsManager.laptopConfig) { oldValue, newValue in
+            if let config = newValue {
+                laptopHealthChecker.start(config: config)
+            } else {
+                laptopHealthChecker.stop()
             }
-            .onChange(of: scannedConfig) { oldValue, newValue in
+        }
+        .onDisappear {
+            laptopHealthChecker.stop()
+        }
+        .onChange(of: scannedConfig) { oldValue, newValue in
                 // Only process if we have a new config and haven't processed it yet
                 guard let config = newValue else {
                     // If config is cleared (nil), reset the processing flag

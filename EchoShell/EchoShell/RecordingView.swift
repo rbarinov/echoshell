@@ -317,10 +317,14 @@ struct RecordingView: View {
             }
             .padding(.top, 8)
         }
-        .safeAreaInset(edge: .top) {
+        .safeAreaInset(edge: .top, spacing: 0) {
             let worstState = getWorstConnectionState()
-            RecordingHeaderView(connectionState: worstState)
+            RecordingHeaderView(
+                connectionState: worstState,
+                leftButtonType: .none
+            )
                 .id("\(worstState.rawValue)-\(settingsManager.commandMode.rawValue)")
+                .background(Color(.systemBackground))
                 .onAppear {
                     print("📱 RecordingHeaderView: Appeared with state: \(worstState)")
                 }

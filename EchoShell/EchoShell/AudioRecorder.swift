@@ -456,6 +456,13 @@ extension AudioRecorder {
                         self.recordingURL = nil
                     }
                     
+                    // Notify that transcription is complete
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("TranscriptionCompleted"),
+                        object: nil,
+                        userInfo: ["text": text]
+                    )
+                    
                     // Send transcribed text to laptop for command execution
                     self.sendCommandToLaptop(text: text)
                     

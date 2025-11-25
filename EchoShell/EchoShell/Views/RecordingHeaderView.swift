@@ -3,10 +3,23 @@
 //  EchoShell
 //
 //  Created for Voice-Controlled Terminal Management System
-//  Common header component with mode toggle and connection status
+//  Global header component with connection status and optional left button
 //
 
 import SwiftUI
+
+enum HeaderLeftButtonType {
+    case none
+    case createTerminal(menuActions: [TerminalCreationAction])
+    case back(action: () -> Void)
+}
+
+struct TerminalCreationAction {
+    let title: String
+    let icon: String
+    let terminalType: TerminalType
+    let action: () -> Void
+}
 
 struct RecordingHeaderView: View {
     @EnvironmentObject var settingsManager: SettingsManager
@@ -14,17 +27,49 @@ struct RecordingHeaderView: View {
     // Connection state - passed from parent, updates automatically
     let connectionState: ConnectionState
     
+    // Left button type
+    let leftButtonType: HeaderLeftButtonType
+    
     var body: some View {
         HStack(spacing: 12) {
-            // Left spacer to push indicator to the right
-            Spacer()
+            // Left button (if any)
+            switch leftButtonType {
+            case .none:
+                Spacer()
+            case .createTerminal(let menuActions):
+                Menu {
+                    ForEach(menuActions, id: \.title) { action in
+                        Button {
+                            action.action()
+                        } label: {
+                            Label(action.title, systemImage: action.icon)
+                        }
+                    }
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundColor(.blue)
+                }
+                Spacer()
+            case .back(let action):
+                Button {
+                    action()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.blue)
+                }
+                Spacer()
+            }
             
             // Connection status indicator on the right
             ConnectionStatusIndicator(state: connectionState)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+        .background(Color(.systemBackground))
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
