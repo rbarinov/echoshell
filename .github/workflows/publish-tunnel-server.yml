@@ -1,0 +1,61 @@
+name: Publish Tunnel Server to GitHub Packages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'tunnel-server/**'
+      - '.github/workflows/publish-tunnel-server.yml'
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.1)'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@rbarinov'
+      
+      - name: Configure npm for GitHub Packages
+        run: |
+          echo "@rbarinov:registry=https://npm.pkg.github.com" >> ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
+      
+      - name: Install dependencies
+        working-directory: ./tunnel-server
+        run: npm ci
+      
+      - name: Build package
+        working-directory: ./tunnel-server
+        run: npm run build
+      
+      - name: Update version if provided
+        if: ${{ github.event.inputs.version != '' }}
+        working-directory: ./tunnel-server
+        run: |
+          npm version ${{ github.event.inputs.version }} --no-git-tag-version
+      
+      - name: Publish to GitHub Packages
+        working-directory: ./tunnel-server
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

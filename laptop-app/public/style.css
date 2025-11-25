@@ -1,0 +1,260 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: #1e1e1e;
+    color: #d4d4d4;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 30px;
+    padding-bottom: 20px;
+    border-bottom: 2px solid #3e3e3e;
+}
+
+h1 {
+    font-size: 28px;
+    color: #4ec9b0;
+}
+
+.btn {
+    padding: 10px 20px;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+.btn-primary {
+    background: #007acc;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #005a9e;
+}
+
+.btn-success {
+    background: #4caf50;
+    color: white;
+}
+
+.btn-success:hover {
+    background: #45a049;
+}
+
+.btn-secondary {
+    background: #6c757d;
+    color: white;
+}
+
+.btn-secondary:hover {
+    background: #5a6268;
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+}
+
+.sessions-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+    margin-bottom: 30px;
+}
+
+.session-card {
+    background: #252526;
+    border: 1px solid #3e3e3e;
+    border-radius: 8px;
+    padding: 20px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.session-card:hover {
+    border-color: #007acc;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 122, 204, 0.2);
+}
+
+.session-card h3 {
+    color: #4ec9b0;
+    margin-bottom: 10px;
+    font-size: 18px;
+}
+
+.session-card .session-id {
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    color: #858585;
+    margin-bottom: 8px;
+}
+
+.session-card .session-dir {
+    color: #ce9178;
+    font-size: 14px;
+    margin-bottom: 8px;
+    word-break: break-all;
+}
+
+.session-card .session-time {
+    color: #858585;
+    font-size: 12px;
+}
+
+.loading {
+    text-align: center;
+    padding: 40px;
+    color: #858585;
+    font-size: 16px;
+}
+
+.hidden {
+    display: none;
+}
+
+.session-detail {
+    background: #252526;
+    border: 1px solid #3e3e3e;
+    border-radius: 8px;
+    padding: 20px;
+    margin-top: 30px;
+}
+
+.session-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 1px solid #3e3e3e;
+}
+
+.session-header h2 {
+    color: #4ec9b0;
+    font-size: 24px;
+}
+
+.session-actions {
+    display: flex;
+    gap: 10px;
+}
+
+.session-info {
+    background: #1e1e1e;
+    padding: 15px;
+    border-radius: 5px;
+    margin-bottom: 20px;
+    font-size: 14px;
+}
+
+.session-info div {
+    margin-bottom: 8px;
+}
+
+.session-info strong {
+    color: #858585;
+    margin-right: 10px;
+}
+
+.terminal-container {
+    margin-bottom: 30px;
+}
+
+.terminal {
+    background: #1e1e1e;
+    border: 1px solid #3e3e3e;
+    border-radius: 5px;
+    padding: 10px;
+    min-height: 400px;
+    height: 500px;
+    width: 100%;
+    position: relative;
+}
+
+/* xterm.js terminal styling */
+.terminal .xterm {
+    height: 100%;
+    width: 100%;
+}
+
+.terminal .xterm-viewport {
+    background-color: #1e1e1e !important;
+}
+
+.terminal .xterm-screen {
+    background-color: #1e1e1e !important;
+}
+
+/* Terminal input is now handled by xterm.js directly */
+
+.history-section {
+    margin-top: 30px;
+    padding-top: 20px;
+    border-top: 1px solid #3e3e3e;
+}
+
+.history-section h3 {
+    color: #4ec9b0;
+    margin-bottom: 15px;
+}
+
+.history-content {
+    background: #1e1e1e;
+    border: 1px solid #3e3e3e;
+    border-radius: 5px;
+    padding: 15px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    color: #858585;
+    line-height: 1.5;
+}
+
+/* Scrollbar styling */
+.history-content::-webkit-scrollbar {
+    width: 10px;
+}
+
+.history-content::-webkit-scrollbar-track {
+    background: #1e1e1e;
+}
+
+.history-content::-webkit-scrollbar-thumb {
+    background: #3e3e3e;
+    border-radius: 5px;
+}
+
+.history-content::-webkit-scrollbar-thumb:hover {
+    background: #4e4e4e;
+}

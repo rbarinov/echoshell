@@ -1,0 +1,67 @@
+{
+  "name": "@rbarinov/tunnel-server",
+  "version": "1.0.9",
+  "description": "Tunnel server for Voice-Controlled Terminal Management System",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "start": "node dist/index.js",
+    "start:dev": "npm run dev",
+    "start:prod": "npm run build && npm run start",
+    "type-check": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "rebuild": "npm run clean && npm run build",
+    "lint": "echo 'No linter configured. Run type-check instead.' && npm run type-check",
+    "test": "echo 'No tests configured yet'",
+    "prestart": "npm run build",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "tunnel",
+    "websocket",
+    "proxy",
+    "server",
+    "relay",
+    "bridge"
+  ],
+  "author": "Roman Barinov <rbarinov@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rbarinov/echoshell.git",
+    "directory": "tunnel-server"
+  },
+  "bugs": {
+    "url": "https://github.com/rbarinov/echoshell/issues"
+  },
+  "homepage": "https://github.com/rbarinov/echoshell/tree/main/tunnel-server#readme",
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "ws": "^8.14.2",
+    "dotenv": "^16.3.1",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/ws": "^8.5.8",
+    "@types/cors": "^2.8.17",
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.2",
+    "tsx": "^4.6.2"
+  }
+}

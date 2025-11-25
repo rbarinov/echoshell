@@ -1,0 +1,60 @@
+# EchoShell - Voice-Controlled Terminal Management System
+
+## Project Overview
+Distributed system for remote terminal management and execution via voice commands from mobile devices (iPhone/Apple Watch), with real-time output streaming and text-to-speech responses.
+
+## Mandatory Rules
+
+### English Only
+**CRITICAL**: All code, comments, documentation, commit messages, and communication MUST be in English.
+
+### Conventional Commits
+All commits MUST follow the format: `<type>(<scope>): <subject>`
+Types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert
+
+## Technology Stack
+- **Server**: TypeScript 5.0+, Node.js 20+, Express/Fastify
+- **Client**: Swift 5.9+, SwiftUI (iOS 17+, watchOS 10+)
+- **AI**: OpenAI (GPT-4, Whisper, TTS), Anthropic Claude
+- **Tools**: Cloudflare Tunnel, LangChain.js, node-pty
+
+## Available Commands
+
+### /review
+Review a pull request with detailed feedback including:
+1. Code quality assessment
+2. Security implications
+3. Performance considerations
+4. Suggested improvements
+
+### /security-review
+Complete security review analyzing:
+- Authentication/authorization issues
+- Input validation and sanitization
+- API key handling and storage
+- Potential vulnerabilities (OWASP Top 10)
+- Command injection risks
+
+### /init
+Initialize or update CLAUDE.md with codebase documentation including:
+- Project structure overview
+- Key files and their purposes
+- Important patterns and conventions
+- Setup instructions
+
+## Code Standards
+- TypeScript strict mode enabled
+- Explicit error handling required
+- Security-first approach for all features
+- Comprehensive logging for debugging
+- Real-time output streaming for terminal sessions
+
+## Security Considerations
+- Master API keys stored only on laptop
+- Ephemeral keys for mobile devices (1-hour expiration)
+- Rate limiting per device
+- TLS/WSS for all communication
+- Dangerous command blocking (rm -rf, mkfs, dd)
+
+## Project Context
+See CLAUDE.md for full technical specification and implementation details.

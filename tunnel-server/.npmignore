@@ -1,0 +1,52 @@
+# Source files
+src/
+*.ts
+!*.d.ts
+
+# Development files
+.env
+.env.*
+!.env.example
+
+# Build artifacts (only dist/ should be included)
+*.log
+*.tsbuildinfo
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+test/
+tests/
+*.test.ts
+*.spec.ts
+__tests__/
+
+# Documentation (keep README.md and LICENSE)
+docs/
+*.md
+!README.md
+
+# CI/CD
+.github/
+.gitignore
+.gitattributes
+
+# Development scripts
+build_and_launch.sh
+launch_both_apps.sh
+
+# Dependencies (will be installed by npm)
+node_modules/
+
+# TypeScript config (not needed in package)
+tsconfig.json
+
