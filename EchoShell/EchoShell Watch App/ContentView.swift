@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import WatchKit
 
 struct ContentView: View {
     @EnvironmentObject var audioRecorder: AudioRecorder
@@ -100,11 +99,6 @@ struct ContentView: View {
             // Load terminal sessions if laptop connected
             if let config = settingsManager.laptopConfig {
                 Task {
-                    // Request ephemeral keys if needed
-                    if settingsManager.shouldRefreshKeys() || settingsManager.ephemeralKeys == nil {
-                        await requestEphemeralKeys(config: config)
-                    }
-                    
                     await terminalViewModel.loadSessions(config: config)
                     // Set default session if none selected
                     if settingsManager.selectedSessionId == nil && !terminalViewModel.sessions.isEmpty {
@@ -569,15 +563,8 @@ struct ContentView: View {
     
     // Play TTS for command result
     private func playTTS(for text: String) async {
-        // Request keys if needed
-        if settingsManager.shouldRefreshKeys() || settingsManager.ephemeralKeys == nil {
-            if let config = settingsManager.laptopConfig {
-                await requestEphemeralKeys(config: config)
-            }
-        }
-        
-        guard let keys = settingsManager.ephemeralKeys else {
-            print("⚠️ No ephemeral keys for TTS")
+        guard let laptopConfig = settingsManager.laptopConfig else {
+            print("⚠️ No laptop config for TTS")
             return
         }
         
@@ -587,9 +574,8 @@ struct ContentView: View {
         }
         
         do {
-            guard let ttsEndpoint = settingsManager.providerEndpoints?.tts,
-                  let config = settingsManager.laptopConfig else {
-                print("❌ Watch: TTS endpoint or config not available")
+            guard let ttsEndpoint = settingsManager.providerEndpoints?.tts else {
+                print("❌ Watch: TTS endpoint not available")
                 return
             }
             
@@ -600,7 +586,7 @@ struct ContentView: View {
             var request = URLRequest(url: URL(string: ttsEndpoint)!)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue(config.authKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
+            request.setValue(laptopConfig.authKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
             
             var body: [String: Any] = [
                 "text": cleanedText,
@@ -785,25 +771,8 @@ struct ContentView: View {
             return
         }
         
-        // Trigger haptic feedback
-        let haptic = WKInterfaceDevice.current()
-        switch newState {
-        case .dead:
-            haptic.play(.failure)
-        case .disconnected:
-            if oldState != .dead {
-                haptic.play(.failure)
-            }
-        case .reconnecting:
-            haptic.play(.retry)
-        case .connected:
-            if oldState == .reconnecting || oldState == .dead {
-                haptic.play(.success)
-            }
-        case .connecting:
-            // Don't trigger haptic for initial connection
-            break
-        }
+        // Haptic feedback is not available in watchOS 10+ without WatchKit
+        // Connection state changes are already visible in the UI
     }
     
 }
@@ -875,7 +844,6 @@ private struct SessionPickerSheet: View {
     private func label(for type: TerminalType) -> String {
         switch type {
         case .cursor:
-            return "Cursor Agent"
             return "Cursor CLI"
         case .claudeCode:
             return "Claude CLI"

@@ -8,15 +8,52 @@
 import SwiftUI
 import AVFoundation
 
+// Recording state enum
+enum RecordingState {
+    case idle
+    case recording
+    case transcribing
+    case waitingForAgent
+    case generatingTTS
+    case playingTTS
+    
+    var description: String {
+        switch self {
+        case .idle:
+            return "Ready to record"
+        case .recording:
+            return "Recording..."
+        case .transcribing:
+            return "Transcribing..."
+        case .waitingForAgent:
+            return "Waiting for agent response..."
+        case .generatingTTS:
+            return "Generating speech..."
+        case .playingTTS:
+            return "Playing response..."
+        }
+    }
+    
+    // All states use the same standard color (secondary) for consistency
+    var color: Color {
+        return .secondary
+    }
+    
+    // Check if state is active (should show pulsing dot)
+    var isActive: Bool {
+        return self != .idle
+    }
+}
+
 struct RecordingView: View {
     @StateObject private var audioRecorder = AudioRecorder()
     @StateObject private var terminalViewModel = TerminalViewModel()
     @StateObject private var wsClient = WebSocketClient()
     @StateObject private var recordingStreamClient = RecordingStreamClient()
+    @StateObject private var laptopHealthChecker = LaptopHealthChecker()
     @EnvironmentObject var settingsManager: SettingsManager
     @Environment(\.colorScheme) var colorScheme
     @State private var showSessionPicker = false
-    @State private var showModeTooltip: CommandMode? = nil
     // Use settingsManager.lastTerminalOutput instead of local state to persist across navigation
     @State private var accumulatedOutput: String = "" // Accumulate output chunks
     @State private var lastSentCommand: String = "" // Track last sent command to filter it from output
@@ -27,6 +64,9 @@ struct RecordingView: View {
     @State private var ttsQueue: [String] = [] // Queue for TTS messages
     @State private var lastOutputSnapshot: String = "" // Snapshot of output when timer started
     @State private var recordingStreamSessionId: String?
+    @State private var lastTTSAudioData: Data? = nil // Store last TTS audio for replay
+    @State private var isGeneratingTTS = false // Track TTS generation state
+    @State private var pulseAnimation: Bool = false // For pulsing dot animation
     
     // Centralized state reset function
     private func resetState() {
@@ -42,22 +82,42 @@ struct RecordingView: View {
         ttsTimer = nil
     }
     
-    // Get worst connection state between WebSocket and RecordingStream
+    // Get worst connection state
+    // Priority: laptop health check > WebSocket/RecordingStream (for direct mode)
+    // In agent mode: only laptop health check matters
+    // In direct mode: laptop health check + WebSocket/RecordingStream states
     private func getWorstConnectionState() -> ConnectionState {
+        // No laptop config means no connection to backend
+        guard settingsManager.laptopConfig != nil else {
+            return .disconnected
+        }
+        
+        // Get laptop health check state (real connection status)
+        let laptopState = laptopHealthChecker.connectionState
+        
+        // In agent mode, only laptop health check matters (no WebSocket needed)
+        if settingsManager.commandMode == .agent {
+            return laptopState
+        }
+        
+        // In direct mode, check both laptop health AND WebSocket/RecordingStream states
         let wsState = wsClient.connectionState
         let recordingState = recordingStreamClient.connectionState
         
         // Priority: dead > disconnected > reconnecting > connecting > connected
-        if wsState == .dead || recordingState == .dead {
+        // Combine laptop state with WebSocket states
+        let states = [laptopState, wsState, recordingState]
+        
+        if states.contains(.dead) {
             return .dead
         }
-        if wsState == .disconnected || recordingState == .disconnected {
+        if states.contains(.disconnected) {
             return .disconnected
         }
-        if wsState == .reconnecting || recordingState == .reconnecting {
+        if states.contains(.reconnecting) {
             return .reconnecting
         }
-        if wsState == .connecting || recordingState == .connecting {
+        if states.contains(.connecting) {
             return .connecting
         }
         return .connected
@@ -165,8 +225,6 @@ struct RecordingView: View {
     private var mainContentView: some View {
         ScrollView {
             VStack(spacing: 20) {
-                topBarView
-                
                 if settingsManager.laptopConfig != nil {
                     if settingsManager.commandMode == .direct {
                         // In direct mode, only show cursor_agent terminals
@@ -187,141 +245,61 @@ struct RecordingView: View {
                 
                 recordButtonView
                 
-                statusTextView
+                // Status indicator with progress (immediately below button)
+                statusIndicatorView
                 
                 Spacer()
-                    .frame(height: 20)
-                
-                transcriptionIndicatorView
+                    .frame(height: 0)
                 
                 resultDisplayView
             }
+            .padding(.top, 8)
+        }
+        .safeAreaInset(edge: .top) {
+            RecordingHeaderView(connectionState: getWorstConnectionState())
+                .id("\(getWorstConnectionState().rawValue)-\(settingsManager.commandMode.rawValue)")
+        }
+        .onChange(of: wsClient.connectionState) { _, _ in
+            // View will automatically update via .id modifier
+        }
+        .onChange(of: recordingStreamClient.connectionState) { _, _ in
+            // View will automatically update via .id modifier
+        }
+        .onChange(of: settingsManager.commandMode) { _, _ in
+            // View will automatically update via .id modifier
+        }
+        .onChange(of: settingsManager.laptopConfig) { oldValue, newValue in
+            // Start/stop health checker when config changes
+            if let config = newValue {
+                laptopHealthChecker.start(config: config)
+            } else {
+                laptopHealthChecker.stop()
+            }
+            // View will automatically update via .id modifier
+        }
+        .onAppear {
+            // Start health checker if config exists
+            if let config = settingsManager.laptopConfig {
+                laptopHealthChecker.start(config: config)
+            }
+        }
+        .onDisappear {
+            // Stop health checker when view disappears
+            laptopHealthChecker.stop()
+        }
+        .onChange(of: laptopHealthChecker.connectionState) { _, _ in
+            // View will automatically update via .id modifier when health check state changes
         }
     }
     
-    private var topBarView: some View {
-        HStack {
-                    if settingsManager.laptopConfig != nil {
-                        // Custom Command Mode Toggle (only 2 buttons)
-                        HStack(spacing: 4) {
-                            // AI Agent button (icon only)
-                            Button(action: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    settingsManager.commandMode = .agent
-                                }
-                            }) {
-                                Image(systemName: CommandMode.agent.icon)
-                                    .font(.system(size: 20, weight: .semibold))
-                                    .foregroundColor(settingsManager.commandMode == .agent ? .white : .primary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .padding(.horizontal, 16)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(settingsManager.commandMode == .agent ? Color.blue : Color.clear)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .onLongPressGesture(minimumDuration: 0.5) {
-                                showModeTooltip = .agent
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                    if showModeTooltip == .agent {
-                                        showModeTooltip = nil
-                                    }
-                                }
-                            }
-                            
-                            // Direct Terminal button (icon only)
-                            Button(action: {
-                                withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                    settingsManager.commandMode = .direct
-                                }
-                            }) {
-                                Image(systemName: CommandMode.direct.icon)
-                                    .font(.system(size: 20, weight: .semibold))
-                                    .foregroundColor(settingsManager.commandMode == .direct ? .white : .primary)
-                                    .frame(maxWidth: .infinity)
-                                    .padding(.vertical, 12)
-                                    .padding(.horizontal, 16)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 10)
-                                            .fill(settingsManager.commandMode == .direct ? Color.blue : Color.clear)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .onLongPressGesture(minimumDuration: 0.5) {
-                                showModeTooltip = .direct
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                    if showModeTooltip == .direct {
-                                        showModeTooltip = nil
-                                    }
-                                }
-                            }
-                        }
-                        .background(
-                            RoundedRectangle(cornerRadius: 10)
-                                .fill(Color.secondary.opacity(0.15))
-                        )
-                        .frame(maxWidth: 120)
-                        .overlay(
-                            // Tooltip overlay
-                            Group {
-                                if let mode = showModeTooltip {
-                                    VStack(spacing: 0) {
-                                        Text(mode.description)
-                                            .font(.caption2)
-                                            .foregroundColor(.white)
-                                            .multilineTextAlignment(.center)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 8)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 8)
-                                                    .fill(Color.black.opacity(0.85))
-                                            )
-                                            .shadow(color: .black.opacity(0.3), radius: 8, x: 0, y: 4)
-                                            .padding(.top, 55)
-                                        Spacer()
-                                    }
-                                    .frame(maxWidth: .infinity)
-                                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                                }
-                            }
-                            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: showModeTooltip)
-                        )
-                    }
-                    
-                    Spacer()
-                    
-                    // Connection status indicator
-                    if settingsManager.laptopConfig != nil {
-                        // Show the worst connection state between WebSocket and RecordingStream
-                        let worstState = getWorstConnectionState()
-                        ConnectionStatusView(connectionState: worstState)
-                            .onChange(of: worstState) { oldValue, newValue in
-                                handleConnectionStateChange(from: oldValue, to: newValue)
-                            }
-                    } else {
-                        ConnectionStatusView(connectionState: .disconnected)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-    }
     
     private var sessionSelectorView: some View {
         // Terminal Session Selector (simplified)
         HStack {
             // Hide session picker in agent mode - agent works without terminal context
             if settingsManager.commandMode == .agent {
-                HStack(spacing: 8) {
-                    Image(systemName: "brain.head.profile")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                    Text("Agent Mode")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // Empty space - no label needed, toggle in header shows the mode
+                EmptyView()
             } else if terminalViewModel.isLoading {
                 ProgressView()
                     .scaleEffect(0.8)
@@ -496,77 +474,110 @@ struct RecordingView: View {
         .padding(.horizontal, 30)
     }
     
-    private var statusTextView: some View {
-        // Status text
+    // Status indicator with animated dot
+    private var statusIndicatorView: some View {
         Group {
-            if audioRecorder.isRecording {
-                Text("Recording...")
-                    .font(.title3)
-                    .foregroundColor(.red)
-                    .fontWeight(.semibold)
-            } else if settingsManager.laptopConfig == nil {
-                Text("Please connect to laptop in Settings")
-                    .font(.subheadline)
-                    .foregroundColor(.orange)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
-            } else if settingsManager.commandMode == .direct && !isHeadlessTerminal {
-                Text("Select a headless terminal")
-                    .font(.subheadline)
-                    .foregroundColor(.orange)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
+            let state = getCurrentState()
+            
+            // Show error messages outside the status component
+            if state == .idle {
+                if settingsManager.laptopConfig == nil {
+                    Text("Please connect to laptop in Settings")
+                        .font(.subheadline)
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                } else if settingsManager.commandMode == .direct && !isHeadlessTerminal {
+                    Text("Select a headless terminal")
+                        .font(.subheadline)
+                        .foregroundColor(.orange)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 20)
+                } else {
+                    // Ready state - show inside status component (no dot for idle)
+                    Text(state.description)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .fontWeight(.medium)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                }
             } else {
-                Text("Tap to Record")
-                    .font(.title3)
-                    .foregroundColor(.secondary)
+                // Active states - show with pulsing and blinking dot
+                HStack(spacing: 8) {
+                    // Animated indicator dot (pulses and blinks for active states)
+                    Circle()
+                        .fill(Color.secondary)
+                        .frame(width: 8, height: 8)
+                        .scaleEffect(pulseAnimation ? 1.2 : 1.0)
+                        .opacity(pulseAnimation ? 1.0 : 0.3)
+                        .animation(
+                            .easeInOut(duration: 0.6)
+                            .repeatForever(autoreverses: true),
+                            value: pulseAnimation
+                        )
+                        .onAppear {
+                            // Start animation when view appears
+                            pulseAnimation = true
+                        }
+                        .onChange(of: state) { oldValue, newValue in
+                            // Restart animation when state changes
+                            if oldValue != newValue {
+                                pulseAnimation = false
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                    pulseAnimation = true
+                                }
+                            }
+                        }
+                    
+                    // Status text
+                    Text(state.description)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .fontWeight(.medium)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
             }
         }
     }
     
-    private var transcriptionIndicatorView: some View {
-        // Transcription indicator
-        Group {
-            if audioRecorder.isTranscribing {
-                VStack(spacing: 12) {
-                    ProgressView()
-                        .scaleEffect(1.2)
-                    Text("Transcribing...")
-                        .font(.headline)
-                        .foregroundColor(.secondary)
-                }
-                .padding(.vertical, 20)
-            }
+    // Determine current state
+    private func getCurrentState() -> RecordingState {
+        if audioRecorder.isRecording {
+            return .recording
+        } else if audioRecorder.isTranscribing {
+            return .transcribing
+        } else if audioPlayer.isPlaying {
+            return .playingTTS
+        } else if isGeneratingTTS {
+            return .generatingTTS
+        } else if settingsManager.commandMode == .agent && !audioRecorder.recognizedText.isEmpty && settingsManager.lastTerminalOutput.isEmpty {
+            // In agent mode, if we have recognized text but no response yet (lastTerminalOutput is empty), we're waiting
+            // lastTerminalOutput will be updated when agent response is received in AudioRecorder
+            return .waitingForAgent
+        } else {
+            return .idle
         }
     }
     
     private var resultDisplayView: some View {
-        // Display last transcription/terminal output and statistics
+        // Display last transcription/terminal output
         // In direct mode: show when cursor_agent terminal is selected
-        // In agent mode: show when there's recognized text
+        // In agent mode: show when there's recognized text OR lastTerminalOutput (agent response)
         Group {
             let shouldShow = settingsManager.commandMode == .direct 
                 ? isHeadlessTerminal
-                : !audioRecorder.recognizedText.isEmpty
+                : (!audioRecorder.recognizedText.isEmpty || !settingsManager.lastTerminalOutput.isEmpty)
             
             if shouldShow && !audioRecorder.isTranscribing {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Header
-                    HStack {
-                        Image(systemName: settingsManager.commandMode == .direct ? "terminal.fill" : "text.bubble.fill")
-                            .foregroundColor(.blue)
-                        Text(settingsManager.commandMode == .direct ? "Command Result" : "Command Result")
-                            .font(.headline)
-                        Spacer()
-                    }
-                    .padding(.horizontal, 20)
-                    
                     // Display text based on mode
                     // In direct mode, show terminal output (result), not the command
-                    // In agent mode, show the result from audioRecorder
+                    // In agent mode, show recognized text or agent response
                     let displayText = settingsManager.commandMode == .direct 
                         ? (settingsManager.lastTerminalOutput.isEmpty ? "Waiting for command output..." : settingsManager.lastTerminalOutput)
-                        : audioRecorder.recognizedText
+                        : (audioRecorder.recognizedText.isEmpty ? settingsManager.lastTerminalOutput : audioRecorder.recognizedText)
                     
                     Text(displayText)
                         .onAppear {
@@ -581,118 +592,33 @@ struct RecordingView: View {
                         .font(.body)
                         .foregroundColor(.primary)
                         .lineLimit(nil)
-                        .padding(16)
+                        .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(Color.secondary.opacity(0.1))
                         .cornerRadius(12)
                         .padding(.horizontal, 20)
                     
-                    // Statistics
-                    if audioRecorder.lastRecordingDuration > 0 {
-                        VStack(spacing: 12) {
-                            Divider()
-                                .padding(.horizontal, 20)
-                            
-                            // First row: duration, cost, processing time
-                            HStack(spacing: 16) {
-                                // Recording duration
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "mic.fill")
-                                            .font(.caption)
-                                            .foregroundColor(.blue)
-                                        Text("Recording")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Text(String(format: "%.1f s", audioRecorder.lastRecordingDuration))
-                                        .font(.subheadline)
-                                        .fontWeight(.semibold)
+                    // Replay button (show after TTS finished playing)
+                    if lastTTSAudioData != nil && !audioPlayer.isPlaying && getCurrentState() == .idle {
+                        HStack {
+                            Spacer()
+                            Button(action: {
+                                replayLastTTS()
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "speaker.wave.2.fill")
+                                        .font(.caption)
+                                    Text("Replay")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
                                 }
-                                
-                                Spacer()
-                                
-                                // Cost
-                                if audioRecorder.lastTranscriptionCost > 0 {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "dollarsign.circle")
-                                                .font(.caption)
-                                                .foregroundColor(.green)
-                                            Text("Cost")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                        }
-                                        Text(String(format: "$%.4f", audioRecorder.lastTranscriptionCost))
-                                            .font(.subheadline)
-                                            .fontWeight(.semibold)
-                                    }
-                                }
-                                
-                                Spacer()
-                                
-                                // Processing time
-                                if audioRecorder.lastTranscriptionDuration > 0 {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: "hourglass")
-                                                .font(.caption)
-                                                .foregroundColor(.orange)
-                                            Text("Processing")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                        }
-                                        Text(String(format: "%.1f s", audioRecorder.lastTranscriptionDuration))
-                                            .font(.subheadline)
-                                            .fontWeight(.semibold)
-                                    }
-                                }
+                                .foregroundColor(.blue)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.blue.opacity(0.1))
+                                .cornerRadius(8)
                             }
                             .padding(.horizontal, 20)
-                            
-                            // Second row: network traffic
-                            if audioRecorder.lastNetworkUsage.sent > 0 || audioRecorder.lastNetworkUsage.received > 0 {
-                                HStack(spacing: 16) {
-                                    // Sent
-                                    if audioRecorder.lastNetworkUsage.sent > 0 {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "arrow.up.circle")
-                                                    .font(.caption)
-                                                    .foregroundColor(.purple)
-                                                Text("Upload")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                            Text(formatBytes(audioRecorder.lastNetworkUsage.sent))
-                                                .font(.subheadline)
-                                                .fontWeight(.semibold)
-                                        }
-                                    }
-                                    
-                                    Spacer()
-                                    
-                                    // Received
-                                    if audioRecorder.lastNetworkUsage.received > 0 {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            HStack(spacing: 4) {
-                                                Image(systemName: "arrow.down.circle")
-                                                    .font(.caption)
-                                                    .foregroundColor(.purple)
-                                                Text("Download")
-                                                    .font(.caption)
-                                                    .foregroundColor(.secondary)
-                                            }
-                                            Text(formatBytes(audioRecorder.lastNetworkUsage.received))
-                                                .font(.subheadline)
-                                                .fontWeight(.semibold)
-                                        }
-                                    }
-                                    
-                                    Spacer()
-                                }
-                                .padding(.horizontal, 20)
-                            }
                         }
                     }
                 }
@@ -704,6 +630,23 @@ struct RecordingView: View {
         }
         .padding(.horizontal, 16)
         .padding(.bottom, 20)
+    }
+    
+    // Replay last TTS audio
+    private func replayLastTTS() {
+        guard let audioData = lastTTSAudioData else {
+            print("⚠️ No audio data to replay")
+            return
+        }
+        
+        Task { @MainActor in
+            do {
+                try self.audioPlayer.play(audioData: audioData)
+                print("🔊 Replaying last TTS audio")
+            } catch {
+                print("❌ Failed to replay TTS: \(error)")
+            }
+        }
     }
     
     // MARK: - View Modifiers
@@ -864,16 +807,9 @@ struct RecordingView: View {
                 print("   📊 Updating RecordingView with new transcription:")
                 print("      Text length: \((userInfo["text"] as? String ?? "").count) chars")
                 
-                // Update AudioRecorder with stats from Watch (ensure main thread)
+                // Update AudioRecorder with text from Watch (ensure main thread)
                 Task { @MainActor in
                     self.audioRecorder.recognizedText = userInfo["text"] as? String ?? ""
-                    self.audioRecorder.lastRecordingDuration = userInfo["recordingDuration"] as? TimeInterval ?? 0
-                    self.audioRecorder.lastTranscriptionCost = userInfo["transcriptionCost"] as? Double ?? 0
-                    self.audioRecorder.lastTranscriptionDuration = userInfo["processingTime"] as? TimeInterval ?? 0
-                    self.audioRecorder.lastNetworkUsage = (
-                        sent: userInfo["uploadSize"] as? Int64 ?? 0,
-                        received: userInfo["downloadSize"] as? Int64 ?? 0
-                    )
                     
                     print("   ✅ RecordingView updated successfully")
                 }
@@ -883,7 +819,41 @@ struct RecordingView: View {
             // When TTS playback finishes, process queue if there are items
             print("🔊 TTS playback finished, checking queue...")
             Task { @MainActor in
+                // Ensure all TTS-related flags are reset
+                self.isGeneratingTTS = false
+                
+                // Clear recognized text after playback to return to idle state
+                // This ensures we don't show "waiting for agent" after response is played
+                // But DON'T clear lastTerminalOutput - keep the agent response visible
+                if settingsManager.commandMode == .agent {
+                    self.audioRecorder.recognizedText = ""
+                }
                 await self.processQueueAfterPlayback()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AgentResponseTTSGenerating"))) { _ in
+            // TTS generation started
+            Task { @MainActor in
+                self.isGeneratingTTS = true
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AgentResponseTTSReady"))) { notification in
+            guard let userInfo = notification.userInfo,
+                  let audioData = userInfo["audioData"] as? Data else {
+                print("❌ AgentResponseTTSReady: Missing audio data")
+                return
+            }
+            
+            Task { @MainActor in
+                // TTS generation is complete, reset the flag
+                self.isGeneratingTTS = false
+                
+                do {
+                    try self.audioPlayer.play(audioData: audioData)
+                    print("🔊 Agent response TTS playback started")
+                } catch {
+                    print("❌ Failed to play agent response TTS: \(error)")
+                }
             }
         }
         .onDisappear {
@@ -1572,20 +1542,28 @@ struct RecordingView: View {
             return
         }
         
-        // Check for ephemeral keys
-        guard let keys = settingsManager.ephemeralKeys else {
-            print("⚠️ No ephemeral keys for TTS")
+        // Check for laptop config
+        guard let laptopConfig = settingsManager.laptopConfig else {
+            print("⚠️ No laptop config for TTS")
             return
         }
         
         print("🔊 Generating TTS for accumulated output (length: \(cleanedText.count)) at \(settingsManager.ttsSpeed)x speed...")
         
+        // Notify that TTS generation has started
+        await MainActor.run {
+            self.isGeneratingTTS = true
+        }
+        
         do {
             guard let ttsEndpoint = settingsManager.providerEndpoints?.tts else {
                 print("❌ TTS endpoint not available")
+                await MainActor.run {
+                    self.isGeneratingTTS = false
+                }
                 return
             }
-            let ttsHandler = LocalTTSHandler(apiKey: keys.tts, endpoint: ttsEndpoint)
+            let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
             let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             let language = settingsManager.transcriptionLanguage.rawValue
             
@@ -1598,9 +1576,12 @@ struct RecordingView: View {
                 language: language
             )
             
-            // Update last spoken text
+            // Update last spoken text and store audio data for replay
             await MainActor.run {
+                // TTS generation complete
+                self.isGeneratingTTS = false
                 self.lastTTSOutput = accumulated
+                self.lastTTSAudioData = audioData
             }
             
             // Play audio on main thread
@@ -1715,9 +1696,9 @@ struct RecordingView: View {
             return
         }
         
-        // Check for ephemeral keys
-        guard let keys = settingsManager.ephemeralKeys else {
-            print("⚠️ No ephemeral keys for TTS")
+        // Check for laptop config
+        guard settingsManager.laptopConfig != nil else {
+            print("⚠️ No laptop config for TTS")
             return
         }
         
@@ -1731,12 +1712,21 @@ struct RecordingView: View {
         
         print("🔊 Generating TTS (length: \(cleanedText.count)) at \(settingsManager.ttsSpeed)x speed...")
         
+        // Notify that TTS generation has started
+        await MainActor.run {
+            self.isGeneratingTTS = true
+        }
+        
         do {
-            guard let ttsEndpoint = settingsManager.providerEndpoints?.tts else {
-                print("❌ TTS endpoint not available")
+            guard let ttsEndpoint = settingsManager.providerEndpoints?.tts,
+                  let laptopConfig = settingsManager.laptopConfig else {
+                print("❌ TTS endpoint or laptop config not available")
+                await MainActor.run {
+                    self.isGeneratingTTS = false
+                }
                 return
             }
-            let ttsHandler = LocalTTSHandler(apiKey: keys.tts, endpoint: ttsEndpoint)
+            let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
             let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             let language = settingsManager.transcriptionLanguage.rawValue
             
@@ -1753,6 +1743,9 @@ struct RecordingView: View {
             // For queue items, we need to track what was actually spoken
             // Since queued items are already new content, we append them to lastTTSOutput
             await MainActor.run {
+                // TTS generation complete
+                self.isGeneratingTTS = false
+                
                 if isFromQueue && !self.lastTTSOutput.isEmpty {
                     // Append queued text to lastTTSOutput to track all spoken content
                     let separator = self.lastTTSOutput.hasSuffix(".") || self.lastTTSOutput.hasSuffix("!") || self.lastTTSOutput.hasSuffix("?") 
@@ -1766,8 +1759,9 @@ struct RecordingView: View {
                 }
             }
             
-            // Play audio on main thread
+            // Store audio data and play on main thread
             await MainActor.run {
+                self.lastTTSAudioData = audioData
                 do {
                     try self.audioPlayer.play(audioData: audioData)
                     print("🔊 TTS playback started at \(self.settingsManager.ttsSpeed)x speed")

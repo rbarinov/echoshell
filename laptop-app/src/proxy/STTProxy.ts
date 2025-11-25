@@ -1,5 +1,4 @@
 import type { STTProvider } from '../keys/STTProvider.js';
-import FormData from 'form-data';
 
 export async function transcribeAudio(
   sttProvider: STTProvider,
@@ -21,10 +20,10 @@ export async function transcribeAudio(
   if (providerType === 'openai') {
     // OpenAI Whisper API format
     const formData = new FormData();
-    formData.append('file', audioData, {
-      filename: 'audio.m4a',
-      contentType: 'audio/m4a'
-    });
+    // Convert Buffer to Uint8Array for File constructor
+    const uint8Array = new Uint8Array(audioData);
+    const file = new File([uint8Array], 'audio.m4a', { type: 'audio/m4a' });
+    formData.append('file', file);
     formData.append('model', model);
 
     if (language && language !== 'auto') {
@@ -34,10 +33,9 @@ export async function transcribeAudio(
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        ...formData.getHeaders()
+        'Authorization': `Bearer ${apiKey}`
       },
-      body: formData as unknown as BodyInit
+      body: formData
     });
 
     if (!response.ok) {
@@ -50,10 +48,10 @@ export async function transcribeAudio(
   } else if (providerType === 'elevenlabs') {
     // ElevenLabs STT API format (adjust based on actual API)
     const formData = new FormData();
-    formData.append('audio', audioData, {
-      filename: 'audio.m4a',
-      contentType: 'audio/m4a'
-    });
+    // Convert Buffer to Uint8Array for File constructor
+    const uint8Array = new Uint8Array(audioData);
+    const file = new File([uint8Array], 'audio.m4a', { type: 'audio/m4a' });
+    formData.append('audio', file);
 
     if (language && language !== 'auto') {
       formData.append('language', language);
@@ -62,10 +60,9 @@ export async function transcribeAudio(
     const response = await fetch(endpoint, {
       method: 'POST',
       headers: {
-        'xi-api-key': apiKey,
-        ...formData.getHeaders()
+        'xi-api-key': apiKey
       },
-      body: formData as unknown as BodyInit
+      body: formData
     });
 
     if (!response.ok) {

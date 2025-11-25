@@ -9,14 +9,6 @@
 import Foundation
 import UIKit
 
-enum ConnectionState: String {
-    case connecting = "connecting"
-    case connected = "connected"
-    case disconnected = "disconnected"
-    case reconnecting = "reconnecting"
-    case dead = "dead"
-}
-
 class WebSocketClient: ObservableObject {
     @Published var isConnected = false
     @Published var messages: [TerminalMessage] = []

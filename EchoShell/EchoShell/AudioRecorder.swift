@@ -381,25 +381,26 @@ extension AudioRecorder {
         
         let transcriptionStartTime = Date()
         
-        // Get ephemeral key for transcription
-        guard let keys = settingsManager?.ephemeralKeys else {
-            print("❌ iOS AudioRecorder: No ephemeral keys")
+        print("📱 iOS AudioRecorder: Starting transcription for file: \(url.path)")
+        
+        // Use laptop proxy endpoint for remote transcription
+        guard let sttEndpoint = settingsManager?.providerEndpoints?.stt else {
+            print("❌ STT endpoint not available")
             DispatchQueue.main.async {
-                self.recognizedText = "Error: No ephemeral keys. Please reconnect to laptop."
+                self.recognizedText = "Error: STT endpoint not available. Please reconnect to laptop."
                 self.isTranscribing = false
             }
             return
         }
-        
-        print("📱 iOS AudioRecorder: Starting transcription for file: \(url.path)")
-        
-        // Use ephemeral key with transcription service
-        // Proxy endpoint is required
-        guard let sttEndpoint = settingsManager?.providerEndpoints?.stt else {
-            print("❌ STT endpoint not available")
+        guard let laptopConfig = settingsManager?.laptopConfig else {
+            print("❌ Laptop config not available")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: Not connected to laptop"
+                self.isTranscribing = false
+            }
             return
         }
-        let service = TranscriptionService(apiKey: keys.stt, endpoint: sttEndpoint)
+        let service = TranscriptionService(laptopAuthKey: laptopConfig.authKey, endpoint: sttEndpoint)
         let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
         
         service.transcribe(audioFileURL: url, language: language == "auto" ? nil : language) { [weak self] result in
@@ -540,6 +541,12 @@ extension AudioRecorder {
                         // This matches what Cursor shows - just the result, no code quoting
                         let finalText = cleanedResult.isEmpty ? "Command executed" : cleanedResult
                         self.recognizedText = finalText
+                        
+                        // Update lastTerminalOutput in agent mode so state correctly transitions to idle
+                        // This ensures we don't show "waiting for agent" after response is received
+                        if let settingsManager = self.settingsManager {
+                            settingsManager.lastTerminalOutput = finalText
+                        }
                     }
                     
                     // TTS the result (or confirmation if empty)
@@ -590,32 +597,52 @@ extension AudioRecorder {
     
     // NEW: TTS for laptop responses
     private func speakResponse(_ text: String) {
-        guard let keys = settingsManager?.ephemeralKeys else {
+        guard let laptopConfig = settingsManager?.laptopConfig else {
+            print("⚠️ No laptop config for TTS")
             return
         }
         
         print("🔊 Generating TTS for response...")
         
+        // Notify that TTS generation has started
+        NotificationCenter.default.post(
+            name: NSNotification.Name("AgentResponseTTSGenerating"),
+            object: nil
+        )
+        
         Task {
             do {
                 guard let ttsEndpoint = settingsManager?.providerEndpoints?.tts else {
                     print("❌ TTS endpoint not available")
+                    // Notify that TTS generation failed
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("AgentResponseTTSGenerating"),
+                        object: nil
+                    )
                     return
                 }
-                let ttsHandler = LocalTTSHandler(apiKey: keys.tts, endpoint: ttsEndpoint)
+                let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
                 let language = settingsManager?.transcriptionLanguage.rawValue
                 let speed = settingsManager?.ttsSpeed ?? 1.0
                 let voice = selectVoiceForLanguage(settingsManager?.transcriptionLanguage ?? .auto)
                 let audioData = try await ttsHandler.synthesize(text: text, voice: voice, speed: speed, language: language)
                 
-                // Play audio
-                DispatchQueue.main.async {
-                    let player = AudioPlayer()
-                    try? player.play(audioData: audioData)
+                // Play audio - use NotificationCenter to notify RecordingView
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("AgentResponseTTSReady"),
+                        object: nil,
+                        userInfo: ["audioData": audioData, "text": text]
+                    )
                 }
                 
             } catch {
                 print("❌ TTS error: \(error)")
+                // Notify that TTS generation failed
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("AgentResponseTTSGenerating"),
+                    object: nil
+                )
             }
         }
     }

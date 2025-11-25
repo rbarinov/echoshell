@@ -3,18 +3,18 @@
 //  EchoShell
 //
 //  Created for Voice-Controlled Terminal Management System
-//  Handles local TTS synthesis using OpenAI API with ephemeral keys
+//  Handles remote TTS synthesis via laptop proxy endpoint
 //
 
 import Foundation
 import AVFoundation
 
 class LocalTTSHandler {
-    private let apiKey: String
+    private let laptopAuthKey: String
     private let endpoint: String
     
-    init(apiKey: String, endpoint: String) {
-        self.apiKey = apiKey
+    init(laptopAuthKey: String, endpoint: String) {
+        self.laptopAuthKey = laptopAuthKey
         self.endpoint = endpoint
     }
     
@@ -22,7 +22,7 @@ class LocalTTSHandler {
         var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
+        request.setValue(laptopAuthKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
         
         var body: [String: Any] = [
             "text": text,

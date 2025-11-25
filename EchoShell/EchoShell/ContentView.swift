@@ -6,23 +6,30 @@ struct ContentView: View {
     
     var body: some View {
         TabView {
-            // Tab 1 - Recording
-            RecordingView()
+            // Tab 1 - Agent Mode
+            AgentView()
                 .environmentObject(settingsManager)
                 .tabItem {
-                    Label("Record", systemImage: "mic.fill")
+                    Label("Agent", systemImage: "brain.head.profile")
                 }
             
-            // Tab 2 - Terminal (only when connected to laptop)
+            // Tab 2 - Terminal Agent Mode
+            TerminalAgentView()
+                .environmentObject(settingsManager)
+                .tabItem {
+                    Label("Terminal Agent", systemImage: "terminal.fill")
+                }
+            
+            // Tab 3 - Terminals List (only when connected to laptop)
             if settingsManager.laptopConfig != nil {
                 TerminalView()
                     .environmentObject(settingsManager)
                     .tabItem {
-                        Label("Terminal", systemImage: "terminal.fill")
+                        Label("Terminals", systemImage: "list.bullet.rectangle")
                     }
             }
             
-            // Tab 3 - Settings
+            // Tab 4 - Settings
             SettingsView()
                 .environmentObject(settingsManager)
                 .tabItem {

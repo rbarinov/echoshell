@@ -556,6 +556,44 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Tunnel status endpoint - check if tunnel is connected to laptop
+app.get('/tunnel/:tunnelId/status', (req, res) => {
+  const { tunnelId } = req.params;
+  const tunnel = tunnels.get(tunnelId);
+  
+  if (!tunnel) {
+    return res.status(404).json({ 
+      connected: false,
+      status: 'not_found',
+      message: 'Tunnel not found or not connected'
+    });
+  }
+  
+  // Check if WebSocket connection is still open
+  const isConnected = tunnel.ws.readyState === WebSocket.OPEN;
+  const timeSinceLastPong = Date.now() - tunnel.lastPongReceived;
+  const isHealthy = isConnected && timeSinceLastPong < PONG_TIMEOUT_MS;
+  
+  if (isHealthy) {
+    return res.json({
+      connected: true,
+      status: 'connected',
+      tunnelId: tunnel.tunnelId,
+      lastPongReceived: tunnel.lastPongReceived,
+      timeSinceLastPong: timeSinceLastPong
+    });
+  } else {
+    // WebSocket exists but might be dead
+    return res.status(503).json({
+      connected: false,
+      status: 'disconnected',
+      tunnelId: tunnel.tunnelId,
+      reason: isConnected ? 'no_recent_pong' : 'websocket_closed',
+      timeSinceLastPong: timeSinceLastPong
+    });
+  }
+});
+
 // Setup heartbeat functions
 function setupTunnelHeartbeat(tunnel: TunnelConnection): void {
   // Send periodic pings

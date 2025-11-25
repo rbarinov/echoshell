@@ -245,7 +245,7 @@ enum TranscriptionLanguage: String, CaseIterable, Identifiable {
     var displayName: String {
         switch self {
         case .auto:
-            return "Auto (Russian, English, Georgian)"
+            return "Auto (Russian, English)"
         case .russian:
             return "Russian"
         case .english:

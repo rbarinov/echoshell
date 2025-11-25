@@ -14,18 +14,28 @@ class AudioPlayer: NSObject, ObservableObject {
     private var player: AVAudioPlayer?
     
     func play(audioData: Data) throws {
+        // Stop any existing playback
+        stop()
+        
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playback, mode: .default)
+        // Use .playAndRecord category to allow both recording and playback
+        // with .defaultToSpeaker option to play through speaker
+        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
         try audioSession.setActive(true)
         
         player = try AVAudioPlayer(data: audioData)
         player?.delegate = self
+        player?.volume = 1.0
         player?.prepareToPlay()
-        player?.play()
+        
+        let success = player?.play() ?? false
+        if !success {
+            throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to start playback"])
+        }
         
         isPlaying = true
         
-        print("🔊 Playing TTS audio...")
+        print("🔊 Playing TTS audio (volume: \(player?.volume ?? 0), duration: \(player?.duration ?? 0)s)")
     }
     
     func stop() {

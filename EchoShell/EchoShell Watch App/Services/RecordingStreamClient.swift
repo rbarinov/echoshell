@@ -5,14 +5,6 @@
 
 import Foundation
 
-enum ConnectionState: String {
-    case connecting = "connecting"
-    case connected = "connected"
-    case disconnected = "disconnected"
-    case reconnecting = "reconnecting"
-    case dead = "dead"
-}
-
 struct RecordingStreamMessage: Codable {
     let type: String
     let session_id: String

@@ -53,15 +53,16 @@ class AudioRecorder: NSObject, ObservableObject {
     }
     
     func updateTranscriptionService() {
-        // Use ephemeral keys if available, otherwise fall back to apiKey
-        let apiKey = settingsManager.ephemeralKeys?.stt ?? settingsManager.apiKey
+        // Use laptop auth key for remote transcription
+        guard let laptopConfig = settingsManager.laptopConfig else {
+            print("⚠️ Watch: Laptop config not available")
+            return
+        }
         guard let sttEndpoint = settingsManager.providerEndpoints?.stt else {
             print("⚠️ Watch: STT endpoint not available")
             return
         }
-        if !apiKey.isEmpty {
-            self.transcriptionService = TranscriptionService(apiKey: apiKey, endpoint: sttEndpoint)
-        }
+        self.transcriptionService = TranscriptionService(laptopAuthKey: laptopConfig.authKey, endpoint: sttEndpoint)
     }
     
     private func setupAudioSession() {

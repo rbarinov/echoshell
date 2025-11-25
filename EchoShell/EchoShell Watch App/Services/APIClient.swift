@@ -30,6 +30,62 @@ class APIClient: ObservableObject {
         request.setValue(config.authKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
     }
     
+    // MARK: - Key Management
+    
+    func requestKeys() async throws -> KeyResponse {
+        let url = URL(string: "\(config.keyEndpoint)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        addAuthHeader(to: &request)
+        
+        let body: [String: Any] = [
+            "device_id": deviceId,
+            "tunnel_id": config.tunnelId,
+            "duration_seconds": 3600,
+            "permissions": ["stt", "tts"]
+        ]
+        
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            if let urlError = error as? URLError {
+                print("❌ Watch APIClient: Network error - \(urlError.localizedDescription)")
+                if urlError.code == .cannotConnectToHost || urlError.code == .networkConnectionLost {
+                    throw APIError.connectionRefused
+                }
+            }
+            throw APIError.networkError
+        }
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            print("❌ Watch APIClient: Invalid response type")
+            throw APIError.invalidResponse
+        }
+        
+        guard httpResponse.statusCode == 200 else {
+            let responseBody = String(data: data, encoding: .utf8) ?? "No response body"
+            print("❌ Watch APIClient: Request failed with status \(httpResponse.statusCode)")
+            print("   Response: \(responseBody)")
+            throw APIError.requestFailed
+        }
+        
+        let keyResponse = try JSONDecoder().decode(KeyResponse.self, from: data)
+        currentKeys = keyResponse.keys
+        
+        print("✅ Watch: Ephemeral keys received")
+        print("   Expires in: \(keyResponse.expiresIn)s")
+        if let endpoints = keyResponse.endpoints {
+            print("   STT endpoint: \(endpoints.stt)")
+            print("   TTS endpoint: \(endpoints.tts)")
+        }
+        
+        return keyResponse
+    }
+    
     // MARK: - Terminal Management
     
     func listSessions() async throws -> [TerminalSession] {

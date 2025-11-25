@@ -8,11 +8,11 @@
 import Foundation
 
 class TranscriptionService {
-    private let apiKey: String
+    private let laptopAuthKey: String
     private let endpoint: String
     
-    init(apiKey: String, endpoint: String) {
-        self.apiKey = apiKey
+    init(laptopAuthKey: String, endpoint: String) {
+        self.laptopAuthKey = laptopAuthKey
         self.endpoint = endpoint
     }
     
@@ -33,28 +33,7 @@ class TranscriptionService {
         var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
-        
-        var body: [String: Any] = ["audio": audioBase64]
-        if let lang = language, lang != "auto", !lang.isEmpty {
-            body["language"] = lang
-        }
-        
-        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        
-        URLSession.shared.dataTask(with: request) { data, response, error in
-        guard let audioData = try? Data(contentsOf: audioFileURL) else {
-            completion(.failure(TranscriptionError.fileNotFound))
-            return
-        }
-        
-        let audioBase64 = audioData.base64EncodedString()
-        let sentBytes = Int64(audioBase64.count)
-        
-        var request = URLRequest(url: URL(string: endpoint)!)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(apiKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
+        request.setValue(laptopAuthKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
         
         var body: [String: Any] = ["audio": audioBase64]
         if let lang = language, lang != "auto", !lang.isEmpty {
