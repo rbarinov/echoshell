@@ -43,7 +43,8 @@ struct TerminalDetailView: View {
     }
     
     var body: some View {
-        NavigationStack {
+        VStack(spacing: 0) {
+            // Main content
             VStack(spacing: 0) {
                 // Mode selector (only show for AI-powered terminals)
                 if session.terminalType == .cursorCLI || session.terminalType == .claudeCLI {
@@ -65,36 +66,23 @@ struct TerminalDetailView: View {
                     agentView
                 }
             }
-            .navigationBarHidden(true)
-            .toolbar(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    // Header with BACK button and connection status
-                    // This MUST override the parent's header completely
-                    RecordingHeaderView(
-                        connectionState: connectionState,
-                        leftButtonType: .back(action: {
-                            print("🔙 Back button tapped - dismissing TerminalDetailView")
-                            dismiss()
-                        })
-                    )
-                    .background(Color(.systemBackground))
-                    .id("TerminalDetailHeader-\(session.id)") // Force SwiftUI to treat this as a new view
-                    
-                    // Session title and working directory
-                    VStack(spacing: 2) {
-                        Text(session.name ?? session.id)
-                            .font(.system(size: 15, weight: .semibold))
-                        Text(session.workingDir)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
-                    .background(Color(.systemBackground))
-                }
+        }
+        .padding(.top, 60) // Same padding as TerminalView list to prevent content from going under header
+        .navigationBarHidden(true)
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            // Session title and working directory (header is handled by parent TerminalView)
+            VStack(spacing: 2) {
+                Text(session.name ?? session.id)
+                    .font(.system(size: 15, weight: .semibold))
+                Text(session.workingDir)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(Color(.systemBackground))
         }
         .onAppear {
             // Set initial view mode

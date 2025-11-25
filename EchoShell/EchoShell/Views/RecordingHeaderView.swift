@@ -50,8 +50,8 @@ struct RecordingHeaderView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 24, weight: .medium))
+                    Image(systemName: "plus")
+                        .font(.system(size: 20, weight: .medium))
                         .foregroundColor(.blue)
                         .frame(width: 44, height: 44)
                         .contentShape(Rectangle())

@@ -996,6 +996,18 @@ struct RecordingView: View {
                 return
             }
             
+            // Check if this TTS is for a terminal session that's being handled by TerminalSessionAgentView
+            // If userInfo contains "sessionId" and it matches a terminal session, ignore it
+            // TerminalSessionAgentView handles its own TTS playback
+            if let userInfo = notification.userInfo,
+               let sessionId = userInfo["sessionId"] as? String,
+               !sessionId.isEmpty {
+                // This TTS is for a specific terminal session, which is handled by TerminalSessionAgentView
+                // Ignore it here to prevent duplicate playback
+                print("⚠️ AgentResponseTTSReady: Ignoring - TTS is for terminal session \(sessionId), handled by TerminalSessionAgentView")
+                return
+            }
+            
             guard let userInfo = notification.userInfo,
                   let audioData = userInfo["audioData"] as? Data else {
                 print("❌ AgentResponseTTSReady: Missing audio data")
@@ -1104,6 +1116,15 @@ struct RecordingView: View {
         
         recordingStreamClient.connect(config: config, sessionId: sessionId) { message in
             Task { @MainActor in
+                // Check if we're on a terminal detail page (TerminalSessionAgentView handles TTS for terminal sessions)
+                // If we're on the Agent tab (activeTab == 0), we should handle TTS
+                // But if we're on the Terminals tab (activeTab == 1), TerminalSessionAgentView handles TTS
+                // So we should only schedule TTS if we're on the Agent tab
+                guard self.isActiveTab else {
+                    print("⚠️ RecordingView: Ignoring recording stream message - not active tab (handled by TerminalSessionAgentView)")
+                    return
+                }
+                
                 self.settingsManager.lastTerminalOutput = message.text
                 self.scheduleAutoTTS(for: message.text)
             }
