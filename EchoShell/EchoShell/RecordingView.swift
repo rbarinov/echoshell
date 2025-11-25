@@ -46,6 +46,9 @@ enum RecordingState {
 }
 
 struct RecordingView: View {
+    // Flag to indicate if this is the active tab (prevents duplicate event handling)
+    let isActiveTab: Bool
+    
     @StateObject private var audioRecorder = AudioRecorder()
     @StateObject private var terminalViewModel = TerminalViewModel()
     @StateObject private var wsClient = WebSocketClient()
@@ -67,6 +70,15 @@ struct RecordingView: View {
     @State private var lastTTSAudioData: Data? = nil // Store last TTS audio for replay
     @State private var isGeneratingTTS = false // Track TTS generation state
     @State private var pulseAnimation: Bool = false // For pulsing dot animation
+    
+    // Task cancellation for interrupting ongoing operations
+    @State private var currentOperationTask: Task<Void, Never>? = nil
+    @State private var currentOperationId: UUID? = nil
+    
+    // Default initializer for backward compatibility
+    init(isActiveTab: Bool = true) {
+        self.isActiveTab = isActiveTab
+    }
     
     // Centralized state reset function
     private func resetState() {
@@ -210,12 +222,62 @@ struct RecordingView: View {
         if audioRecorder.isRecording {
             audioRecorder.stopRecording()
         } else {
+            // Cancel any ongoing operations when starting new recording
+            cancelCurrentOperation()
+            
             // Clear previous output when starting new recording
             Task { @MainActor in
                 self.resetState()
             }
             audioRecorder.startRecording()
         }
+    }
+    
+    // Cancel current operation chain (recording, transcription, TTS, playback)
+    private func cancelCurrentOperation() {
+        print("🛑 Cancelling current operation chain...")
+        
+        // Cancel any ongoing Task
+        if let task = currentOperationTask {
+            print("🛑 Cancelling ongoing Task")
+            task.cancel()
+            currentOperationTask = nil
+        }
+        
+        // Invalidate current operation ID to mark all callbacks as stale
+        let cancelledId = UUID()
+        currentOperationId = cancelledId
+        print("🛑 Operation ID invalidated: \(cancelledId)")
+        
+        // Stop recording if active
+        if audioRecorder.isRecording {
+            print("🛑 Stopping active recording")
+            audioRecorder.stopRecording()
+        }
+        
+        // Stop audio playback if playing
+        if audioPlayer.isPlaying {
+            print("🛑 Stopping audio playback")
+            audioPlayer.stop()
+        }
+        
+        // Reset TTS generation state
+        isGeneratingTTS = false
+        
+        // Cancel TTS timer
+        ttsTimer?.invalidate()
+        ttsTimer = nil
+        
+        // Clear TTS queue
+        ttsQueue = []
+        accumulatedForTTS = ""
+        lastTTSOutput = ""
+        lastOutputSnapshot = ""
+        
+        // Cancel transcription (set flag to ignore results)
+        audioRecorder.cancelTranscription()
+        
+        print("🛑 Current operation chain cancelled")
     }
     
     var body: some View {
@@ -256,8 +318,12 @@ struct RecordingView: View {
             .padding(.top, 8)
         }
         .safeAreaInset(edge: .top) {
-            RecordingHeaderView(connectionState: getWorstConnectionState())
-                .id("\(getWorstConnectionState().rawValue)-\(settingsManager.commandMode.rawValue)")
+            let worstState = getWorstConnectionState()
+            RecordingHeaderView(connectionState: worstState)
+                .id("\(worstState.rawValue)-\(settingsManager.commandMode.rawValue)")
+                .onAppear {
+                    print("📱 RecordingHeaderView: Appeared with state: \(worstState)")
+                }
         }
         .onChange(of: wsClient.connectionState) { _, _ in
             // View will automatically update via .id modifier
@@ -269,25 +335,34 @@ struct RecordingView: View {
             // View will automatically update via .id modifier
         }
         .onChange(of: settingsManager.laptopConfig) { oldValue, newValue in
+            print("📱 RecordingView: laptopConfig changed (old: \(oldValue?.tunnelId ?? "nil"), new: \(newValue?.tunnelId ?? "nil"))")
             // Start/stop health checker when config changes
             if let config = newValue {
+                print("📱 RecordingView: Starting health checker with new config")
                 laptopHealthChecker.start(config: config)
             } else {
+                print("📱 RecordingView: Stopping health checker (no config)")
                 laptopHealthChecker.stop()
             }
             // View will automatically update via .id modifier
         }
         .onAppear {
+            print("📱 RecordingView: onAppear - current commandMode: \(settingsManager.commandMode)")
             // Start health checker if config exists
             if let config = settingsManager.laptopConfig {
+                print("📱 RecordingView: Starting health checker on appear")
                 laptopHealthChecker.start(config: config)
+            } else {
+                print("📱 RecordingView: No laptop config on appear, health checker not started")
             }
         }
         .onDisappear {
+            print("📱 RecordingView: onDisappear - stopping health checker")
             // Stop health checker when view disappears
             laptopHealthChecker.stop()
         }
-        .onChange(of: laptopHealthChecker.connectionState) { _, _ in
+        .onChange(of: laptopHealthChecker.connectionState) { oldValue, newValue in
+            print("📱 RecordingView: Health check state changed: \(oldValue) -> \(newValue)")
             // View will automatically update via .id modifier when health check state changes
         }
     }
@@ -467,7 +542,7 @@ struct RecordingView: View {
             }
         }
         .buttonStyle(.plain)
-        .disabled(audioRecorder.isTranscribing || settingsManager.laptopConfig == nil || 
+        .disabled(settingsManager.laptopConfig == nil || 
                  (settingsManager.commandMode == .direct && !isHeadlessTerminal))
         .scaleEffect(audioRecorder.isRecording ? 1.05 : 1.0)
         .animation(.spring(response: 0.3, dampingFraction: 0.6), value: audioRecorder.isRecording)
@@ -517,12 +592,55 @@ struct RecordingView: View {
                             value: pulseAnimation
                         )
                         .onAppear {
-                            // Start animation when view appears
-                            pulseAnimation = true
+                            // Start animation when view appears (only for active states)
+                            if state.isActive {
+                                pulseAnimation = true
+                            }
                         }
                         .onChange(of: state) { oldValue, newValue in
                             // Restart animation when state changes
-                            if oldValue != newValue {
+                            if newValue.isActive {
+                                // For active states, ensure animation is running
+                                pulseAnimation = false
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                    pulseAnimation = true
+                                }
+                            } else {
+                                // For idle state, stop animation
+                                pulseAnimation = false
+                            }
+                        }
+                        .onChange(of: isGeneratingTTS) { oldValue, newValue in
+                            // Explicitly handle generatingTTS state changes
+                            if newValue {
+                                // State is now generatingTTS, ensure animation is running
+                                print("🔄 GeneratingTTS changed to true, starting pulse animation")
+                                pulseAnimation = false
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                    pulseAnimation = true
+                                }
+                            } else if oldValue && !newValue {
+                                // TTS generation stopped
+                                print("🔄 GeneratingTTS changed to false, stopping pulse animation")
+                                pulseAnimation = false
+                            }
+                        }
+                        .onChange(of: audioRecorder.recognizedText) { oldValue, newValue in
+                            // When recognizedText changes, check if we should be in generatingTTS state
+                            let currentState = getCurrentState()
+                            if currentState == .generatingTTS && !pulseAnimation {
+                                print("🔄 State is generatingTTS (via recognizedText change), starting pulse animation")
+                                pulseAnimation = false
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                    pulseAnimation = true
+                                }
+                            }
+                        }
+                        .onChange(of: settingsManager.lastTerminalOutput) { oldValue, newValue in
+                            // When lastTerminalOutput changes, check if we should be in generatingTTS state
+                            let currentState = getCurrentState()
+                            if currentState == .generatingTTS && !pulseAnimation {
+                                print("🔄 State is generatingTTS (via lastTerminalOutput change), starting pulse animation")
                                 pulseAnimation = false
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                                     pulseAnimation = true
@@ -544,6 +662,7 @@ struct RecordingView: View {
     
     // Determine current state
     private func getCurrentState() -> RecordingState {
+        // Priority order: recording > transcribing > playing > generating > waiting > idle
         if audioRecorder.isRecording {
             return .recording
         } else if audioRecorder.isTranscribing {
@@ -555,6 +674,10 @@ struct RecordingView: View {
         } else if settingsManager.commandMode == .agent && !audioRecorder.recognizedText.isEmpty && settingsManager.lastTerminalOutput.isEmpty {
             // In agent mode, if we have recognized text but no response yet (lastTerminalOutput is empty), we're waiting
             // lastTerminalOutput will be updated when agent response is received in AudioRecorder
+            return .waitingForAgent
+        } else if settingsManager.commandMode == .agent && !audioRecorder.recognizedText.isEmpty && !settingsManager.lastTerminalOutput.isEmpty && !isGeneratingTTS && !audioPlayer.isPlaying {
+            // If we have recognized text AND response, but TTS hasn't started yet, we're still waiting
+            // This prevents showing "ready for recording" between transcribing and generatingTTS
             return .waitingForAgent
         } else {
             return .idle
@@ -838,8 +961,32 @@ struct RecordingView: View {
                 self.isGeneratingTTS = true
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AgentResponseTTSFailed"))) { notification in
+            // TTS generation failed - reset state to allow retry
+            guard settingsManager.commandMode == .agent else { return }
+            Task { @MainActor in
+                self.isGeneratingTTS = false
+                // Clear recognizedText after a delay to allow retry
+                // Keep error message visible briefly, then clear for next attempt
+                if let error = notification.userInfo?["error"] as? String {
+                    print("❌ TTS failed: \(error)")
+                    // Clear after 3 seconds to allow retry
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        if self.audioRecorder.recognizedText.contains("Transcription error") || 
+                           self.audioRecorder.recognizedText.contains("TTS error") {
+                            self.audioRecorder.recognizedText = ""
+                        }
+                    }
+                }
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AgentResponseTTSReady"))) { notification in
-            // Only process TTS in agent mode to avoid duplicate playback
+            // Only process TTS if this is the active tab AND in agent mode
+            guard isActiveTab else {
+                print("⚠️ AgentResponseTTSReady: Ignoring - not active tab")
+                return
+            }
+            
             guard settingsManager.commandMode == .agent else {
                 print("⚠️ AgentResponseTTSReady: Ignoring in non-agent mode (current: \(settingsManager.commandMode))")
                 return
@@ -855,17 +1002,25 @@ struct RecordingView: View {
                 // TTS generation is complete, reset the flag
                 self.isGeneratingTTS = false
                 
-                // Stop any current playback to avoid overlap/echo
+                // Always stop any current playback first to prevent echo/overlap
                 if self.audioPlayer.isPlaying {
                     print("🛑 Stopping current playback before starting new TTS")
                     self.audioPlayer.stop()
-                    // Small delay to ensure stop completes
-                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                    // Wait for stop to complete
+                    try? await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds
+                }
+                
+                // Double-check that we're still the active tab, in agent mode, and not playing
+                guard self.isActiveTab,
+                      settingsManager.commandMode == .agent,
+                      !self.audioPlayer.isPlaying else {
+                    print("⚠️ AgentResponseTTSReady: Skipping playback - tab/mode changed or already playing")
+                    return
                 }
                 
                 do {
                     try self.audioPlayer.play(audioData: audioData)
-                    print("🔊 Agent response TTS playback started")
+                    print("🔊 Agent response TTS playback started (active tab only)")
                 } catch {
                     print("❌ Failed to play agent response TTS: \(error)")
                 }

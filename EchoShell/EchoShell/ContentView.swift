@@ -4,10 +4,13 @@ struct ContentView: View {
     @StateObject private var settingsManager = SettingsManager()
     @StateObject private var watchManager = WatchConnectivityManager.shared
     
+    // Track active tab to prevent duplicate event handling
+    @State private var activeTab: Int = 0
+    
     var body: some View {
-        TabView {
+        TabView(selection: $activeTab) {
             // Tab 1 - Agent Mode
-            RecordingView()
+            RecordingView(isActiveTab: activeTab == 0)
                 .environmentObject(settingsManager)
                 .onAppear {
                     // Set to agent mode when this tab appears
@@ -16,9 +19,10 @@ struct ContentView: View {
                 .tabItem {
                     Label("Agent", systemImage: "brain.head.profile")
                 }
+                .tag(0)
             
             // Tab 2 - Terminal Agent Mode
-            RecordingView()
+            RecordingView(isActiveTab: activeTab == 1)
                 .environmentObject(settingsManager)
                 .onAppear {
                     // Set to direct mode when this tab appears
@@ -27,6 +31,7 @@ struct ContentView: View {
                 .tabItem {
                     Label("Terminal Agent", systemImage: "terminal.fill")
                 }
+                .tag(1)
             
             // Tab 3 - Terminals List (only when connected to laptop)
             if settingsManager.laptopConfig != nil {

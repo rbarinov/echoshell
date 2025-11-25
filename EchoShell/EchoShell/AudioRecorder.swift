@@ -25,6 +25,9 @@ class AudioRecorder: NSObject, ObservableObject {
     private var settingsManager: SettingsManager?
     private var apiClient: APIClient?
     
+    // Operation cancellation tracking
+    @Published var currentOperationId: UUID? = nil
+    
     override init() {
         super.init()
         setupAudioSession()
@@ -72,11 +75,16 @@ class AudioRecorder: NSObject, ObservableObject {
             return
         }
         
-        // If transcription is in progress, wait for it to complete
+        // Cancel any ongoing transcription (we'll ignore its result)
         if isTranscribing {
-            print("⚠️ iOS AudioRecorder: Transcription in progress, waiting...")
-            return
+            print("🛑 iOS AudioRecorder: Cancelling ongoing transcription for new recording")
+            isTranscribing = false
         }
+        
+        // Invalidate current operation ID to mark all callbacks as stale
+        let newOperationId = UUID()
+        currentOperationId = newOperationId
+        print("🛑 iOS AudioRecorder: New operation ID: \(newOperationId)")
         
         // Update API client before recording (in case config changed)
         updateAPIClient()
@@ -403,10 +411,23 @@ extension AudioRecorder {
         let service = TranscriptionService(laptopAuthKey: laptopConfig.authKey, endpoint: sttEndpoint)
         let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
         
+        // Store the recording URL and operation ID at transcription start to check if it's still valid
+        let transcriptionURL = url
+        let transcriptionOperationId = currentOperationId
+        
         service.transcribe(audioFileURL: url, language: language == "auto" ? nil : language) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else {
                     print("⚠️ iOS AudioRecorder: Self deallocated during transcription")
+                    return
+                }
+                
+                // Check if transcription was cancelled (new recording started or operation ID changed)
+                if self.recordingURL != transcriptionURL || 
+                   self.recordingURL == nil ||
+                   self.currentOperationId != transcriptionOperationId {
+                    print("⚠️ iOS AudioRecorder: Transcription result ignored - operation cancelled (new recording started)")
+                    self.isTranscribing = false
                     return
                 }
                 
@@ -447,6 +468,17 @@ extension AudioRecorder {
                         try? FileManager.default.removeItem(at: url)
                         self.recordingURL = nil
                     }
+                    
+                    // Reset transcription state to allow retry
+                    self.isTranscribing = false
+                    
+                    // Clear recognizedText after a delay to allow user to see the error
+                    // This ensures next attempt can start fresh
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                        if self.recognizedText == "Transcription error: \(error.localizedDescription)" {
+                            self.recognizedText = ""
+                        }
+                    }
                 }
             }
         }
@@ -462,7 +494,16 @@ extension AudioRecorder {
         print("📤 Sending command to laptop: \(text)")
         print("   Mode: \(settings.commandMode.displayName)")
         
+        // Store operation ID to check if cancelled
+        let commandOperationId = currentOperationId
+        
         Task {
+            // Check cancellation at start
+            guard currentOperationId == commandOperationId else {
+                print("⚠️ iOS AudioRecorder: Command execution cancelled - operation ID changed")
+                return
+            }
+            
             do {
                 let result: String
                 
@@ -527,8 +568,20 @@ extension AudioRecorder {
                     }
                 }
                 
+                // Check cancellation before processing result
+                guard currentOperationId == commandOperationId else {
+                    print("⚠️ iOS AudioRecorder: Command result ignored - operation cancelled")
+                    return
+                }
+                
                 let commandMode = settings.commandMode
                 await MainActor.run {
+                    // Check cancellation again on main thread
+                    guard self.currentOperationId == commandOperationId else {
+                        print("⚠️ iOS AudioRecorder: Command result ignored on main thread - operation cancelled")
+                        return
+                    }
+                    
                     if commandMode == .direct {
                         // In direct mode, show command text initially
                         // Terminal output will be updated via WebSocket subscription
@@ -596,13 +649,16 @@ extension AudioRecorder {
     }
     
     // NEW: TTS for laptop responses
-    private func speakResponse(_ text: String) {
+    private func speakResponse(_ text: String, operationId: UUID? = nil) {
         guard let laptopConfig = settingsManager?.laptopConfig else {
             print("⚠️ No laptop config for TTS")
             return
         }
         
-        print("🔊 Generating TTS for response...")
+        // Use provided operation ID or current one
+        let ttsOperationId = operationId ?? currentOperationId
+        
+        print("🔊 Generating TTS for response... (operation ID: \(ttsOperationId?.uuidString ?? "nil"))")
         
         // Notify that TTS generation has started
         NotificationCenter.default.post(
@@ -611,6 +667,12 @@ extension AudioRecorder {
         )
         
         Task {
+            // Check cancellation at start
+            guard currentOperationId == ttsOperationId else {
+                print("⚠️ iOS AudioRecorder: TTS generation cancelled - operation ID changed")
+                return
+            }
+            
             do {
                 guard let ttsEndpoint = settingsManager?.providerEndpoints?.tts else {
                     print("❌ TTS endpoint not available")
@@ -627,24 +689,61 @@ extension AudioRecorder {
                 let voice = selectVoiceForLanguage(settingsManager?.transcriptionLanguage ?? .auto)
                 let audioData = try await ttsHandler.synthesize(text: text, voice: voice, speed: speed, language: language)
                 
+                // Check cancellation before posting notification
+                guard currentOperationId == ttsOperationId else {
+                    print("⚠️ iOS AudioRecorder: TTS audio ignored - operation cancelled")
+                    return
+                }
+                
                 // Play audio - use NotificationCenter to notify RecordingView
                 await MainActor.run {
+                    // Check cancellation again on main thread
+                    guard self.currentOperationId == ttsOperationId else {
+                        print("⚠️ iOS AudioRecorder: TTS audio ignored on main thread - operation cancelled")
+                        return
+                    }
+                    
                     NotificationCenter.default.post(
                         name: NSNotification.Name("AgentResponseTTSReady"),
                         object: nil,
-                        userInfo: ["audioData": audioData, "text": text]
+                        userInfo: ["audioData": audioData, "text": text, "operationId": ttsOperationId?.uuidString ?? ""]
                     )
                 }
                 
             } catch {
+                // Check cancellation before showing error
+                guard currentOperationId == ttsOperationId else {
+                    print("⚠️ iOS AudioRecorder: TTS error ignored - operation cancelled")
+                    return
+                }
+                
                 print("❌ TTS error: \(error)")
-                // Notify that TTS generation failed
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("AgentResponseTTSGenerating"),
-                    object: nil
-                )
+                
+                // Reset TTS generation state
+                await MainActor.run {
+                    // Notify that TTS generation failed - this will reset isGeneratingTTS in RecordingView
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("AgentResponseTTSGenerating"),
+                        object: nil
+                    )
+                    
+                    // Post a failure notification so RecordingView can handle it
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("AgentResponseTTSFailed"),
+                        object: nil,
+                        userInfo: ["error": error.localizedDescription]
+                    )
+                }
             }
         }
+    }
+    
+    // Cancel transcription (mark as cancelled to ignore results)
+    func cancelTranscription() {
+        print("🛑 iOS AudioRecorder: Cancelling transcription")
+        isTranscribing = false
+        // Invalidate operation ID to ignore any pending callbacks
+        currentOperationId = UUID()
     }
     
     private func selectVoiceForLanguage(_ language: TranscriptionLanguage) -> String {

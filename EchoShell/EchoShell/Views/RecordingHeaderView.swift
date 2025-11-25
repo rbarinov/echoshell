@@ -11,13 +11,8 @@ import SwiftUI
 struct RecordingHeaderView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     
-    // Connection state - can be passed from parent or computed
-    // Using @State to ensure view updates when state changes
-    @State private var connectionState: ConnectionState?
-    
-    init(connectionState: ConnectionState? = nil) {
-        _connectionState = State(initialValue: connectionState)
-    }
+    // Connection state - passed from parent, updates automatically
+    let connectionState: ConnectionState
     
     var body: some View {
         HStack(spacing: 12) {
@@ -25,70 +20,37 @@ struct RecordingHeaderView: View {
             Spacer()
             
             // Connection status indicator on the right
-            ConnectionStatusIndicator(state: effectiveConnectionState)
+            ConnectionStatusIndicator(state: connectionState)
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .onChange(of: settingsManager.laptopConfig) { _, _ in
-            // Update connection state when laptop config changes
-            updateConnectionState()
-        }
-    }
-    
-    // Compute effective connection state
-    private var effectiveConnectionState: ConnectionState {
-        // If connection state is provided, use it
-        if let state = connectionState {
-            return state
-        }
-        
-        // Otherwise, determine based on laptop config
-        if settingsManager.laptopConfig == nil {
-            return .disconnected
-        }
-        
-        // If we have laptop config, we're at least connected to backend
-        // For more detailed state, parent should pass connectionState
-        return .connected
-    }
-    
-    // Update connection state (can be called from parent)
-    func updateConnectionState(_ newState: ConnectionState?) {
-        connectionState = newState
-    }
-    
-    private func updateConnectionState() {
-        // Internal method to update state based on laptop config
-        if settingsManager.laptopConfig == nil {
-            connectionState = .disconnected
-        } else if connectionState == nil {
-            connectionState = .connected
-        }
     }
 }
 
 // Connection Status Indicator Component
 struct ConnectionStatusIndicator: View {
     let state: ConnectionState
-    @State private var isPulsing = false
+    @State private var pulseScale: CGFloat = 1.0
+    @State private var pulseOpacity: Double = 1.0
     
     var body: some View {
         Image(systemName: iconName)
             .font(.system(size: 18, weight: .medium))
             .foregroundColor(statusColor)
-            .symbolEffect(.pulse, isActive: isPulsing)
+            .scaleEffect(pulseScale)
+            .opacity(pulseOpacity)
             .shadow(
                 color: statusColor.opacity(0.3),
-                radius: isPulsing ? 8 : 4,
+                radius: pulseScale > 1.0 ? 8 : 4,
                 x: 0,
                 y: 2
             )
             .onAppear {
-                updatePulsing()
+                startPulsing()
             }
             .onChange(of: state) { oldValue, newValue in
-                updatePulsing()
+                startPulsing()
             }
     }
     
@@ -97,12 +59,24 @@ struct ConnectionStatusIndicator: View {
         return "laptopcomputer"
     }
     
-    private func updatePulsing() {
-        // Start pulsing for connecting/reconnecting states
-        if state == .connecting || state == .reconnecting {
-            isPulsing = true
-        } else {
-            isPulsing = false
+    private func startPulsing() {
+        // Determine pulse duration based on state
+        // Connected: slow pulse (3x slower), others: normal pulse
+        let duration: Double = (state == .connected) ? 1.8 : 0.6 // 0.6 * 3 = 1.8
+        
+        // Reset animation
+        withAnimation(.linear(duration: 0)) {
+            pulseScale = 1.0
+            pulseOpacity = 1.0
+        }
+        
+        // Start pulsing animation
+        withAnimation(
+            .easeInOut(duration: duration)
+            .repeatForever(autoreverses: true)
+        ) {
+            pulseScale = 1.15
+            pulseOpacity = 0.6
         }
     }
     
