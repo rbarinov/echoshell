@@ -669,6 +669,8 @@ async function handleTunnelRequest(req: TunnelRequest): Promise<TunnelResponse> 
       return await handleTTSProxyRequest(method, path, body, headers);
     } else if (path.startsWith('/workspace/')) {
       return await handleWorkspaceRequest(method, path, body, query, headers);
+    } else if (path === '/tunnel-status' && method === 'GET') {
+      return handleTunnelStatusRequest();
     } else {
       return { statusCode: 404, body: { error: 'Not found' } };
     }
@@ -761,6 +763,20 @@ function handleKeyRequest(method: string, path: string, body: unknown, query: Re
   }
   
   return { statusCode: 404, body: { error: 'Not found' } };
+}
+
+// Tunnel status endpoint - returns connection status
+function handleTunnelStatusRequest(): TunnelResponse {
+  // Check if tunnel WebSocket connection is active
+  // This is a simple health check - if we can respond, we're connected
+  return {
+    statusCode: 200,
+    body: {
+      connected: true,
+      status: 'connected',
+      timestamp: Date.now()
+    }
+  };
 }
 
 // Terminal management endpoints

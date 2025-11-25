@@ -19,11 +19,11 @@ class LaptopHealthChecker: ObservableObject {
     private let checkInterval: TimeInterval = 10.0 // Check every 10 seconds
     private let timeout: TimeInterval = 5.0 // 5 second timeout
     
-    // Health check endpoint - check tunnel connection status on tunnel server
+    // Health check endpoint - check tunnel connection status via laptop app
     private var healthCheckURL: URL? {
         guard let config = config else { return nil }
         // Use apiBaseUrl to check tunnel status endpoint
-        // Endpoint: /api/:tunnelId/tunnel-status (defined before proxy to avoid interception)
+        // Endpoint: /api/:tunnelId/tunnel-status (proxied to laptop app)
         return URL(string: "\(config.apiBaseUrl)/tunnel-status")
     }
     
@@ -60,7 +60,8 @@ class LaptopHealthChecker: ObservableObject {
     }
     
     private func performHealthCheck() {
-        guard let url = healthCheckURL else {
+        guard let url = healthCheckURL,
+              let config = config else {
             Task { @MainActor in
                 self.connectionState = .disconnected
                 self.lastError = "No configuration available"
@@ -70,9 +71,10 @@ class LaptopHealthChecker: ObservableObject {
         
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        // Tunnel status endpoint doesn't require auth key - it's a public endpoint
-        // that just checks if tunnel is connected
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        // Tunnel status endpoint requires X-Laptop-Auth-Key header
+        // Request is proxied to laptop app which validates the auth key
+        request.setValue(config.authKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.timeoutInterval = timeout
         
         let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
@@ -115,38 +117,43 @@ class LaptopHealthChecker: ObservableObject {
                 
                 // Check HTTP status code
                 if httpResponse.statusCode == 200 {
-                    // Success - tunnel is connected to laptop
+                    // Success - laptop is connected and responding
                     // Parse response to verify connection status
                     if let data = data,
                        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let connected = json["connected"] as? Bool {
                         if connected {
                             if self.connectionState != .connected {
-                                print("✅ LaptopHealthChecker: Tunnel is connected to laptop")
+                                print("✅ LaptopHealthChecker: Laptop is connected and responding")
                             }
                             self.connectionState = .connected
                             self.lastError = nil
                         } else {
-                            // Tunnel exists but not connected
+                            // Laptop responded but reports not connected
                             self.connectionState = .disconnected
-                            self.lastError = json["reason"] as? String ?? "Tunnel not connected"
-                            print("⚠️ LaptopHealthChecker: Tunnel exists but not connected - \(self.lastError ?? "Unknown")")
+                            self.lastError = json["reason"] as? String ?? "Not connected"
+                            print("⚠️ LaptopHealthChecker: Laptop reports not connected - \(self.lastError ?? "Unknown")")
                         }
                     } else {
                         // Response format unexpected, but got 200, assume connected
                         self.connectionState = .connected
                         self.lastError = nil
                     }
+                } else if httpResponse.statusCode == 401 {
+                    // Unauthorized - auth key invalid
+                    self.connectionState = .disconnected
+                    self.lastError = "Authentication failed"
+                    print("⚠️ LaptopHealthChecker: Authentication failed (401)")
                 } else if httpResponse.statusCode == 404 {
-                    // Tunnel not found - laptop definitely not connected
+                    // Endpoint not found or tunnel not found
                     self.connectionState = .disconnected
-                    self.lastError = "Tunnel not found"
-                    print("❌ LaptopHealthChecker: Tunnel not found (404) - laptop not connected")
+                    self.lastError = "Not found"
+                    print("❌ LaptopHealthChecker: Not found (404) - laptop may not be connected")
                 } else if httpResponse.statusCode == 503 {
-                    // Tunnel exists but unhealthy (WebSocket closed or no pong)
+                    // Service unavailable
                     self.connectionState = .disconnected
-                    self.lastError = "Tunnel unhealthy"
-                    print("⚠️ LaptopHealthChecker: Tunnel unhealthy (503) - laptop disconnected")
+                    self.lastError = "Service unavailable"
+                    print("⚠️ LaptopHealthChecker: Service unavailable (503)")
                 } else {
                     // Other HTTP errors
                     self.connectionState = .disconnected

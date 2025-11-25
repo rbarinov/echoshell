@@ -7,15 +7,23 @@ struct ContentView: View {
     var body: some View {
         TabView {
             // Tab 1 - Agent Mode
-            AgentView()
+            RecordingView()
                 .environmentObject(settingsManager)
+                .onAppear {
+                    // Set to agent mode when this tab appears
+                    settingsManager.commandMode = .agent
+                }
                 .tabItem {
                     Label("Agent", systemImage: "brain.head.profile")
                 }
             
             // Tab 2 - Terminal Agent Mode
-            TerminalAgentView()
+            RecordingView()
                 .environmentObject(settingsManager)
+                .onAppear {
+                    // Set to direct mode when this tab appears
+                    settingsManager.commandMode = .direct
+                }
                 .tabItem {
                     Label("Terminal Agent", systemImage: "terminal.fill")
                 }

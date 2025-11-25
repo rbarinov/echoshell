@@ -832,12 +832,19 @@ struct RecordingView: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AgentResponseTTSGenerating"))) { _ in
-            // TTS generation started
+            // TTS generation started - only process in agent mode
+            guard settingsManager.commandMode == .agent else { return }
             Task { @MainActor in
                 self.isGeneratingTTS = true
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("AgentResponseTTSReady"))) { notification in
+            // Only process TTS in agent mode to avoid duplicate playback
+            guard settingsManager.commandMode == .agent else {
+                print("⚠️ AgentResponseTTSReady: Ignoring in non-agent mode (current: \(settingsManager.commandMode))")
+                return
+            }
+            
             guard let userInfo = notification.userInfo,
                   let audioData = userInfo["audioData"] as? Data else {
                 print("❌ AgentResponseTTSReady: Missing audio data")
@@ -847,6 +854,14 @@ struct RecordingView: View {
             Task { @MainActor in
                 // TTS generation is complete, reset the flag
                 self.isGeneratingTTS = false
+                
+                // Stop any current playback to avoid overlap/echo
+                if self.audioPlayer.isPlaying {
+                    print("🛑 Stopping current playback before starting new TTS")
+                    self.audioPlayer.stop()
+                    // Small delay to ensure stop completes
+                    try? await Task.sleep(nanoseconds: 100_000_000) // 0.1 seconds
+                }
                 
                 do {
                     try self.audioPlayer.play(audioData: audioData)
