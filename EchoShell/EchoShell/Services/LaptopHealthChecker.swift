@@ -22,9 +22,9 @@ class LaptopHealthChecker: ObservableObject {
     // Health check endpoint - check tunnel connection status on tunnel server
     private var healthCheckURL: URL? {
         guard let config = config else { return nil }
-        // Use tunnelUrl directly to check tunnel status endpoint
-        // Endpoint: /tunnel/:tunnelId/status
-        return URL(string: "\(config.tunnelUrl)/tunnel/\(config.tunnelId)/status")
+        // Use apiBaseUrl to check tunnel status endpoint
+        // Endpoint: /api/:tunnelId/tunnel-status (defined before proxy to avoid interception)
+        return URL(string: "\(config.apiBaseUrl)/tunnel-status")
     }
     
     func start(config: TunnelConfig) {
