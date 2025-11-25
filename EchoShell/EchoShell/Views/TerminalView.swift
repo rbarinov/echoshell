@@ -14,6 +14,9 @@ struct TerminalView: View {
     @StateObject private var viewModel = TerminalViewModel()
     @StateObject private var laptopHealthChecker = LaptopHealthChecker()
     
+    // Track navigation path to detect if we're on detail page
+    @State private var navigationPath = NavigationPath()
+    
     // Get connection state for header
     private var connectionState: ConnectionState {
         if settingsManager.laptopConfig != nil {
@@ -23,8 +26,71 @@ struct TerminalView: View {
         return .disconnected
     }
     
+    // Determine left button type based on navigation state
+    private var leftButtonType: HeaderLeftButtonType {
+        // If we have active navigation (detail page is shown), show back button
+        if !navigationPath.isEmpty {
+            return .back(action: {
+                navigationPath.removeLast()
+            })
+        }
+        // Otherwise show create terminal button
+        return settingsManager.laptopConfig != nil 
+            ? .createTerminal(menuActions: [
+                TerminalCreationAction(
+                    title: "Regular Terminal",
+                    icon: "terminal.fill",
+                    terminalType: .regular,
+                    action: {
+                        if let config = settingsManager.laptopConfig {
+                            Task {
+                                await viewModel.createNewSession(
+                                    config: config,
+                                    terminalType: .regular
+                                )
+                                await viewModel.refreshSessions(config: config)
+                            }
+                        }
+                    }
+                ),
+                TerminalCreationAction(
+                    title: "Cursor",
+                    icon: "brain.head.profile",
+                    terminalType: .cursorCLI,
+                    action: {
+                        if let config = settingsManager.laptopConfig {
+                            Task {
+                                await viewModel.createNewSession(
+                                    config: config,
+                                    terminalType: .cursorCLI
+                                )
+                                await viewModel.refreshSessions(config: config)
+                            }
+                        }
+                    }
+                ),
+                TerminalCreationAction(
+                    title: "Claude Code",
+                    icon: "sparkles",
+                    terminalType: .claudeCLI,
+                    action: {
+                        if let config = settingsManager.laptopConfig {
+                            Task {
+                                await viewModel.createNewSession(
+                                    config: config,
+                                    terminalType: .claudeCLI
+                                )
+                                await viewModel.refreshSessions(config: config)
+                            }
+                        }
+                    }
+                )
+            ])
+            : .none
+    }
+    
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             // Terminal sessions list
             if settingsManager.laptopConfig != nil {
                 if viewModel.sessions.isEmpty && !viewModel.isLoading {
@@ -96,58 +162,7 @@ struct TerminalView: View {
         .safeAreaInset(edge: .top, spacing: 0) {
             RecordingHeaderView(
                 connectionState: connectionState,
-                leftButtonType: settingsManager.laptopConfig != nil 
-                    ? .createTerminal(menuActions: [
-                        TerminalCreationAction(
-                            title: "Regular Terminal",
-                            icon: "terminal.fill",
-                            terminalType: .regular,
-                            action: {
-                                if let config = settingsManager.laptopConfig {
-                                    Task {
-                                        await viewModel.createNewSession(
-                                            config: config,
-                                            terminalType: .regular
-                                        )
-                                        await viewModel.refreshSessions(config: config)
-                                    }
-                                }
-                            }
-                        ),
-                        TerminalCreationAction(
-                            title: "Cursor",
-                            icon: "brain.head.profile",
-                            terminalType: .cursorCLI,
-                            action: {
-                                if let config = settingsManager.laptopConfig {
-                                    Task {
-                                        await viewModel.createNewSession(
-                                            config: config,
-                                            terminalType: .cursorCLI
-                                        )
-                                        await viewModel.refreshSessions(config: config)
-                                    }
-                                }
-                            }
-                        ),
-                        TerminalCreationAction(
-                            title: "Claude Code",
-                            icon: "sparkles",
-                            terminalType: .claudeCLI,
-                            action: {
-                                if let config = settingsManager.laptopConfig {
-                                    Task {
-                                        await viewModel.createNewSession(
-                                            config: config,
-                                            terminalType: .claudeCLI
-                                        )
-                                        await viewModel.refreshSessions(config: config)
-                                    }
-                                }
-                            }
-                        )
-                    ])
-                    : .none
+                leftButtonType: leftButtonType
             )
             .background(Color(.systemBackground))
         }
@@ -215,7 +230,7 @@ struct SessionRow: View {
         Group {
             switch session.terminalType {
             case .cursorCLI, .cursorAgent:
-                // Cursor logo - try to load from assets, fallback to system icon
+                // Cursor logo - unified style
                 if UIImage(named: "CursorLogo") != nil {
                     Image("CursorLogo")
                         .resizable()
@@ -224,9 +239,10 @@ struct SessionRow: View {
                 } else {
                     Image(systemName: "brain.head.profile")
                         .foregroundColor(.blue)
+                        .frame(width: 32, height: 32)
                 }
             case .claudeCLI:
-                // Claude logo - try to load from assets, fallback to system icon
+                // Claude logo - unified style
                 if UIImage(named: "ClaudeLogo") != nil {
                     Image("ClaudeLogo")
                         .resizable()
@@ -235,11 +251,20 @@ struct SessionRow: View {
                 } else {
                     Image(systemName: "sparkles")
                         .foregroundColor(.purple)
+                        .frame(width: 32, height: 32)
                 }
             case .regular:
-                // Shell icon - using terminal.fill for ZSH/BASH
-                Image(systemName: "terminal.fill")
-                    .foregroundColor(.green)
+                // Classic terminal logo - unified style
+                if UIImage(named: "TerminalLogo") != nil {
+                    Image("TerminalLogo")
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 32, height: 32)
+                } else {
+                    Image(systemName: "terminal.fill")
+                        .foregroundColor(.green)
+                        .frame(width: 32, height: 32)
+                }
             }
         }
     }

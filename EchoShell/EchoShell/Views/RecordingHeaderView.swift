@@ -42,22 +42,32 @@ struct RecordingHeaderView: View {
                         Button {
                             action.action()
                         } label: {
-                            Label(action.title, systemImage: action.icon)
+                            HStack(spacing: 8) {
+                                terminalTypeIcon(for: action.terminalType)
+                                    .frame(width: 20, height: 20)
+                                Text(action.title)
+                            }
                         }
                     }
                 } label: {
                     Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 20, weight: .medium))
+                        .font(.system(size: 24, weight: .medium))
                         .foregroundColor(.blue)
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
                 }
                 Spacer()
             case .back(let action):
                 Button {
+                    print("🔙 RecordingHeaderView: Back button pressed")
                     action()
                 } label: {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.blue)
+                }
+                .onAppear {
+                    print("🔙 RecordingHeaderView: Back button appeared in UI")
                 }
                 Spacer()
             }
@@ -70,6 +80,46 @@ struct RecordingHeaderView: View {
         .padding(.vertical, 12)
         .background(Color(.systemBackground))
         .fixedSize(horizontal: false, vertical: true)
+    }
+    
+    // Helper to get terminal type icon matching the list style
+    @ViewBuilder
+    private func terminalTypeIcon(for type: TerminalType) -> some View {
+        switch type {
+        case .cursorCLI, .cursorAgent:
+            if UIImage(named: "CursorLogo") != nil {
+                Image("CursorLogo")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+            } else {
+                Image(systemName: "brain.head.profile")
+                    .foregroundColor(.blue)
+                    .frame(width: 20, height: 20)
+            }
+        case .claudeCLI:
+            if UIImage(named: "ClaudeLogo") != nil {
+                Image("ClaudeLogo")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+            } else {
+                Image(systemName: "sparkles")
+                    .foregroundColor(.purple)
+                    .frame(width: 20, height: 20)
+            }
+        case .regular:
+            if UIImage(named: "TerminalLogo") != nil {
+                Image("TerminalLogo")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+            } else {
+                Image(systemName: "terminal.fill")
+                    .foregroundColor(.green)
+                    .frame(width: 20, height: 20)
+            }
+        }
     }
 }
 
