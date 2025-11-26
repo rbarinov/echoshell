@@ -18,6 +18,7 @@ struct TerminalDetailView: View {
     let session: TerminalSession
     let config: TunnelConfig
     @EnvironmentObject var settingsManager: SettingsManager
+    @EnvironmentObject var navigationStateManager: NavigationStateManager
     @Environment(\.dismiss) var dismiss
     
     @State private var viewMode: TerminalViewMode = .pty
@@ -67,23 +68,8 @@ struct TerminalDetailView: View {
                 }
             }
         }
-        .padding(.top, 60) // Same padding as TerminalView list to prevent content from going under header
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .navigationBar)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            // Session title and working directory (header is handled by parent TerminalView)
-            VStack(spacing: 2) {
-                Text(session.name ?? session.id)
-                    .font(.system(size: 15, weight: .semibold))
-                Text(session.workingDir)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(Color(.systemBackground))
-        }
         .onAppear {
             // Set initial view mode
             viewMode = initialViewMode

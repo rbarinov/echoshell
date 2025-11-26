@@ -315,19 +315,6 @@ struct RecordingView: View {
                 
                 resultDisplayView
             }
-            .padding(.top, 8)
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            let worstState = getWorstConnectionState()
-            RecordingHeaderView(
-                connectionState: worstState,
-                leftButtonType: .none
-            )
-                .id("\(worstState.rawValue)-\(settingsManager.commandMode.rawValue)")
-                .background(Color(.systemBackground))
-                .onAppear {
-                    print("📱 RecordingHeaderView: Appeared with state: \(worstState)")
-                }
         }
         .onChange(of: wsClient.connectionState) { _, _ in
             // View will automatically update via .id modifier

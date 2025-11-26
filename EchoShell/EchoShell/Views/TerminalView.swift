@@ -11,83 +11,12 @@ import UIKit
 
 struct TerminalView: View {
     @EnvironmentObject var settingsManager: SettingsManager
+    @EnvironmentObject var navigationStateManager: NavigationStateManager
     @StateObject private var viewModel = TerminalViewModel()
     @StateObject private var laptopHealthChecker = LaptopHealthChecker()
     
     // Track navigation path to detect if we're on detail page
     @State private var navigationPath = NavigationPath()
-    
-    // Get connection state for header
-    private var connectionState: ConnectionState {
-        if settingsManager.laptopConfig != nil {
-            // Use health checker state if available, otherwise check WebSocket
-            return laptopHealthChecker.connectionState
-        }
-        return .disconnected
-    }
-    
-    // Determine left button type based on navigation state
-    private var leftButtonType: HeaderLeftButtonType {
-        // If we have active navigation (detail page is shown), show back button
-        if !navigationPath.isEmpty {
-            return .back(action: {
-                navigationPath.removeLast()
-            })
-        }
-        // Otherwise show create terminal button
-        return settingsManager.laptopConfig != nil 
-            ? .createTerminal(menuActions: [
-                TerminalCreationAction(
-                    title: "Regular Terminal",
-                    icon: "terminal.fill",
-                    terminalType: .regular,
-                    action: {
-                        if let config = settingsManager.laptopConfig {
-                            Task {
-                                await viewModel.createNewSession(
-                                    config: config,
-                                    terminalType: .regular
-                                )
-                                await viewModel.refreshSessions(config: config)
-                            }
-                        }
-                    }
-                ),
-                TerminalCreationAction(
-                    title: "Cursor",
-                    icon: "brain.head.profile",
-                    terminalType: .cursorCLI,
-                    action: {
-                        if let config = settingsManager.laptopConfig {
-                            Task {
-                                await viewModel.createNewSession(
-                                    config: config,
-                                    terminalType: .cursorCLI
-                                )
-                                await viewModel.refreshSessions(config: config)
-                            }
-                        }
-                    }
-                ),
-                TerminalCreationAction(
-                    title: "Claude Code",
-                    icon: "sparkles",
-                    terminalType: .claudeCLI,
-                    action: {
-                        if let config = settingsManager.laptopConfig {
-                            Task {
-                                await viewModel.createNewSession(
-                                    config: config,
-                                    terminalType: .claudeCLI
-                                )
-                                await viewModel.refreshSessions(config: config)
-                            }
-                        }
-                    }
-                )
-            ])
-            : .none
-    }
     
     var body: some View {
         NavigationStack(path: $navigationPath) {
@@ -132,10 +61,13 @@ struct TerminalView: View {
                         }
                     }
                     .listStyle(.plain)
-                    .padding(.top, 60)
                     .navigationDestination(for: TerminalSession.self) { session in
                         TerminalDetailView(session: session, config: settingsManager.laptopConfig!)
                             .environmentObject(settingsManager)
+                            .environmentObject(navigationStateManager)
+                            .onAppear {
+                                navigationStateManager.navigateToTerminalDetail(session: session)
+                            }
                     }
                 }
             } else {
@@ -159,12 +91,28 @@ struct TerminalView: View {
             }
         }
         .navigationBarHidden(true)
-        .safeAreaInset(edge: .top, spacing: 0) {
-            RecordingHeaderView(
-                connectionState: connectionState,
-                leftButtonType: leftButtonType
-            )
-            .background(Color(.systemBackground))
+        .onChange(of: navigationPath) { oldValue, newValue in
+            // Update navigation state when path changes
+            if newValue.isEmpty {
+                navigationStateManager.navigateToTerminalsList()
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CreateTerminal"))) { notification in
+            guard let terminalType = notification.userInfo?["terminalType"] as? TerminalType,
+                  let config = settingsManager.laptopConfig else { return }
+            
+            Task {
+                await viewModel.createNewSession(
+                    config: config,
+                    terminalType: terminalType
+                )
+                await viewModel.refreshSessions(config: config)
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateBack"))) { _ in
+            if !navigationPath.isEmpty {
+                navigationPath.removeLast()
+            }
         }
         .task {
             if let config = settingsManager.laptopConfig {
