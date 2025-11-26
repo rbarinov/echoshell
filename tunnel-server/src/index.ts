@@ -228,12 +228,22 @@ wss.on('connection', (ws, req) => {
     ws.on('message', (data) => {
       try {
         const rawMessage = data.toString();
-        const message = JSON.parse(rawMessage) as WebSocketMessage;
+        let message: WebSocketMessage;
+        try {
+          message = JSON.parse(rawMessage) as WebSocketMessage;
+        } catch (parseError) {
+          console.error(`❌❌❌ Tunnel server: Failed to parse WebSocket message: ${parseError}`);
+          console.error(`❌❌❌ Tunnel server: Raw message (first 500 chars): ${rawMessage.substring(0, 500)}`);
+          return;
+        }
         
         // Log all incoming messages for debugging
         if (message.type === 'recording_output') {
           console.log(`📥📥📥 Tunnel server received recording_output message: ${rawMessage.substring(0, 500)}`);
           console.log(`📥📥📥 Tunnel server: Parsed message type=${message.type}, sessionId=${(message as any).sessionId}, isComplete=${(message as any).isComplete}`);
+        } else {
+          // Log other message types too (but shorter)
+          console.log(`📥 Tunnel server: Received WebSocket message type=${message.type}`);
         }
         
         // Handle response to pending HTTP request
