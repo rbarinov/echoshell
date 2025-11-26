@@ -1,6 +1,6 @@
 {
   "name": "@rbarinov/tunnel-server",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "Tunnel server for Voice-Controlled Terminal Management System",
   "type": "module",
   "main": "dist/index.js",

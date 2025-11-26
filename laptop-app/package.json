@@ -1,6 +1,6 @@
 {
   "name": "laptop-app",
-  "version": "1.0.18",
+  "version": "1.0.19",
   "description": "Laptop application for Voice-Controlled Terminal Management System",
   "type": "module",
   "main": "dist/index.js",

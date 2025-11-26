@@ -85,18 +85,35 @@ export class TunnelClient {
     sessionId: string,
     payload: { text: string; delta: string; raw?: string; timestamp: number; isComplete?: boolean }
   ): void {
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      const message = {
-        type: 'recording_output',
-        sessionId,
-        ...payload
-      };
-      const messageStr = JSON.stringify(message);
-      console.log(`📤📤📤 TunnelClient: Sending recording_output to tunnel: sessionId=${sessionId}, text=${payload.text.length} chars, isComplete=${payload.isComplete ?? 'undefined'}, wsState=${this.ws.readyState}`);
-      console.log(`📤📤📤 TunnelClient: Full message: ${messageStr.substring(0, 300)}`);
-      this.ws.send(messageStr);
-    } else {
-      console.warn(`⚠️⚠️⚠️ TunnelClient: Cannot send recording_output - WebSocket not OPEN, state=${this.ws?.readyState}`);
+    if (!this.ws) {
+      console.error(`❌❌❌ TunnelClient: WebSocket is null, cannot send recording_output`);
+      return;
+    }
+    
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      console.warn(`⚠️⚠️⚠️ TunnelClient: Cannot send recording_output - WebSocket not OPEN, state=${this.ws.readyState} (1=OPEN, 0=CONNECTING, 2=CLOSING, 3=CLOSED)`);
+      return;
+    }
+    
+    const message = {
+      type: 'recording_output',
+      sessionId,
+      ...payload
+    };
+    const messageStr = JSON.stringify(message);
+    console.log(`📤📤📤 TunnelClient: Sending recording_output to tunnel: sessionId=${sessionId}, text=${payload.text.length} chars, isComplete=${payload.isComplete ?? 'undefined'}, wsState=${this.ws.readyState}`);
+    console.log(`📤📤📤 TunnelClient: Full message: ${messageStr.substring(0, 300)}`);
+    
+    try {
+      this.ws.send(messageStr, (error) => {
+        if (error) {
+          console.error(`❌❌❌ TunnelClient: Error sending recording_output: ${error.message}`);
+        } else {
+          console.log(`✅✅✅ TunnelClient: Successfully sent recording_output message (${messageStr.length} bytes)`);
+        }
+      });
+    } catch (error) {
+      console.error(`❌❌❌ TunnelClient: Exception while sending recording_output: ${error}`);
     }
   }
   
