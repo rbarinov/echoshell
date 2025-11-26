@@ -225,8 +225,11 @@ wss.on('connection', (ws, req) => {
     // Setup ping/pong heartbeat for tunnel connection
     setupTunnelHeartbeat(tunnelConnection);
     
+    // Log when WebSocket connection is ready
+    console.log(`📡📡📡 Tunnel server: WebSocket connection established for tunnel ${tunnelId}, ready to receive messages`);
+    
     ws.on('message', (data) => {
-      console.log(`📥📥📥 Tunnel server: WebSocket message received! Data type: ${typeof data}`);
+      console.log(`📥📥📥 Tunnel server: WebSocket message received! Data type: ${typeof data}, tunnelId=${tunnelId}`);
       try {
         const rawMessage = data.toString();
         console.log(`📥📥📥 Tunnel server: Raw message length: ${rawMessage.length} chars`);
