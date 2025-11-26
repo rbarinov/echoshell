@@ -86,11 +86,17 @@ export class TunnelClient {
     payload: { text: string; delta: string; raw?: string; timestamp: number; isComplete?: boolean }
   ): void {
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({
+      const message = {
         type: 'recording_output',
         sessionId,
         ...payload
-      }));
+      };
+      const messageStr = JSON.stringify(message);
+      console.log(`📤📤📤 TunnelClient: Sending recording_output to tunnel: sessionId=${sessionId}, text=${payload.text.length} chars, isComplete=${payload.isComplete ?? 'undefined'}, wsState=${this.ws.readyState}`);
+      console.log(`📤📤📤 TunnelClient: Full message: ${messageStr.substring(0, 300)}`);
+      this.ws.send(messageStr);
+    } else {
+      console.warn(`⚠️⚠️⚠️ TunnelClient: Cannot send recording_output - WebSocket not OPEN, state=${this.ws?.readyState}`);
     }
   }
   
