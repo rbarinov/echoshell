@@ -227,7 +227,14 @@ wss.on('connection', (ws, req) => {
     
     ws.on('message', (data) => {
       try {
-        const message = JSON.parse(data.toString()) as WebSocketMessage;
+        const rawMessage = data.toString();
+        const message = JSON.parse(rawMessage) as WebSocketMessage;
+        
+        // Log all incoming messages for debugging
+        if (message.type === 'recording_output') {
+          console.log(`📥📥📥 Tunnel server received recording_output message: ${rawMessage.substring(0, 500)}`);
+          console.log(`📥📥📥 Tunnel server: Parsed message type=${message.type}, sessionId=${(message as any).sessionId}, isComplete=${(message as any).isComplete}`);
+        }
         
         // Handle response to pending HTTP request
         if (message.type === 'http_response' && message.requestId) {
@@ -280,9 +287,15 @@ wss.on('connection', (ws, req) => {
           const sessionId = (message as any).sessionId;
           const streamKey = `${tunnelId}:${sessionId}:recording`;
           const wsClients = recordingWsStreams.get(streamKey);
+          
+          console.log(`📥📥📥 Tunnel server: Processing recording_output for sessionId=${sessionId}, streamKey=${streamKey}`);
+          console.log(`📥📥📥 Tunnel server: wsClients=${wsClients ? wsClients.size : 'null'} clients connected`);
+          
           // Check if isComplete exists in the message (don't default to false if it's undefined)
           const incomingIsComplete = (message as any).isComplete;
           const hasIsComplete = incomingIsComplete !== undefined && incomingIsComplete !== null;
+          
+          console.log(`📥📥📥 Tunnel server: incomingIsComplete=${incomingIsComplete}, hasIsComplete=${hasIsComplete}`);
           
           const payload: any = {
             type: 'recording_output',
@@ -296,6 +309,9 @@ wss.on('connection', (ws, req) => {
           // Only include isComplete if it was present in the original message
           if (hasIsComplete) {
             payload.isComplete = incomingIsComplete;
+            console.log(`✅✅✅ Tunnel server: Adding isComplete=${incomingIsComplete} to payload`);
+          } else {
+            console.log(`⚠️⚠️⚠️ Tunnel server: isComplete not present in message, not adding to payload`);
           }
           
           console.log(`📤📤📤 Tunnel server forwarding recording_output: sessionId=${sessionId}, text=${payload.text.length} chars, isComplete=${payload.isComplete ?? 'undefined'}`);
@@ -304,11 +320,19 @@ wss.on('connection', (ws, req) => {
           const payloadString = JSON.stringify(payload);
 
           if (wsClients && wsClients.size > 0) {
+            let sentCount = 0;
             wsClients.forEach(conn => {
               if (conn.ws.readyState === WebSocket.OPEN) {
                 conn.ws.send(payloadString);
+                sentCount++;
+                console.log(`📤📤📤 Tunnel server: Sent to client (${sentCount}/${wsClients.size})`);
+              } else {
+                console.log(`⚠️⚠️⚠️ Tunnel server: Client WebSocket not OPEN, state=${conn.ws.readyState}`);
               }
             });
+            console.log(`📤📤📤 Tunnel server: Total sent to ${sentCount} clients`);
+          } else {
+            console.log(`⚠️⚠️⚠️ Tunnel server: No clients connected for streamKey=${streamKey}`);
           }
 
           const sseClients = recordingSseStreams.get(streamKey);
