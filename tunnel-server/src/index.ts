@@ -226,9 +226,10 @@ wss.on('connection', (ws, req) => {
     setupTunnelHeartbeat(tunnelConnection);
     
     ws.on('message', (data) => {
-      console.log(`📥📥📥 Tunnel server: WebSocket message received! Data type: ${typeof data}, length: ${data.length || 'N/A'}`);
+      console.log(`📥📥📥 Tunnel server: WebSocket message received! Data type: ${typeof data}`);
       try {
         const rawMessage = data.toString();
+        console.log(`📥📥📥 Tunnel server: Raw message length: ${rawMessage.length} chars`);
         console.log(`📥📥📥 Tunnel server: Raw message (first 200 chars): ${rawMessage.substring(0, 200)}`);
         let message: WebSocketMessage;
         try {
