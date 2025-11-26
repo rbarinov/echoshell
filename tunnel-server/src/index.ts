@@ -6,6 +6,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { readFileSync } from 'fs';
 
 // Get directory of current module (works with ES modules)
 const __filename = fileURLToPath(import.meta.url);
@@ -84,7 +85,18 @@ interface TunnelCreateRequest {
   tunnel_id?: string;  // Optional: for restoring existing tunnel
 }
 
+// Read version from package.json
+let serverVersion = 'unknown';
+try {
+  const packageJsonPath = path.resolve(__dirname, '../package.json');
+  const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
+  serverVersion = packageJson.version || 'unknown';
+} catch (error) {
+  console.warn(`⚠️  Could not read version from package.json: ${error}`);
+}
+
 console.log('🚀 Tunnel Server starting...');
+console.log(`📦 Tunnel Server version: ${serverVersion}`);
 
 // Load and validate registration API key
 const REGISTRATION_API_KEY = process.env.TUNNEL_REGISTRATION_API_KEY;
