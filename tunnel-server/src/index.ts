@@ -280,16 +280,27 @@ wss.on('connection', (ws, req) => {
           const sessionId = (message as any).sessionId;
           const streamKey = `${tunnelId}:${sessionId}:recording`;
           const wsClients = recordingWsStreams.get(streamKey);
-          const payload = {
+          // Check if isComplete exists in the message (don't default to false if it's undefined)
+          const incomingIsComplete = (message as any).isComplete;
+          const hasIsComplete = incomingIsComplete !== undefined && incomingIsComplete !== null;
+          
+          const payload: any = {
             type: 'recording_output',
             session_id: sessionId,
-            text: (message as any).text,
-            delta: (message as any).delta,
+            text: (message as any).text || '',
+            delta: (message as any).delta || '',
             raw: (message as any).raw,
-            timestamp: (message as any).timestamp ?? Date.now(),
-            isComplete: (message as any).isComplete ?? false // CRITICAL: Forward isComplete flag!
+            timestamp: (message as any).timestamp ?? Date.now()
           };
-          console.log(`📤📤📤 Tunnel server forwarding recording_output: sessionId=${sessionId}, text=${payload.text.length} chars, isComplete=${payload.isComplete}`);
+          
+          // Only include isComplete if it was present in the original message
+          if (hasIsComplete) {
+            payload.isComplete = incomingIsComplete;
+          }
+          
+          console.log(`📤📤📤 Tunnel server forwarding recording_output: sessionId=${sessionId}, text=${payload.text.length} chars, isComplete=${payload.isComplete ?? 'undefined'}`);
+          console.log(`📤📤📤 Tunnel server: Original message.isComplete=${incomingIsComplete}, hasIsComplete=${hasIsComplete}, payload.isComplete=${payload.isComplete ?? 'undefined'}`);
+          console.log(`📤📤📤 Tunnel server: Full payload JSON: ${JSON.stringify(payload)}`);
           const payloadString = JSON.stringify(payload);
 
           if (wsClients && wsClients.size > 0) {

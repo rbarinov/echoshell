@@ -116,15 +116,31 @@ class RecordingStreamClient: ObservableObject {
     }
     
     private func handleMessage(_ text: String) {
-        print("📨📨📨 RecordingStreamClient received raw message: \(text.prefix(200))")
+        print("📨📨📨 RecordingStreamClient received raw message: \(text.prefix(500))")
         
-        guard let data = text.data(using: .utf8),
-              let message = try? JSONDecoder().decode(RecordingStreamMessage.self, from: data) else {
-            print("❌❌❌ RecordingStreamClient: Failed to parse message")
+        guard let data = text.data(using: .utf8) else {
+            print("❌❌❌ RecordingStreamClient: Failed to convert text to data")
+            return
+        }
+        
+        // Try to parse as JSON first to see what we got
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            print("📨📨📨 RecordingStreamClient: Parsed JSON keys: \(json.keys.joined(separator: ", "))")
+            print("📨📨📨 RecordingStreamClient: JSON isComplete value: \(json["isComplete"] ?? "nil"), type: \(type(of: json["isComplete"]))")
+        }
+        
+        guard let message = try? JSONDecoder().decode(RecordingStreamMessage.self, from: data) else {
+            print("❌❌❌ RecordingStreamClient: Failed to decode RecordingStreamMessage")
+            if let error = try? JSONDecoder().decode(RecordingStreamMessage.self, from: data) {
+                print("❌❌❌ This should not print")
+            } else {
+                print("❌❌❌ Decoding error details unavailable")
+            }
             return
         }
         
         print("📨📨📨 RecordingStreamClient parsed message: type=\(message.type), session_id=\(message.session_id), text=\(message.text.count) chars, delta=\(message.delta?.count ?? 0) chars, isComplete=\(message.isComplete?.description ?? "nil")")
+        print("📨📨📨 RecordingStreamClient: isComplete type: \(type(of: message.isComplete))")
         
         DispatchQueue.main.async {
             self.onMessageCallback?(message)

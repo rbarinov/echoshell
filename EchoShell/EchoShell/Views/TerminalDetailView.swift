@@ -595,6 +595,8 @@ struct TerminalSessionAgentView: View {
                 
                 // For assistant messages (delta), append to accumulated text
                 // For completion (isComplete=true), use full text and trigger TTS immediately
+                print("🔍🔍🔍 iOS: Checking isComplete: message.isComplete=\(message.isComplete?.description ?? "nil"), type=\(type(of: message.isComplete))")
+                
                 if let isComplete = message.isComplete, isComplete {
                     print("✅✅✅ iOS: isComplete=true detected! Processing completion...")
                     // Command completed - use full accumulated text from server
@@ -622,6 +624,10 @@ struct TerminalSessionAgentView: View {
                         print("⚠️⚠️⚠️ iOS: finalText.isEmpty=\(finalText.isEmpty), laptopConfig=\(settingsManager.laptopConfig != nil)")
                         ttsTriggeredForCurrentResponse = true // Mark as triggered even if empty
                     }
+                } else if message.isComplete == nil {
+                    print("⚠️⚠️⚠️ iOS: isComplete is nil! Message may not have isComplete field")
+                } else if message.isComplete == false {
+                    print("🔍🔍🔍 iOS: isComplete=false, treating as delta message")
                 } else {
                     // Assistant message (delta) - append to accumulated text locally
                     // Update agentResponseText for UI display (status indicator), but don't trigger TTS yet
