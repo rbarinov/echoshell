@@ -617,10 +617,8 @@ struct TerminalSessionAgentView: View {
                         print("✅✅✅ iOS: Triggering TTS for complete response")
                         lastTTSedText = finalText
                         ttsTriggeredForCurrentResponse = true
-                        // Set isGeneratingTTS immediately to update UI
-                        isGeneratingTTS = true
-                        print("✅✅✅ iOS: isGeneratingTTS set to true, calling generateTTS...")
-                        print("✅✅✅ iOS: Current state after setting isGeneratingTTS: \(getCurrentState())")
+                        // Don't set isGeneratingTTS here - let generateTTS set it to avoid race condition
+                        print("✅✅✅ iOS: Calling generateTTS...")
                         generateTTS(for: finalText, config: laptopConfig)
                     } else {
                         print("⚠️⚠️⚠️ iOS: Command completed but no text available or no laptopConfig")
