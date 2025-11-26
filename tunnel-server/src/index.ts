@@ -226,11 +226,14 @@ wss.on('connection', (ws, req) => {
     setupTunnelHeartbeat(tunnelConnection);
     
     ws.on('message', (data) => {
+      console.log(`📥📥📥 Tunnel server: WebSocket message received! Data type: ${typeof data}, length: ${data.length || 'N/A'}`);
       try {
         const rawMessage = data.toString();
+        console.log(`📥📥📥 Tunnel server: Raw message (first 200 chars): ${rawMessage.substring(0, 200)}`);
         let message: WebSocketMessage;
         try {
           message = JSON.parse(rawMessage) as WebSocketMessage;
+          console.log(`📥📥📥 Tunnel server: Successfully parsed JSON, message.type=${message.type}`);
         } catch (parseError) {
           console.error(`❌❌❌ Tunnel server: Failed to parse WebSocket message: ${parseError}`);
           console.error(`❌❌❌ Tunnel server: Raw message (first 500 chars): ${rawMessage.substring(0, 500)}`);
