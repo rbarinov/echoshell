@@ -38,12 +38,18 @@ class RecordingStreamClient: ObservableObject {
     private var healthCheckTimer: Timer?
     
     func connect(config: TunnelConfig, sessionId: String, onMessage: @escaping (RecordingStreamMessage) -> Void) {
+        print("🔌🔌🔌 RecordingStreamClient: connect called for sessionId=\(sessionId)")
+        print("🔌🔌🔌 RecordingStreamClient: config.tunnelId=\(config.tunnelId), config.wsUrl=\(config.wsUrl)")
+        
         self.config = config
         self.sessionId = sessionId
         self.onMessageCallback = onMessage
         
         let wsUrlString = "\(config.wsUrl)/api/\(config.tunnelId)/recording/\(sessionId)/stream"
+        print("🔌🔌🔌 RecordingStreamClient: WebSocket URL: \(wsUrlString)")
+        
         guard let url = URL(string: wsUrlString) else {
+            print("❌❌❌ RecordingStreamClient: Invalid URL: \(wsUrlString)")
             Task { @MainActor in
                 self.connectionError = "Invalid recording stream URL"
                 self.connectionState = .disconnected
@@ -57,15 +63,19 @@ class RecordingStreamClient: ObservableObject {
         webSocketTask = URLSession.shared.webSocketTask(with: request)
         webSocketTask?.resume()
         
+        print("🔌🔌🔌 RecordingStreamClient: WebSocket task created and resumed")
+        
         Task { @MainActor in
             self.isConnected = true
             self.connectionState = .connecting
+            print("🔌🔌🔌 RecordingStreamClient: Connection state set to connecting")
         }
         reconnectAttempts = 0
         lastPongReceived = Date()
         
         setupHeartbeat()
         receiveMessage()
+        print("🔌🔌🔌 RecordingStreamClient: Heartbeat setup and receiveMessage started")
     }
     
     func disconnect() {

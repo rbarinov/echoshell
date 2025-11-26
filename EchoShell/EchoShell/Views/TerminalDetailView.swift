@@ -587,11 +587,14 @@ struct TerminalSessionAgentView: View {
     }
     
     private func connectToRecordingStream() {
+        print("🔌🔌🔌 TerminalSessionAgentView: Connecting to recording stream for session \(session.id)")
+        print("🔌🔌🔌 TerminalSessionAgentView: Config - tunnelId=\(config.tunnelId), wsUrl=\(config.wsUrl)")
+        
         recordingStreamClient.connect(config: config, sessionId: session.id) { message in
             // Process filtered assistant messages for TTS
             Task { @MainActor in
-                print("📨📨📨 iOS: Received recording stream message: isComplete=\(message.isComplete?.description ?? "nil"), delta=\(message.delta?.count ?? 0) chars, text=\(message.text.count) chars")
-                print("📨📨📨 iOS: message.text preview: '\(message.text.prefix(100))...'")
+                print("📨📨📨 TerminalSessionAgentView: Received recording stream message: isComplete=\(message.isComplete?.description ?? "nil"), delta=\(message.delta?.count ?? 0) chars, text=\(message.text.count) chars")
+                print("📨📨📨 TerminalSessionAgentView: message.text preview: '\(message.text.prefix(100))...'")
                 
                 // For assistant messages (delta), append to accumulated text
                 // For completion (isComplete=true), use full text and trigger TTS immediately
