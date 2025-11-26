@@ -1738,13 +1738,8 @@ struct RecordingView: View {
         }
         
         do {
-            guard let ttsEndpoint = settingsManager.providerEndpoints?.tts else {
-                print("❌ TTS endpoint not available")
-                await MainActor.run {
-                    self.isGeneratingTTS = false
-                }
-                return
-            }
+            // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
+            let ttsEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/tts/synthesize"
             let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
             let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             let language = settingsManager.transcriptionLanguage.rawValue
@@ -1900,14 +1895,15 @@ struct RecordingView: View {
         }
         
         do {
-            guard let ttsEndpoint = settingsManager.providerEndpoints?.tts,
-                  let laptopConfig = settingsManager.laptopConfig else {
-                print("❌ TTS endpoint or laptop config not available")
+            guard let laptopConfig = settingsManager.laptopConfig else {
+                print("❌ Laptop config not available")
                 await MainActor.run {
                     self.isGeneratingTTS = false
                 }
                 return
             }
+            // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
+            let ttsEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/tts/synthesize"
             let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
             let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             let language = settingsManager.transcriptionLanguage.rawValue

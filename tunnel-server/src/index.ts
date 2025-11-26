@@ -286,8 +286,10 @@ wss.on('connection', (ws, req) => {
             text: (message as any).text,
             delta: (message as any).delta,
             raw: (message as any).raw,
-            timestamp: (message as any).timestamp ?? Date.now()
+            timestamp: (message as any).timestamp ?? Date.now(),
+            isComplete: (message as any).isComplete ?? false // CRITICAL: Forward isComplete flag!
           };
+          console.log(`📤📤📤 Tunnel server forwarding recording_output: sessionId=${sessionId}, text=${payload.text.length} chars, isComplete=${payload.isComplete}`);
           const payloadString = JSON.stringify(payload);
 
           if (wsClients && wsClients.size > 0) {

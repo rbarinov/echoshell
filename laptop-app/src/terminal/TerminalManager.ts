@@ -169,7 +169,8 @@ export class TerminalManager {
     name?: string
   ): Promise<{ sessionId: string; workingDir: string; terminalType: TerminalType; name?: string }> {
     const sessionId = `session-${Date.now()}`;
-    const cwd = workingDir || process.env.HOME || os.homedir();
+    // Use provided workingDir, or fallback to WORK_ROOT_PATH env var, or HOME, or system homedir
+    const cwd = workingDir || process.env.WORK_ROOT_PATH || process.env.HOME || os.homedir();
     
     // Validate working directory exists
     try {
@@ -287,17 +288,12 @@ export class TerminalManager {
               }
             }
             
-            // Try to extract assistant message text
-            const text = this.extractAssistantTextFromLine(trimmedLine, terminalType);
-            if (text) {
-              console.log(`🎙️ [${session.sessionId}] Extracted assistant text from PTY: ${text.substring(0, 100)}...`);
-              this.emitHeadlessOutput(session, text);
-            }
-            
-            // Check for result message to detect command completion
+            // Check for result message FIRST to avoid processing it as assistant message
             if (this.isResultMessage(trimmedLine, terminalType)) {
               console.log(`✅ [${session.sessionId}] Detected result message - command completed`);
-              if (session.headless?.isRunning) {
+              
+              // Always mark as not running and send completion signal, even if already marked
+              if (session.headless) {
                 session.headless.isRunning = false;
                 session.headless.lastResultSeen = true;
                 // Clear completion timeout if exists
@@ -305,22 +301,37 @@ export class TerminalManager {
                   clearTimeout(session.headless.completionTimeout);
                   session.headless.completionTimeout = undefined;
                 }
-                // Send completion message to clients
-                const completionMsg = '✅ Command completed\n';
-                session.outputBuffer.push(completionMsg);
-                if (session.outputBuffer.length > 10000) {
-                  session.outputBuffer.shift();
-                }
-                if (this.tunnelClient) {
-                  this.tunnelClient.sendTerminalOutput(session.sessionId, completionMsg);
-                }
-                const listeners = this.outputListeners.get(session.sessionId);
-                if (listeners) {
-                  listeners.forEach(listener => listener(completionMsg));
-                }
-                // Send completion marker for recording stream
-                this.emitHeadlessOutput(session, '\n\n[COMMAND_COMPLETE]');
               }
+              
+              // Send completion message to clients (for terminal display)
+              const completionMsg = '✅ Command completed\n';
+              session.outputBuffer.push(completionMsg);
+              if (session.outputBuffer.length > 10000) {
+                session.outputBuffer.shift();
+              }
+              if (this.tunnelClient) {
+                this.tunnelClient.sendTerminalOutput(session.sessionId, completionMsg);
+              }
+              const listeners = this.outputListeners.get(session.sessionId);
+              if (listeners) {
+                listeners.forEach(listener => listener(completionMsg));
+              }
+              
+              // ALWAYS send completion marker for recording stream, regardless of isRunning state
+              // This signals that TTS should start
+              console.log(`📤 [${session.sessionId}] Sending [COMMAND_COMPLETE] marker to recording stream`);
+              this.emitHeadlessOutput(session, '[COMMAND_COMPLETE]');
+              
+              // Skip processing this line as assistant message
+              continue;
+            }
+            
+            // Try to extract assistant message text (only for assistant type, not result)
+            const text = this.extractAssistantTextFromLine(trimmedLine, terminalType);
+            if (text) {
+              console.log(`🎙️ [${session.sessionId}] Extracted assistant text from PTY: ${text.substring(0, 100)}...`);
+              // Append assistant text to recording stream (will be accumulated in handleHeadlessOutput)
+              this.emitHeadlessOutput(session, text);
             }
           }
         } else {
@@ -502,12 +513,14 @@ export class TerminalManager {
     console.log(`🚀 [${session.sessionId}] Starting headless command execution via PTY (isRunning set to true)`);
     
     // Build command with proper arguments
-    const terminalType = session.terminalType === 'cursor_cli' ? 'cursor-agent' : 'claude-cli';
+    // Use environment variable if set, otherwise default to 'claude' (not 'claude-cli')
+    const claudeBin = process.env.CLAUDE_HEADLESS_BIN || 'claude';
+    const terminalType = session.terminalType === 'cursor_cli' ? 'cursor-agent' : claudeBin;
     const currentCliSessionId = session.headless?.cliSessionId;
     
     // Build command line with --resume if we have session_id (for cursor-agent)
-    // For claude-cli, use --session-id instead
-    let commandLine = `${terminalType} --output-format stream-json --print --force`;
+    // For claude, use --session-id instead
+    let commandLine = `${terminalType} --output-format stream-json --print`;
     if (currentCliSessionId) {
       if (session.terminalType === 'cursor_cli') {
         commandLine += ` --resume ${currentCliSessionId}`;
@@ -593,6 +606,7 @@ export class TerminalManager {
   private emitHeadlessOutput(session: TerminalSession, data: string): void {
     const text = data?.trim();
     if (!text) {
+      console.warn(`⚠️ [${session.sessionId}] emitHeadlessOutput: empty text, skipping`);
       return;
     }
 
@@ -602,12 +616,12 @@ export class TerminalManager {
 
     // Notify global output listeners (for recording stream)
     // This handles the filtered output for Record view (watch/phone)
-    console.log(`📡 [${session.sessionId}] Notifying ${this.globalOutputListeners.size} global output listeners with filtered output`);
+    console.log(`📡 [${session.sessionId}] emitHeadlessOutput: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}" to ${this.globalOutputListeners.size} listeners`);
     this.globalOutputListeners.forEach(listener => {
       try {
         listener(session, text);
       } catch (error) {
-        console.error('❌ Global output listener error:', error);
+        console.error(`❌ [${session.sessionId}] Global output listener error:`, error);
       }
     });
   }

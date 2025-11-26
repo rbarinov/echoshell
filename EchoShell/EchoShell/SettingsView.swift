@@ -14,28 +14,14 @@ struct SettingsView: View {
     @State private var showingQRScanner = false
     @State private var scannedConfig: TunnelConfig?
     @State private var hasProcessedScan = false // Prevent processing the same scan multiple times
-    
-    // Get connection state for header
-    private var connectionState: ConnectionState {
-        if settingsManager.laptopConfig != nil {
-            return laptopHealthChecker.connectionState
-        }
-        return .disconnected
-    }
+    @State private var showingDisconnectConfirmation = false
     
     var body: some View {
         Form {
             // Laptop Connection Section
-            Section(header: Text("Laptop Connection"),
-                   footer: Text("Connect to your laptop for terminal control and AI commands")) {
+            Section(header: Text("Laptop Connection")) {
                     if let config = settingsManager.laptopConfig {
                         // Connected
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("Connected to Laptop")
-                        }
-                        
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Tunnel ID")
                                 .font(.caption)
@@ -46,14 +32,22 @@ struct SettingsView: View {
                         }
                         
                         Button(role: .destructive) {
-                            // Clear all connection state
-                            settingsManager.laptopConfig = nil
-                            // Reset scan state to allow re-scanning
-                            hasProcessedScan = false
-                            scannedConfig = nil
-                            print("📱 Disconnected from laptop, ready for new scan")
+                            showingDisconnectConfirmation = true
                         } label: {
-                            Label("Disconnect from Laptop", systemImage: "xmark.circle")
+                            Text("Disconnect from Laptop")
+                        }
+                        .confirmationDialog("Disconnect from Laptop", isPresented: $showingDisconnectConfirmation, titleVisibility: .visible) {
+                            Button("Disconnect", role: .destructive) {
+                                // Clear all connection state
+                                settingsManager.laptopConfig = nil
+                                // Reset scan state to allow re-scanning
+                                hasProcessedScan = false
+                                scannedConfig = nil
+                                print("📱 Disconnected from laptop, ready for new scan")
+                            }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Are you sure you want to disconnect from your laptop? You will need to scan the QR code again to reconnect.")
                         }
                     } else {
                         // Not connected
@@ -151,13 +145,6 @@ struct SettingsView: View {
         }
         .sheet(isPresented: $showingQRScanner) {
             QRScannerView(scannedConfig: $scannedConfig)
-        }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            RecordingHeaderView(
-                connectionState: connectionState,
-                leftButtonType: .none
-            )
-            .background(Color(.systemBackground))
         }
         .task {
             if let config = settingsManager.laptopConfig {

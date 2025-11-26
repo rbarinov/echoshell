@@ -28,6 +28,10 @@ class AudioRecorder: NSObject, ObservableObject {
     // Operation cancellation tracking
     @Published var currentOperationId: UUID? = nil
     
+    // Flag to control automatic command sending to agent
+    // When false, commands are not sent via executeAgentCommand (for terminal detail pages)
+    var autoSendCommand: Bool = true
+    
     override init() {
         super.init()
         setupAudioSession()
@@ -392,14 +396,6 @@ extension AudioRecorder {
         print("📱 iOS AudioRecorder: Starting transcription for file: \(url.path)")
         
         // Use laptop proxy endpoint for remote transcription
-        guard let sttEndpoint = settingsManager?.providerEndpoints?.stt else {
-            print("❌ STT endpoint not available")
-            DispatchQueue.main.async {
-                self.recognizedText = "Error: STT endpoint not available. Please reconnect to laptop."
-                self.isTranscribing = false
-            }
-            return
-        }
         guard let laptopConfig = settingsManager?.laptopConfig else {
             print("❌ Laptop config not available")
             DispatchQueue.main.async {
@@ -408,6 +404,8 @@ extension AudioRecorder {
             }
             return
         }
+        // Build STT endpoint from laptop config (proxy endpoint via tunnel)
+        let sttEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/stt/transcribe"
         let service = TranscriptionService(laptopAuthKey: laptopConfig.authKey, endpoint: sttEndpoint)
         let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
         
@@ -464,7 +462,11 @@ extension AudioRecorder {
                     )
                     
                     // Send transcribed text to laptop for command execution
-                    self.sendCommandToLaptop(text: text)
+                    // Only send if autoSendCommand is enabled (default: true)
+                    // This can be disabled for terminal detail pages where commands are sent directly to terminal
+                    if self.autoSendCommand {
+                        self.sendCommandToLaptop(text: text)
+                    }
                     
                 case .failure(let error):
                     print("❌ Transcription error: \(error.localizedDescription)")
@@ -635,11 +637,19 @@ extension AudioRecorder {
             options: .regularExpression
         )
         
-        // Remove control characters except newline and tab
+        // Remove control characters except newline and tab, but keep all Unicode characters (including Cyrillic)
         cleaned = cleaned.unicodeScalars.filter { scalar in
             let value = scalar.value
-            // Keep printable ASCII (32-126), newline (10), and tab (9)
-            return (value >= 32 && value <= 126) || value == 10 || value == 9
+            // Keep printable ASCII (32-126), newline (10), tab (9), and all Unicode characters (including Cyrillic)
+            if (value >= 32 && value <= 126) || value == 10 || value == 9 {
+                return true
+            }
+            // Keep Unicode characters (including Cyrillic, emoji, etc.)
+            if value >= 0x80 && value <= 0x10FFFF {
+                // Filter out control characters but keep printable Unicode
+                return !CharacterSet.controlCharacters.contains(scalar)
+            }
+            return false
         }.map { Character($0) }.reduce("") { $0 + String($1) }
         
         // Convert tabs to spaces
@@ -681,15 +691,8 @@ extension AudioRecorder {
             }
             
             do {
-                guard let ttsEndpoint = settingsManager?.providerEndpoints?.tts else {
-                    print("❌ TTS endpoint not available")
-                    // Notify that TTS generation failed
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("AgentResponseTTSGenerating"),
-                        object: nil
-                    )
-                    return
-                }
+                // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
+                let ttsEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/tts/synthesize"
                 let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
                 let language = settingsManager?.transcriptionLanguage.rawValue
                 let speed = settingsManager?.ttsSpeed ?? 1.0

@@ -15,6 +15,7 @@ struct RecordingStreamMessage: Codable {
     let delta: String?
     let raw: String?
     let timestamp: TimeInterval?
+    let isComplete: Bool?
 }
 
 class RecordingStreamClient: ObservableObject {
@@ -115,10 +116,15 @@ class RecordingStreamClient: ObservableObject {
     }
     
     private func handleMessage(_ text: String) {
+        print("📨📨📨 RecordingStreamClient received raw message: \(text.prefix(200))")
+        
         guard let data = text.data(using: .utf8),
               let message = try? JSONDecoder().decode(RecordingStreamMessage.self, from: data) else {
+            print("❌❌❌ RecordingStreamClient: Failed to parse message")
             return
         }
+        
+        print("📨📨📨 RecordingStreamClient parsed message: type=\(message.type), session_id=\(message.session_id), text=\(message.text.count) chars, delta=\(message.delta?.count ?? 0) chars, isComplete=\(message.isComplete?.description ?? "nil")")
         
         DispatchQueue.main.async {
             self.onMessageCallback?(message)

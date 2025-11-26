@@ -202,7 +202,7 @@ Distributed system for remote terminal management and execution via voice comman
 - FR-4.10: Watch SHALL play audio through speaker
 
 #### FR-5: Headless Terminal Execution
-- FR-5.1: **Cursor Agent** SHALL execute with mandatory flags: `--output-format stream-json --print --force`
+- FR-5.1: **Cursor Agent** SHALL execute with mandatory flags: `--output-format stream-json --print`
 - FR-5.2: **Cursor Agent** SHALL use `--resume <session_id>` for subsequent commands to maintain context
 - FR-5.3: **Claude CLI** SHALL execute with `--output-format json-stream` flag
 - FR-5.4: **Claude CLI** SHALL use `--session-id <session_id>` for subsequent commands
@@ -377,7 +377,7 @@ Message Format:
 **Command Execution Flow**:
 1. Mobile app sends command via `POST /terminal/{session_id}/execute`
 2. Laptop builds command line with proper flags:
-   - `cursor-agent --output-format stream-json --print --force --resume <session_id> "prompt"`
+   - `cursor-agent --output-format stream-json --print --resume <session_id> "prompt"`
    - `claude -p "prompt" --output-format json-stream --session-id <session_id>`
 3. Command is written to PTY (shell executes it)
 4. Output is captured via `pty.onData` event
@@ -752,11 +752,11 @@ pm2 start dist/main.js --name laptop-app
 # Headless terminal execution flow
 # 1. User speaks: "Count 5 plus 10"
 # 2. iPhone transcribes and sends to laptop
-# 3. Laptop executes: cursor-agent --output-format stream-json --print --force "Count 5 plus 10"
+# 3. Laptop executes: cursor-agent --output-format stream-json --print "Count 5 plus 10"
 # 4. Output parsed: session_id extracted, assistant message filtered
 # 5. Filtered text sent to recording stream
 # 6. iPhone receives text and triggers TTS
-# 7. Next command uses: cursor-agent --output-format stream-json --print --force --resume <session_id> "Multiply by 2"
+# 7. Next command uses: cursor-agent --output-format stream-json --print --resume <session_id> "Multiply by 2"
 ```
 
 ### Appendix B: Configuration Files

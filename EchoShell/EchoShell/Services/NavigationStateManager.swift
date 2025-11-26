@@ -16,7 +16,8 @@ class NavigationStateManager: ObservableObject {
         currentState = .terminalDetail(
             sessionId: session.id,
             sessionName: session.name,
-            workingDir: session.workingDir
+            workingDir: session.workingDir,
+            terminalType: session.terminalType
         )
     }
     

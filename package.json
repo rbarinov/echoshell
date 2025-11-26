@@ -1,6 +1,6 @@
 {
   "name": "echoshell",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "description": "Voice-Controlled Terminal Management System",
   "private": true,
   "author": "Roman Barinov <rbarinov@gmail.com>",

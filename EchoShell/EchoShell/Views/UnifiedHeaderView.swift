@@ -8,19 +8,25 @@
 
 import SwiftUI
 
+// Terminal view mode enum (shared with TerminalDetailView)
+enum TerminalViewMode {
+    case pty
+    case agent
+}
+
 // Navigation state for unified header
 enum NavigationState: Equatable {
     case agent
     case terminalsList
-    case terminalDetail(sessionId: String, sessionName: String?, workingDir: String)
+    case terminalDetail(sessionId: String, sessionName: String?, workingDir: String, terminalType: TerminalType)
     case settings
     
     static func == (lhs: NavigationState, rhs: NavigationState) -> Bool {
         switch (lhs, rhs) {
         case (.agent, .agent), (.terminalsList, .terminalsList), (.settings, .settings):
             return true
-        case (.terminalDetail(let id1, let name1, let dir1), .terminalDetail(let id2, let name2, let dir2)):
-            return id1 == id2 && name1 == name2 && dir1 == dir2
+        case (.terminalDetail(let id1, let name1, let dir1, let type1), .terminalDetail(let id2, let name2, let dir2, let type2)):
+            return id1 == id2 && name1 == name2 && dir1 == dir2 && type1 == type2
         default:
             return false
         }
@@ -31,40 +37,54 @@ struct UnifiedHeaderView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @Binding var navigationState: NavigationState
     let connectionState: ConnectionState
+    @State private var terminalViewMode: TerminalViewMode = .agent
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Main header bar
-            HStack(spacing: 12) {
-                // Left button (back or create terminal) - only for terminals
-                leftButtonView
-                
-                Spacer()
-                
-                // Right: Connection status
-                ConnectionStatusIndicator(state: connectionState)
-                    .frame(width: 44, height: 44, alignment: .center)
-            }
-            .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(Color(.systemBackground))
+        // Main header bar
+        HStack(spacing: 12) {
+            // Left button (back or create terminal) - only for terminals
+            leftButtonView
             
-            // Nested navigation: Session info for terminal detail
-            if case .terminalDetail(_, let sessionName, let workingDir) = navigationState {
-                VStack(spacing: 2) {
-                    Text(sessionName ?? "Terminal")
-                        .font(.system(size: 15, weight: .semibold))
-                    Text(workingDir)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+            // Center: Session info for terminal detail (icon + name + path)
+            if case .terminalDetail(_, let sessionName, let workingDir, let terminalType) = navigationState {
+                HStack(spacing: 8) {
+                    // Terminal type icon
+                    terminalTypeIcon(for: terminalType)
+                    
+                    // Session name and working directory
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(sessionName ?? "Terminal")
+                            .font(.system(size: 15, weight: .semibold))
+                            .lineLimit(1)
+                        Text(workingDir)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
                 }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
-                .background(Color(.systemBackground))
             }
+            
+            Spacer()
+            
+            // Toggle button for Agent/Terminal mode (only for cursor/claude terminals)
+            if case .terminalDetail(_, _, _, let terminalType) = navigationState,
+               terminalType == .cursorCLI || terminalType == .claudeCLI {
+                terminalModeToggle
+                    .onChange(of: navigationState) { oldValue, newValue in
+                        // Reset to agent mode when navigating to terminal detail
+                        if case .terminalDetail = newValue {
+                            terminalViewMode = .agent
+                        }
+                    }
+            }
+            
+            // Right: Connection status
+            ConnectionStatusIndicator(state: connectionState)
+                .frame(width: 44, height: 44, alignment: .center)
         }
+        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
         .background(Color(.systemBackground))
     }
     
@@ -155,6 +175,39 @@ struct UnifiedHeaderView: View {
                 .foregroundColor(.blue)
                 .frame(width: 44, height: 44, alignment: .center)
                 .contentShape(Rectangle())
+        }
+    }
+    
+    private var terminalModeToggle: some View {
+        Button {
+            // Toggle between agent and terminal mode
+            let newMode: TerminalViewMode = terminalViewMode == .agent ? .pty : .agent
+            terminalViewMode = newMode
+            
+            // Notify TerminalDetailView to update view mode
+            let modeString = newMode == .agent ? "agent" : "pty"
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ToggleTerminalViewMode"),
+                object: nil,
+                userInfo: ["viewMode": modeString]
+            )
+        } label: {
+            Image(systemName: terminalViewMode == .agent ? "brain.head.profile" : "terminal.fill")
+                .font(.system(size: 18, weight: .medium))
+                .foregroundColor(.blue)
+                .frame(width: 44, height: 44, alignment: .center)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onAppear {
+            // Set default to agent mode
+            terminalViewMode = .agent
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("TerminalViewModeChanged"))) { notification in
+            // Sync with TerminalDetailView mode changes
+            if let modeString = notification.userInfo?["viewMode"] as? String {
+                terminalViewMode = modeString == "agent" ? .agent : .pty
+            }
         }
     }
     

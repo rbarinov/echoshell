@@ -55,8 +55,10 @@ export class AIAgent {
     
     if ((intent.type === 'terminal_command' || intent.type === 'complex_task' || intent.type === 'file_operation') && !sessionId && terminalManager) {
       // Auto-create a persistent session for terminal operations
+      // Use WORK_ROOT_PATH env var as default, or let createSession use its default
       console.log(`📟 Auto-creating persistent session for terminal command...`);
-      const newSession = await terminalManager.createSession('regular', undefined, `agent-${Date.now()}`);
+      const defaultWorkingDir = process.env.WORK_ROOT_PATH || undefined;
+      const newSession = await terminalManager.createSession('regular', defaultWorkingDir, `agent-${Date.now()}`);
       actualSessionId = newSession.sessionId;
       actualTerminalManager = terminalManager;
       console.log(`✅ Created persistent session: ${actualSessionId}`);
@@ -299,7 +301,8 @@ Example:
     try {
       switch (action) {
         case 'create': {
-          const workingDir = intent.target || process.env.HOME || os.homedir();
+          // Use target directory, or fallback to WORK_ROOT_PATH env var, or HOME, or system homedir
+          const workingDir = intent.target || process.env.WORK_ROOT_PATH || process.env.HOME || os.homedir();
           const terminalType = intent.terminal_type || 'regular';
           const name = intent.name;
           const newSession = await terminalManager.createSession(terminalType, workingDir, name);
@@ -307,7 +310,8 @@ Example:
         }
         
         case 'create_cursor_agent_terminal': {
-          const workingDir = intent.target || process.env.HOME || os.homedir();
+          // Use target directory, or fallback to WORK_ROOT_PATH env var, or HOME, or system homedir
+          const workingDir = intent.target || process.env.WORK_ROOT_PATH || process.env.HOME || os.homedir();
           const name = intent.name;
           const newSession = await terminalManager.createSession('cursor_agent', workingDir, name);
           return `✅ Created new Cursor Agent terminal: ${newSession.sessionId}${newSession.name ? ` (${newSession.name})` : ''}\nWorking directory: ${newSession.workingDir}\nCursor Agent is starting automatically...`;

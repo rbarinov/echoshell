@@ -58,10 +58,8 @@ class AudioRecorder: NSObject, ObservableObject {
             print("⚠️ Watch: Laptop config not available")
             return
         }
-        guard let sttEndpoint = settingsManager.providerEndpoints?.stt else {
-            print("⚠️ Watch: STT endpoint not available")
-            return
-        }
+        // Build STT endpoint from laptop config (proxy endpoint via tunnel)
+        let sttEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/stt/transcribe"
         self.transcriptionService = TranscriptionService(laptopAuthKey: laptopConfig.authKey, endpoint: sttEndpoint)
     }
     

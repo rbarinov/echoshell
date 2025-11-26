@@ -544,23 +544,6 @@ struct ContentView: View {
         }
     }
 
-    // Request ephemeral keys from laptop
-    private func requestEphemeralKeys(config: TunnelConfig) async {
-        do {
-            let apiClient = APIClient(config: config)
-            let keyResponse = try await apiClient.requestKeys()
-
-            await MainActor.run {
-                settingsManager.ephemeralKeys = keyResponse.keys
-                settingsManager.keyExpiresAt = Date(timeIntervalSince1970: TimeInterval(keyResponse.expiresAt))
-            }
-
-            print("✅ Ephemeral keys received on Watch")
-        } catch {
-            print("❌ Failed to request ephemeral keys: \(error)")
-        }
-    }
-    
     // Play TTS for command result
     private func playTTS(for text: String) async {
         guard let laptopConfig = settingsManager.laptopConfig else {
@@ -574,10 +557,8 @@ struct ContentView: View {
         }
         
         do {
-            guard let ttsEndpoint = settingsManager.providerEndpoints?.tts else {
-                print("❌ Watch: TTS endpoint not available")
-                return
-            }
+            // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
+            let ttsEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/tts/synthesize"
             
             let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             let language = settingsManager.transcriptionLanguage.rawValue
