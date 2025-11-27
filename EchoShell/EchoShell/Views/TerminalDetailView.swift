@@ -131,6 +131,10 @@ struct TerminalDetailView: View {
                 // SwiftTerm handles ANSI sequences correctly, so we only remove zsh artifacts
                 var cleanedText = self.removeZshPercentSymbol(text)
                 
+                // Remove any stray single characters that might be artifacts (like 's', 'ss')
+                // But only if they appear on their own line or at the end
+                cleanedText = self.removeStrayCharacters(cleanedText)
+                
                 // Skip if cleaned text is empty
                 guard !cleanedText.isEmpty else { return }
                 
@@ -273,6 +277,43 @@ struct TerminalDetailView: View {
             // Unmatched quote detected - remove trailing quotes
             cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         }
+        
+        return cleaned
+    }
+    
+    // Remove stray single characters that appear as artifacts (like 's', 'ss' on separate lines)
+    private func removeStrayCharacters(_ text: String) -> String {
+        var cleaned = text
+        
+        // Split into lines and filter out lines that are just single characters (likely artifacts)
+        let lines = cleaned.components(separatedBy: .newlines)
+        let filteredLines = lines.filter { line in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            // Keep lines that are:
+            // - Empty (for formatting)
+            // - Longer than 2 characters
+            // - Part of JSON structure (contain {, }, [, ], :, ", etc.)
+            // - Contain meaningful content (numbers, multiple words, etc.)
+            if trimmed.isEmpty {
+                return true // Keep empty lines for formatting
+            }
+            if trimmed.count > 2 {
+                return true // Keep longer lines
+            }
+            // Filter out single/double character lines that are likely artifacts
+            // But keep lines that are part of JSON or have special characters
+            if trimmed.contains("{") || trimmed.contains("}") || 
+               trimmed.contains("[") || trimmed.contains("]") ||
+               trimmed.contains(":") || trimmed.contains("\"") ||
+               trimmed.contains(",") || trimmed.contains(".") ||
+               trimmed.rangeOfCharacter(from: CharacterSet.decimalDigits) != nil {
+                return true // Keep lines with JSON or meaningful content
+            }
+            // Filter out single/double character lines (likely artifacts like 's', 'ss')
+            return false
+        }
+        
+        cleaned = filteredLines.joined(separator: "\n")
         
         return cleaned
     }
