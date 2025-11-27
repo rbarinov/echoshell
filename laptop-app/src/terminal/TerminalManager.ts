@@ -474,8 +474,18 @@ export class TerminalManager {
       throw new Error('Session not found');
     }
     
-    // Log session object reference for debugging
-    console.log(`🔍 [${sessionId}] Session headless state: ${session.headless ? JSON.stringify(session.headless) : 'null'}`);
+    // Log session object reference for debugging (safely, without circular references)
+    if (session.headless) {
+      const headlessState = {
+        isRunning: session.headless.isRunning,
+        cliSessionId: session.headless.cliSessionId,
+        lastResultSeen: session.headless.lastResultSeen,
+        hasCompletionTimeout: !!session.headless.completionTimeout
+      };
+      console.log(`🔍 [${sessionId}] Session headless state: ${JSON.stringify(headlessState)}`);
+    } else {
+      console.log(`🔍 [${sessionId}] Session headless state: null`);
+    }
 
     if (this.isHeadlessTerminal(session.terminalType)) {
       // For headless terminals, execute command via CLI (cursor-agent or claude-cli)
