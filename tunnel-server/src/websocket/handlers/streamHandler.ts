@@ -4,11 +4,11 @@
  */
 
 import { WebSocket } from 'ws';
-import type { TerminalInputMessage } from '../../types';
-import { TerminalInputMessageSchema } from '../../schemas/tunnelSchemas';
-import { TunnelManager } from '../../tunnel/TunnelManager';
-import { StreamManager } from './streamManager';
-import { Logger } from '../../utils/logger';
+import type { TerminalInputMessage } from '../../types/index.js';
+import { TerminalInputMessageSchema } from '../../schemas/tunnelSchemas.js';
+import { TunnelManager } from '../../tunnel/TunnelManager.js';
+import { StreamManager } from './streamManager.js';
+import { Logger } from '../../utils/logger.js';
 
 /**
  * Handles stream WebSocket connections

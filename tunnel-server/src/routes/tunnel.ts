@@ -3,10 +3,10 @@
  */
 
 import type { Express, Request, Response } from 'express';
-import { TunnelCreateRequestSchema } from '../schemas/tunnelSchemas';
-import { TunnelAuthError, InvalidRequestError } from '../errors/TunnelError';
-import { Config } from '../config/Config';
-import { Logger } from '../utils/logger';
+import { TunnelCreateRequestSchema } from '../schemas/tunnelSchemas.js';
+import { TunnelAuthError, InvalidRequestError } from '../errors/TunnelError.js';
+import { Config } from '../config/Config.js';
+import { Logger } from '../utils/logger.js';
 import crypto from 'crypto';
 
 /**

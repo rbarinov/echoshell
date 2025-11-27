@@ -4,8 +4,8 @@
  */
 
 import type { WebSocket } from 'ws';
-import type { TunnelConnection } from '../types';
-import { Logger } from '../utils/logger';
+import type { TunnelConnection } from '../types/index.js';
+import { Logger } from '../utils/logger.js';
 
 /**
  * Manages tunnel connections

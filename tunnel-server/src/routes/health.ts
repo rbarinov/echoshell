@@ -3,7 +3,7 @@
  */
 
 import type { Express, Request, Response } from 'express';
-import { TunnelManager } from '../tunnel/TunnelManager';
+import { TunnelManager } from '../tunnel/TunnelManager.js';
 
 /**
  * Setup health check routes

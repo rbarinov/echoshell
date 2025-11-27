@@ -11,16 +11,16 @@ import type {
   ClientAuthKeyMessage,
   TerminalOutputMessage,
   RecordingOutputMessage,
-} from '../../types';
+} from '../../types/index.js';
 import {
   HttpResponseMessageSchema,
   ClientAuthKeyMessageSchema,
   TerminalOutputMessageSchema,
   RecordingOutputMessageSchema,
-} from '../../schemas/tunnelSchemas';
-import { TunnelManager } from '../../tunnel/TunnelManager';
-import { Logger } from '../../utils/logger';
-import { StreamManager } from './streamManager';
+} from '../../schemas/tunnelSchemas.js';
+import { TunnelManager } from '../../tunnel/TunnelManager.js';
+import { Logger } from '../../utils/logger.js';
+import { StreamManager } from './streamManager.js';
 
 /**
  * Handles tunnel WebSocket messages

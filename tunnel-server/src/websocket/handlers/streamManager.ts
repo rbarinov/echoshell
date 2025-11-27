@@ -3,10 +3,10 @@
  * Manages terminal and recording stream connections
  */
 
-import type { StreamConnection } from '../../types';
+import type { StreamConnection } from '../../types/index.js';
 import type { Express, Response } from 'express';
 import { WebSocket } from 'ws';
-import { Logger } from '../../utils/logger';
+import { Logger } from '../../utils/logger.js';
 
 /**
  * Manages stream connections (terminal and recording)

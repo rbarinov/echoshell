@@ -3,10 +3,10 @@
  */
 
 import type { Express, Request, Response } from 'express';
-import { TunnelManager } from '../tunnel/TunnelManager';
-import { StreamManager } from '../websocket/handlers/streamManager';
-import { TunnelNotFoundError, TunnelAuthError } from '../errors/TunnelError';
-import { Logger } from '../utils/logger';
+import { TunnelManager } from '../tunnel/TunnelManager.js';
+import { StreamManager } from '../websocket/handlers/streamManager.js';
+import { TunnelNotFoundError, TunnelAuthError } from '../errors/TunnelError.js';
+import { Logger } from '../utils/logger.js';
 
 /**
  * Setup recording stream routes

@@ -4,11 +4,11 @@
  */
 
 import type { Express, Request, Response } from 'express';
-import type { HttpRequestMessage } from '../types';
-import { HttpRequestMessageSchema } from '../schemas/tunnelSchemas';
-import { TunnelManager } from '../tunnel/TunnelManager';
-import { TunnelNotFoundError, TunnelConnectionError } from '../errors/TunnelError';
-import { Logger } from '../utils/logger';
+import type { HttpRequestMessage } from '../types/index.js';
+import { HttpRequestMessageSchema } from '../schemas/tunnelSchemas.js';
+import { TunnelManager } from '../tunnel/TunnelManager.js';
+import { TunnelNotFoundError, TunnelConnectionError } from '../errors/TunnelError.js';
+import { Logger } from '../utils/logger.js';
 import crypto from 'crypto';
 
 /**

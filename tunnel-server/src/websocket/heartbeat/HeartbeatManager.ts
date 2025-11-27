@@ -4,8 +4,8 @@
  */
 
 import { WebSocket } from 'ws';
-import type { TunnelConnection, StreamConnection } from '../../types';
-import { Logger } from '../../utils/logger';
+import type { TunnelConnection, StreamConnection } from '../../types/index.js';
+import { Logger } from '../../utils/logger.js';
 
 /**
  * Heartbeat configuration

@@ -3,16 +3,16 @@
  * Voice-Controlled Terminal Management System
  */
 
-import { Config } from './config/Config';
-import { Logger } from './utils/logger';
-import { TunnelManager } from './tunnel/TunnelManager';
-import { StreamManager } from './websocket/handlers/streamManager';
-import { HttpProxy } from './proxy/HttpProxy';
-import { createApp, createServer } from './server';
-import { setupTunnelRoutes } from './routes/tunnel';
-import { setupHealthRoutes } from './routes/health';
-import { setupRecordingRoutes } from './routes/recording';
-import { TunnelNotFoundError } from './errors/TunnelError';
+import { Config } from './config/Config.js';
+import { Logger } from './utils/logger.js';
+import { TunnelManager } from './tunnel/TunnelManager.js';
+import { StreamManager } from './websocket/handlers/streamManager.js';
+import { HttpProxy } from './proxy/HttpProxy.js';
+import { createApp, createServer } from './server.js';
+import { setupTunnelRoutes } from './routes/tunnel.js';
+import { setupHealthRoutes } from './routes/health.js';
+import { setupRecordingRoutes } from './routes/recording.js';
+import { TunnelNotFoundError } from './errors/TunnelError.js';
 
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';

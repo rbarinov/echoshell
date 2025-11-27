@@ -4,14 +4,14 @@
 
 import type { Server as HttpServer } from 'http';
 import { WebSocketServer as WSServer, WebSocket, type RawData } from 'ws';
-import type { TunnelConnection, StreamConnection } from '../types';
-import { TunnelManager } from '../tunnel/TunnelManager';
-import { StreamManager } from './handlers/streamManager';
-import { TunnelHandler } from './handlers/tunnelHandler';
-import { StreamHandler } from './handlers/streamHandler';
-import { HeartbeatManager } from './heartbeat/HeartbeatManager';
-import { Config } from '../config/Config';
-import { Logger } from '../utils/logger';
+import type { TunnelConnection, StreamConnection } from '../types/index.js';
+import { TunnelManager } from '../tunnel/TunnelManager.js';
+import { StreamManager } from './handlers/streamManager.js';
+import { TunnelHandler } from './handlers/tunnelHandler.js';
+import { StreamHandler } from './handlers/streamHandler.js';
+import { HeartbeatManager } from './heartbeat/HeartbeatManager.js';
+import { Config } from '../config/Config.js';
+import { Logger } from '../utils/logger.js';
 import type { Response } from 'express';
 
 /**
