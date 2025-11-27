@@ -112,8 +112,8 @@ class RecordingStreamClient: ObservableObject {
                     break
                 }
                 self.receiveMessage()
-            case .failure:
-                print("❌ Recording stream error: Connection failed")
+            case .failure(let error):
+                print("❌ Recording stream error: \(error.localizedDescription)")
                 Task { @MainActor in
                     self.isConnected = false
                     self.connectionError = error.localizedDescription
@@ -141,10 +141,11 @@ class RecordingStreamClient: ObservableObject {
         
         guard let message = try? JSONDecoder().decode(RecordingStreamMessage.self, from: data) else {
             print("❌❌❌ RecordingStreamClient: Failed to decode RecordingStreamMessage")
-            if let error = try? JSONDecoder().decode(RecordingStreamMessage.self, from: data) {
-                print("❌❌❌ This should not print")
-            } else {
-                print("❌❌❌ Decoding error details unavailable")
+            // Try to get decoding error details
+            do {
+                _ = try JSONDecoder().decode(RecordingStreamMessage.self, from: data)
+            } catch {
+                print("❌❌❌ Decoding error: \(error.localizedDescription)")
             }
             return
         }

@@ -303,19 +303,9 @@ export class TerminalManager {
                 }
               }
               
-              // Send completion message to clients (for terminal display)
-              const completionMsg = '✅ Command completed\n';
-              session.outputBuffer.push(completionMsg);
-              if (session.outputBuffer.length > 10000) {
-                session.outputBuffer.shift();
-              }
-              if (this.tunnelClient) {
-                this.tunnelClient.sendTerminalOutput(session.sessionId, completionMsg);
-              }
-              const listeners = this.outputListeners.get(session.sessionId);
-              if (listeners) {
-                listeners.forEach(listener => listener(completionMsg));
-              }
+              // Don't send completion message to terminal display - it's only for recording stream
+              // The completion is already handled via [COMMAND_COMPLETE] marker for recording stream
+              // This prevents "Command completed" from appearing in terminal output
               
               // ALWAYS send completion marker for recording stream, regardless of isRunning state
               // This signals that TTS should start
