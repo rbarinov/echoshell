@@ -227,36 +227,52 @@ struct TerminalDetailView: View {
     private func removeZshPercentSymbol(_ text: String) -> String {
         var cleaned = text
         
+        // Remove zsh-specific artifacts (History prompts, etc.)
         cleaned = cleaned.replacingOccurrences(of: "History", with: "")
         cleaned = cleaned.replacingOccurrences(of: "Load Full History", with: "")
         
+        // Remove zsh percent symbol with ANSI sequences
+        // Pattern: ESC[ followed by color codes, then % symbol, then more color codes
         cleaned = cleaned.replacingOccurrences(
             of: "\\u{001B}\\[[0-9;]*m\\u{001B}\\[7m%\\u{001B}\\[27m\\u{001B}\\[[0-9;]*m",
             with: "",
             options: .regularExpression
         )
         
+        // Remove simple zsh percent symbol with reverse video
         cleaned = cleaned.replacingOccurrences(
             of: "\\u{001B}\\[7m%\\u{001B}\\[27m",
             with: "",
             options: .regularExpression
         )
         
+        // Remove zsh percent symbol with color codes
         cleaned = cleaned.replacingOccurrences(
             of: "\\u{001B}\\[[0-9;]*m%\\u{001B}\\[[0-9;]*m",
             with: "",
             options: .regularExpression
         )
         
+        // Remove standalone percent symbols (zsh prompt indicator)
         cleaned = cleaned.replacingOccurrences(of: " %", with: " ", options: [])
         cleaned = cleaned.replacingOccurrences(of: "% ", with: " ", options: [])
         cleaned = cleaned.replacingOccurrences(of: "%(?=\\r|\\n)", with: "", options: .regularExpression)
         
+        // Remove trailing percent symbols
         while cleaned.hasSuffix("%") {
             cleaned = String(cleaned.dropLast())
         }
         
+        // Remove percent after special characters
         cleaned = cleaned.replacingOccurrences(of: "([~→])%", with: "$1", options: .regularExpression)
+        
+        // Remove any hanging quotes that might cause terminal to hang
+        // This is already handled in the WebSocket callback, but keep it here as backup
+        let quoteCount = cleaned.filter { $0 == "\"" || $0 == "'" }.count
+        if quoteCount % 2 != 0 {
+            // Unmatched quote detected - remove trailing quotes
+            cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        }
         
         return cleaned
     }
