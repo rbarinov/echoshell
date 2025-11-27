@@ -303,16 +303,13 @@ export class TerminalManager {
                 }
               }
               
-              // Don't send completion message to terminal display - it's only for recording stream
-              // The completion is already handled via [COMMAND_COMPLETE] marker for recording stream
-              // This prevents "Command completed" from appearing in terminal output
-              
-              // ALWAYS send completion marker for recording stream, regardless of isRunning state
-              // This signals that TTS should start
+              // Don't send result message line to terminal output - it's only for recording stream
+              // The result message contains JSON that shouldn't appear in terminal
+              // Only send completion marker to recording stream for TTS
               console.log(`📤 [${session.sessionId}] Sending [COMMAND_COMPLETE] marker to recording stream`);
               this.emitHeadlessOutput(session, '[COMMAND_COMPLETE]');
               
-              // Skip processing this line as assistant message
+              // Skip processing this line - don't send it to terminal output
               continue;
             }
             

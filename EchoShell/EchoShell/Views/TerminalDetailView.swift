@@ -125,18 +125,8 @@ struct TerminalDetailView: View {
                 // Only process non-empty text to avoid feeding empty strings
                 guard !text.isEmpty else { return }
                 
-                // Remove "Command completed" messages and checkmarks
-                var cleanedText = text
-                cleanedText = cleanedText.replacingOccurrences(of: "✅ Command completed", with: "", options: .caseInsensitive)
-                cleanedText = cleanedText.replacingOccurrences(of: "Command completed", with: "", options: .caseInsensitive)
-                cleanedText = cleanedText.replacingOccurrences(of: "✅", with: "")
-                cleanedText = cleanedText.trimmingCharacters(in: .whitespacesAndNewlines)
-                
-                // Skip if cleaned text is empty after removing completion messages
-                guard !cleanedText.isEmpty else { return }
-                
                 // Remove zsh percent symbols and other artifacts
-                cleanedText = self.removeZshPercentSymbol(cleanedText)
+                var cleanedText = self.removeZshPercentSymbol(text)
                 
                 // Skip if cleaned text is empty
                 guard !cleanedText.isEmpty else { return }
