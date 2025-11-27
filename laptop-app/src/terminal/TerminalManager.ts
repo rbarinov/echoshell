@@ -258,25 +258,21 @@ export class TerminalManager {
         if (session.outputBuffer.length > 10000) {
           session.outputBuffer.shift();
         }
-        
-        // Stream to tunnel (for iPhone)
-        if (this.tunnelClient) {
-          this.tunnelClient.sendTerminalOutput(session.sessionId, data);
-        }
-        
-        // Notify listeners (for WebSocket streaming)
-        const listeners = this.outputListeners.get(session.sessionId);
-        if (listeners) {
-          listeners.forEach(listener => listener(data));
-        }
 
-        // For headless terminals, parse output to extract session_id and assistant messages
+        // For headless terminals, filter output BEFORE sending to terminal
+        // Only send assistant messages to terminal, not result messages or raw JSON
         if (this.isHeadlessTerminal(terminalType)) {
           // Process data line by line for JSON parsing
           const lines = data.split('\n');
+          let terminalOutput = ''; // Accumulate only what should appear in terminal
+          
           for (const line of lines) {
             const trimmedLine = line.trim();
-            if (!trimmedLine) continue;
+            if (!trimmedLine) {
+              // Keep empty lines for formatting
+              terminalOutput += '\n';
+              continue;
+            }
             
             // Try to extract session_id
             const sessionId = this.extractSessionIdFromLine(trimmedLine, terminalType);
@@ -288,7 +284,7 @@ export class TerminalManager {
               }
             }
             
-            // Check for result message FIRST to avoid processing it as assistant message
+            // Check for result message FIRST - don't send to terminal
             if (this.isResultMessage(trimmedLine, terminalType)) {
               console.log(`✅ [${session.sessionId}] Detected result message - command completed`);
               
@@ -303,13 +299,12 @@ export class TerminalManager {
                 }
               }
               
-              // Don't send result message line to terminal output - it's only for recording stream
-              // The result message contains JSON that shouldn't appear in terminal
+              // Don't send result message to terminal - skip it completely
               // Only send completion marker to recording stream for TTS
               console.log(`📤 [${session.sessionId}] Sending [COMMAND_COMPLETE] marker to recording stream`);
               this.emitHeadlessOutput(session, '[COMMAND_COMPLETE]');
               
-              // Skip processing this line - don't send it to terminal output
+              // Skip this line - don't add to terminal output
               continue;
             }
             
@@ -317,12 +312,48 @@ export class TerminalManager {
             const text = this.extractAssistantTextFromLine(trimmedLine, terminalType);
             if (text) {
               console.log(`🎙️ [${session.sessionId}] Extracted assistant text from PTY: ${text.substring(0, 100)}...`);
-              // Append assistant text to recording stream (will be accumulated in handleHeadlessOutput)
+              // Add assistant text to terminal output (formatted nicely)
+              terminalOutput += text + '\n';
+              // Also send to recording stream (will be accumulated in handleHeadlessOutput)
               this.emitHeadlessOutput(session, text);
+            } else {
+              // If it's not a result message and not an assistant message, it might be raw JSON
+              // Check if it's JSON - if so, don't send to terminal
+              try {
+                JSON.parse(trimmedLine);
+                // It's JSON but not result/assistant - skip it (might be thinking, system, etc.)
+                console.log(`🔇 [${session.sessionId}] Skipping non-assistant JSON message from terminal output`);
+                continue;
+              } catch (e) {
+                // Not JSON - might be shell output or prompt, include it
+                terminalOutput += line + '\n';
+              }
+            }
+          }
+          
+          // Send filtered output to terminal (only assistant messages, no JSON)
+          if (terminalOutput.trim().length > 0) {
+            if (this.tunnelClient) {
+              this.tunnelClient.sendTerminalOutput(session.sessionId, terminalOutput);
+            }
+            
+            const listeners = this.outputListeners.get(session.sessionId);
+            if (listeners) {
+              listeners.forEach(listener => listener(terminalOutput));
             }
           }
         } else {
-          // For regular terminals, send all output to global listeners
+          // For regular terminals, send all output as-is
+          if (this.tunnelClient) {
+            this.tunnelClient.sendTerminalOutput(session.sessionId, data);
+          }
+          
+          const listeners = this.outputListeners.get(session.sessionId);
+          if (listeners) {
+            listeners.forEach(listener => listener(data));
+          }
+          
+          // Send all output to global listeners
           this.globalOutputListeners.forEach(listener => {
             try {
               listener(session, data);
