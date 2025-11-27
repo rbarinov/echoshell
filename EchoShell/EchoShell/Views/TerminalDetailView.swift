@@ -53,6 +53,10 @@ struct TerminalDetailView: View {
             }
         }
         .onChange(of: viewMode) { oldValue, newValue in
+            // Save state before mode switch (but don't disconnect streams)
+            // This ensures agent responses continue to work when switching modes
+            print("🔄 Terminal view mode changed: \(oldValue) -> \(newValue)")
+            
             // Notify header about mode change
             let modeString = newValue == .agent ? "agent" : "pty"
             NotificationCenter.default.post(
@@ -60,6 +64,9 @@ struct TerminalDetailView: View {
                 object: nil,
                 userInfo: ["viewMode": modeString]
             )
+            
+            // Don't disconnect recording stream on mode switch - keep it connected
+            // This ensures agent responses continue to work when switching between agent/terminal modes
         }
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .navigationBar)
