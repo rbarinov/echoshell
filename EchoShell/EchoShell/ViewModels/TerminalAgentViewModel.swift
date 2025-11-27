@@ -167,7 +167,9 @@ class TerminalAgentViewModel: ObservableObject {
 
     /// Replay last TTS audio
     func replayLastTTS() {
-        ttsService.replay()
+        Task {
+            await ttsService.replay()
+        }
     }
 
     /// Cancel current operation
@@ -333,7 +335,9 @@ class TerminalAgentViewModel: ObservableObject {
                 print("🔊 TerminalAgentViewModel[\(sessionId)]: Already have TTS, playing existing")
                 agentResponseText = message.text
                 lastCompletionText = trimmedText
-                ttsService.replay()
+                Task {
+                    await ttsService.replay()
+                }
                 saveState()
                 return
             }

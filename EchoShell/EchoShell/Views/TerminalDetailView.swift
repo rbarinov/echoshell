@@ -78,20 +78,22 @@ struct TerminalDetailView: View {
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             // Activate this session in global state (single source of truth)
-            sessionState.setActiveSession(session.id, name: session.name ?? "", defaultMode: initialViewMode)
-            
-            // For regular terminals, ALWAYS force PTY mode (agent mode not available)
+            // For AI terminals (cursor/claude), default to agent mode on first open
+            // For regular terminals, always use PTY mode
             if session.terminalType == .regular {
+                sessionState.setActiveSession(session.id, name: session.name ?? "", defaultMode: .pty)
                 sessionState.setViewMode(.pty, for: session.id)
             } else {
-                // For AI terminals, use saved mode or initial mode
+                // For AI terminals, check if we have a saved mode
                 let savedMode = sessionState.getViewMode(for: session.id)
                 if savedMode == .pty || savedMode == .agent {
-                    // Use saved mode if it exists
+                    // Use saved mode if it exists (user previously selected a mode)
+                    sessionState.setActiveSession(session.id, name: session.name ?? "", defaultMode: savedMode)
                     sessionState.setViewMode(savedMode, for: session.id)
                 } else {
-                    // Use initial mode if no saved mode
-                    sessionState.setViewMode(initialViewMode, for: session.id)
+                    // First time opening - use agent mode as default
+                    sessionState.setActiveSession(session.id, name: session.name ?? "", defaultMode: .agent)
+                    sessionState.setViewMode(.agent, for: session.id)
                 }
             }
             
@@ -301,9 +303,13 @@ struct TerminalSessionAgentView: View {
             audioRecorder.autoSendCommand = false
             // Connect to recording stream for this specific session
             connectToRecordingStream()
-            
-            // Listen for transcription completion to send command to this session
-            // Handled via .onReceive below
+        }
+        .onChange(of: audioRecorder.isTranscribing) { oldValue, newValue in
+            // When transcription completes (isTranscribing becomes false), send command to this session
+            if oldValue == true && newValue == false && !audioRecorder.recognizedText.isEmpty {
+                print("✅ TerminalSessionAgentView: Transcription completed, sending command to session \(session.id): \(audioRecorder.recognizedText)")
+                sendCommandToSession(audioRecorder.recognizedText)
+            }
         }
         .onDisappear {
             // Save terminal state before leaving
@@ -580,7 +586,9 @@ struct TerminalSessionAgentView: View {
                             // Replay button (show when TTS audio is available and not playing)
                             if ttsService.lastAudioData != nil && !audioPlayer.isPlaying && !audioPlayer.isPaused {
                                 Button(action: {
-                                    ttsService.replay()
+                                    Task {
+                                        await ttsService.replay()
+                                    }
                                 }) {
                                     HStack(spacing: 6) {
                                         Image(systemName: "speaker.wave.2.fill")
@@ -629,20 +637,35 @@ struct TerminalSessionAgentView: View {
             return .waitingForAgent
         } else if !agentResponseText.isEmpty {
             // We have an answer - check if TTS is done
-            print("🔍🔍🔍 getCurrentState: agentResponseText=\(agentResponseText.count) chars, lastAudioData=\(ttsService.lastAudioData != nil), ttsTriggered=\(ttsTriggeredForCurrentResponse)")
+            print("🔍🔍🔍 getCurrentState: agentResponseText=\(agentResponseText.count) chars, lastAudioData=\(ttsService.lastAudioData != nil), isGenerating=\(ttsService.isGenerating), isPlaying=\(audioPlayer.isPlaying), ttsTriggered=\(ttsTriggeredForCurrentResponse)")
+            
+            // If audio is playing, show playing state
+            if audioPlayer.isPlaying {
+                print("🔍🔍🔍 getCurrentState: Audio is playing, returning .playingTTS")
+                return .playingTTS
+            }
+            
+            // If TTS is generating, show generating state
+            if ttsService.isGenerating {
+                print("🔍🔍🔍 getCurrentState: TTS is generating, returning .generatingTTS")
+                return .generatingTTS
+            }
+            
+            // If TTS audio is available (even if not playing), we're done (idle)
             if ttsService.lastAudioData != nil {
-                // TTS was generated, we're done
                 print("🔍🔍🔍 getCurrentState: TTS audio available, returning .idle")
                 return .idle
-            } else if ttsTriggeredForCurrentResponse {
-                // TTS was triggered but not completed yet - still generating
+            }
+            
+            // If TTS was triggered but not completed yet - still generating
+            if ttsTriggeredForCurrentResponse {
                 print("🔍🔍🔍 getCurrentState: TTS triggered but not completed, returning .generatingTTS")
                 return .generatingTTS
-            } else {
-                // Answer received but TTS not triggered yet - waiting for isComplete message
-                print("🔍🔍🔍 getCurrentState: Answer received but TTS not triggered, returning .waitingForAgent")
-                return .waitingForAgent
             }
+            
+            // Answer received but TTS not triggered yet - waiting for isComplete message
+            print("🔍🔍🔍 getCurrentState: Answer received but TTS not triggered, returning .waitingForAgent")
+            return .waitingForAgent
         } else {
             print("🔍🔍🔍 getCurrentState: No conditions met, returning .idle")
             return .idle
@@ -723,7 +746,9 @@ struct TerminalSessionAgentView: View {
                         agentResponseText = finalText
                         lastCompletionText = trimmedFinalText
                         // Play existing audio without regenerating
-                        ttsService.replay()
+                        Task {
+                            await ttsService.replay()
+                        }
                         print("🔊🔊🔊 iOS: Playing existing TTS audio")
                         return
                     }
@@ -897,7 +922,9 @@ struct TerminalSessionAgentView: View {
             // If we have existing audio for same text, play it
             if lastTTSedText == trimmed && ttsService.lastAudioData != nil {
                 print("🔊🔊🔊 generateTTS: Using existing TTS audio for same text")
-                ttsService.replay()
+                Task {
+                    await ttsService.replay()
+                }
             }
             return
         }

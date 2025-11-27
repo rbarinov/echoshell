@@ -32,6 +32,10 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         terminalView.nativeForegroundColor = .white
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         
+        // Note: Local echo is handled by SwiftTerm automatically
+        // For remote terminals, the server PTY will echo back characters
+        // If double echo occurs, it should be fixed on the server side by disabling echo in PTY
+        
         // Configure terminal for proper display on mobile
         // Set proper font size for mobile readability (12pt is good for mobile)
         terminalView.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)

@@ -115,7 +115,7 @@ class TTSService: ObservableObject {
             // Note: We're already on MainActor, but audioPlayer.play might need main thread
             if !audioPlayer.isPlaying {
                 do {
-                    try audioPlayer.play(audioData: existingAudio, title: "AI Assistant Response")
+                    try await audioPlayer.play(audioData: existingAudio, title: "AI Assistant Response")
                     print("🔊 synthesizeAndPlay: Playing existing audio")
                 } catch {
                     print("❌ synthesizeAndPlay: Failed to play existing audio: \(error)")
@@ -160,7 +160,8 @@ class TTSService: ObservableObject {
             lastAudioData = audioData
 
             // Play audio (already on MainActor)
-            try audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
+            // AudioPlayer.play() now handles the delay and audio session configuration internally
+            try await audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
             print("🔊 synthesizeAndPlay: TTS playback started at \(speed)x speed")
 
             return audioData
@@ -173,7 +174,7 @@ class TTSService: ObservableObject {
     }
 
     /// Replay the last generated audio
-    func replay() {
+    func replay() async {
         guard let audioData = lastAudioData else {
             print("⚠️ replay: No audio data available")
             return
@@ -185,7 +186,7 @@ class TTSService: ObservableObject {
         }
 
         do {
-            try audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
+            try await audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
             print("🔊 replay: Playing last TTS audio")
         } catch {
             print("❌ replay: Failed to play audio: \(error)")

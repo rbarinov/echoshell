@@ -82,6 +82,15 @@ class AgentViewModel: ObservableObject {
 
     // MARK: - Public Methods
 
+    /// Configure audio recorder with settings manager
+    func configure(with settingsManager: SettingsManager) {
+        audioRecorder.configure(with: settingsManager)
+        // In Agent mode, disable autoSendCommand so commands are sent via executeCommand()
+        // This ensures proper state management and TTS handling
+        audioRecorder.autoSendCommand = false
+        print("✅ AgentViewModel: AudioRecorder configured with settingsManager (autoSendCommand disabled)")
+    }
+
     /// Update configuration (for example, when laptop config changes)
     func updateConfig(_ newConfig: TunnelConfig) {
         self.config = newConfig
@@ -161,13 +170,22 @@ class AgentViewModel: ObservableObject {
         }
 
         do {
-            // Execute command via API
-            _ = try await apiClient.executeAgentCommand(
+            // Execute command via API and get response
+            let result = try await apiClient.executeAgentCommand(
                 sessionId: sessionId,
                 command: command
             )
 
-            print("✅ AgentViewModel: Command sent successfully")
+            print("✅ AgentViewModel: Command executed successfully, result: \(result.prefix(100))...")
+
+            // Update agent response text with the result
+            agentResponseText = result
+            isProcessing = false
+
+            // Generate and play TTS for the response
+            Task {
+                await generateAndPlayTTS(text: result)
+            }
 
         } catch {
             print("❌ AgentViewModel: Command execution failed: \(error)")
@@ -178,7 +196,9 @@ class AgentViewModel: ObservableObject {
 
     /// Replay last TTS audio
     func replayLastTTS() {
-        ttsService.replay()
+        Task {
+            await ttsService.replay()
+        }
     }
 
     /// Stop all TTS and clear output
@@ -233,16 +253,32 @@ class AgentViewModel: ObservableObject {
 
     /// Get current recording state
     func getCurrentState() -> RecordingState {
+        // Priority order: recording > transcribing > playing > generating > waiting > idle
         if isRecording {
             return .recording
         } else if isTranscribing {
             return .transcribing
+        } else if ttsService.audioPlayer.isPlaying {
+            return .playingTTS
         } else if ttsService.isGenerating {
             return .generatingTTS
         } else if isProcessing {
             return .waitingForAgent
-        } else if !recognizedText.isEmpty && !agentResponseText.isEmpty && !ttsService.isGenerating {
+        } else if !recognizedText.isEmpty && agentResponseText.isEmpty {
+            // We have a question but no answer yet
             return .waitingForAgent
+        } else if !agentResponseText.isEmpty {
+            // We have an answer - check if TTS is done
+            if ttsService.lastAudioData != nil {
+                // TTS was generated, we're done (idle)
+                return .idle
+            } else if ttsService.isGenerating {
+                // TTS is generating
+                return .generatingTTS
+            } else {
+                // Answer received but TTS not generated yet - waiting
+                return .waitingForAgent
+            }
         } else {
             return .idle
         }
@@ -301,7 +337,7 @@ class AgentViewModel: ObservableObject {
 
         do {
             // Use TTSService to synthesize and play
-            _ = try await ttsService.synthesizeAndPlay(
+            let audioData = try await ttsService.synthesizeAndPlay(
                 text: text,
                 config: config,
                 speed: 1.0, // TODO: Get from settings
@@ -311,10 +347,24 @@ class AgentViewModel: ObservableObject {
             // Update last spoken text
             lastTTSOutput = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            print("✅ AgentViewModel: TTS completed")
+            // Send TTS ready event to EventBus for RecordingView to handle playback
+            // This ensures UI updates correctly and replay button works
+            let operationId = currentOperationId?.uuidString ?? UUID().uuidString
+            EventBus.shared.ttsReadyPublisher.send(
+                EventBus.TTSReadyEvent(
+                    audioData: audioData,
+                    text: text,
+                    operationId: operationId,
+                    sessionId: nil // Global agent, not terminal-specific
+                )
+            )
+
+            print("✅ AgentViewModel: TTS completed and event sent to EventBus")
 
         } catch {
             print("❌ AgentViewModel: TTS failed: \(error)")
+            // Send TTS failed event
+            EventBus.shared.ttsFailedPublisher.send(.synthesisFailed(message: error.localizedDescription))
         }
     }
 

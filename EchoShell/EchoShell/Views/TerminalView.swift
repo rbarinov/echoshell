@@ -176,7 +176,7 @@ struct SessionRow: View {
     private var terminalTypeIcon: some View {
         Group {
             switch session.terminalType {
-            case .cursor, .cursor:
+            case .cursor:
                 // Cursor logo - unified style
                 if UIImage(named: "CursorLogo") != nil {
                     Image("CursorLogo")

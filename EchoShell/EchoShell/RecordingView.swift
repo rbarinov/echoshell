@@ -313,7 +313,7 @@ struct RecordingView: View {
                        !self.viewModel.agentResponseText.isEmpty {
                         print("📱 RecordingView: Found TTS audio from background - playing now")
                         do {
-                            try audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
+                            try await audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
                             print("🔊 Playing TTS audio that was generated while away")
                         } catch {
                             print("❌ Failed to play background TTS: \(error)")
@@ -661,7 +661,9 @@ struct RecordingView: View {
                             // Replay button (show when TTS audio is available and not playing)
                             if ttsService.lastAudioData != nil && !audioPlayer.isPlaying && !audioPlayer.isPaused {
                                 Button(action: {
-                                    ttsService.replay()
+                                    Task {
+                                        await ttsService.replay()
+                                    }
                                 }) {
                                     HStack(spacing: 6) {
                                         Image(systemName: "speaker.wave.2.fill")
@@ -697,7 +699,11 @@ struct RecordingView: View {
             .onAppear {
                 // Load ViewModel state from persistence
                 viewModel.loadState()
-                
+
+                // Configure AudioRecorder with settingsManager
+                // This will disable autoSendCommand in Agent mode so commands are sent via AgentViewModel.executeCommand()
+                viewModel.configure(with: settingsManager)
+
                 // Update ViewModel config when laptop config is available
                 if let config = settingsManager.laptopConfig {
                     viewModel.updateConfig(config)
@@ -725,6 +731,9 @@ struct RecordingView: View {
                 viewModel.saveState()
             }
         .onChange(of: settingsManager.laptopConfig) { oldValue, newValue in
+            // Configure AudioRecorder when config changes
+            viewModel.configure(with: settingsManager)
+
             // Update ViewModel config
             if let config = newValue {
                 viewModel.updateConfig(config)
@@ -766,6 +775,17 @@ struct RecordingView: View {
                     self.viewModel.resetStateForNewCommand()
                     // Don't clear lastTerminalOutput when switching modes - keep history
                     // settingsManager.lastTerminalOutput is preserved
+                }
+            }
+        }
+        .onChange(of: viewModel.isTranscribing) { oldValue, newValue in
+            // When transcription completes in Agent mode, execute command via AgentViewModel
+            if oldValue == true && newValue == false && !viewModel.recognizedText.isEmpty {
+                if settingsManager.commandMode == .agent {
+                    print("✅ RecordingView: Transcription completed in Agent mode, executing command via AgentViewModel")
+                    Task {
+                        await viewModel.executeCommand(viewModel.recognizedText, sessionId: nil)
+                    }
                 }
             }
         }
@@ -907,31 +927,30 @@ struct RecordingView: View {
                 // Store audio data in TTS service for replay
                 self.viewModel.ttsService.lastAudioData = audioData
 
-                // Only play if active tab, otherwise store for later playback
+                // Note: ttsService.synthesizeAndPlay() already plays the audio
+                // We just need to ensure UI is updated and replay button is available
+                // Only play again if active tab and not already playing (for safety)
                 if self.isActiveTab {
                     let audioPlayer = self.viewModel.ttsService.audioPlayer
 
-                    // Always stop any current playback first to prevent echo/overlap
-                    if audioPlayer.isPlaying {
-                        print("🛑 Stopping current playback before starting new TTS")
-                        audioPlayer.stop()
-                        // Wait for stop to complete
-                        try? await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds
-                    }
+                    // Check if audio is already playing (from ttsService.synthesizeAndPlay())
+                    // If not playing, start playback (fallback in case synthesizeAndPlay didn't play)
+                    if !audioPlayer.isPlaying {
+                        // Double-check that we're still in agent mode
+                        guard settingsManager.commandMode == .agent else {
+                            print("⚠️ AgentResponseTTSReady: Skipping playback - not in agent mode")
+                            return
+                        }
 
-                    // Double-check that we're still in agent mode and not playing
-                    guard settingsManager.commandMode == .agent,
-                          !audioPlayer.isPlaying else {
-                        print("⚠️ AgentResponseTTSReady: Skipping playback - mode changed or already playing")
-                        return
-                    }
-
-                    do {
-                        try audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
-                        print("🔊 Agent response TTS playback started")
-                    } catch {
-                        print("❌ Failed to play agent response TTS: \(error)")
-                        self.showErrorNotification(title: "TTS Playback Failed", message: error.localizedDescription)
+                        do {
+                            try await audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
+                            print("🔊 Agent response TTS playback started (fallback)")
+                        } catch {
+                            print("❌ Failed to play agent response TTS: \(error)")
+                            self.showErrorNotification(title: "TTS Playback Failed", message: error.localizedDescription)
+                        }
+                    } else {
+                        print("🔊 Agent response TTS already playing (from synthesizeAndPlay)")
                     }
                 } else {
                     print("📱 AgentResponseTTSReady: TTS received but not active tab - stored for later playback")

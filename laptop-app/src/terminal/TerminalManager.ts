@@ -309,25 +309,33 @@ export class TerminalManager {
     const terminalType = session.terminalType === 'cursor' ? 'cursor-agent' : claudeBin;
     const currentCliSessionId = session.headless?.cliSessionId;
     
-    // Build command line with --resume if we have session_id (for cursor-agent)
-    // For claude, use --session-id instead
-    let commandLine = `${terminalType} --output-format stream-json --print`;
-    if (currentCliSessionId) {
-      if (session.terminalType === 'cursor') {
-        commandLine += ` --resume ${currentCliSessionId}`;
-      } else {
-        commandLine += ` --session-id ${currentCliSessionId}`;
-      }
-      console.log(`🔄 [${session.sessionId}] Using existing CLI session_id: ${currentCliSessionId}`);
-    } else {
-      console.log(`🆕 [${session.sessionId}] Starting new CLI session (no existing session_id)`);
-    }
+    let commandLine: string;
     
-    // Escape prompt for shell using single quotes (safer for shell escaping)
-    // Single quotes preserve all characters literally, except single quotes themselves
-    // For single quotes inside, we need to close the quote, add escaped quote, and reopen
-    const escapedPrompt = prompt.replace(/'/g, "'\\''");
-    commandLine += ` '${escapedPrompt}'\r`;
+    if (session.terminalType === 'cursor') {
+      // Cursor Agent format: cursor-agent --output-format stream-json --print [--resume <session_id>] "prompt"
+      commandLine = `cursor-agent --output-format stream-json --print`;
+      if (currentCliSessionId) {
+        commandLine += ` --resume ${currentCliSessionId}`;
+        console.log(`🔄 [${session.sessionId}] Using existing CLI session_id: ${currentCliSessionId}`);
+      } else {
+        console.log(`🆕 [${session.sessionId}] Starting new CLI session (no existing session_id)`);
+      }
+      // Escape prompt for shell using single quotes (safer for shell escaping)
+      const escapedPrompt = prompt.replace(/'/g, "'\\''");
+      commandLine += ` '${escapedPrompt}'\r`;
+    } else {
+      // Claude CLI format: claude -p "prompt" --output-format json-stream [--session-id <session_id>]
+      // Note: -p flag must come before --output-format
+      const escapedPrompt = prompt.replace(/'/g, "'\\''");
+      commandLine = `claude -p '${escapedPrompt}' --output-format json-stream`;
+      if (currentCliSessionId) {
+        commandLine += ` --session-id ${currentCliSessionId}`;
+        console.log(`🔄 [${session.sessionId}] Using existing CLI session_id: ${currentCliSessionId}`);
+      } else {
+        console.log(`🆕 [${session.sessionId}] Starting new CLI session (no existing session_id)`);
+      }
+      commandLine += `\r`;
+    }
     
     // Write command to PTY - shell will execute it
     if (session.pty) {

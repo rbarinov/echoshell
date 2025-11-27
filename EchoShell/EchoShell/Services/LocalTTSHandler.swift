@@ -45,12 +45,33 @@ class LocalTTSHandler {
         }
         
         // Parse response - should contain base64 audio
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let audioBase64 = json["audio"] as? String,
-           let audioData = Data(base64Encoded: audioBase64) {
-            print("✅ TTS audio generated, size: \(audioData.count) bytes")
-            return audioData
+        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            print("📦 TTS response JSON keys: \(json.keys.joined(separator: ", "))")
+            
+            if let audioBase64 = json["audio"] as? String {
+                print("📦 TTS audio base64 length: \(audioBase64.count) characters")
+                
+                if let audioData = Data(base64Encoded: audioBase64) {
+                    print("✅ TTS audio decoded successfully, size: \(audioData.count) bytes")
+                    return audioData
+                } else {
+                    print("❌ TTS audio base64 decoding failed")
+                    // Try to get error message from response
+                    if let error = json["error"] as? String {
+                        print("❌ TTS error from server: \(error)")
+                    }
+                    throw TTSError.requestFailed
+                }
+            } else {
+                print("❌ TTS response missing 'audio' field")
+                if let error = json["error"] as? String {
+                    print("❌ TTS error from server: \(error)")
+                }
+                throw TTSError.requestFailed
+            }
         } else {
+            print("❌ TTS response is not valid JSON")
+            print("❌ Response data: \(String(data: data, encoding: .utf8)?.prefix(200) ?? "invalid UTF-8")")
             throw TTSError.requestFailed
         }
     }

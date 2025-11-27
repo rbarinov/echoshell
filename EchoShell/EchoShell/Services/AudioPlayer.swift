@@ -17,8 +17,9 @@ class AudioPlayer: NSObject, ObservableObject {
     private var nowPlayingInfo: [String: Any] = [:]
     private var fadeOutTimer: Timer?
     private let fadeOutDuration: TimeInterval = 0.2 // 200ms fade out
+    private var tempAudioFile: URL? // Temporary file path for MP3 playback cleanup
     
-    func play(audioData: Data, title: String = "AI Assistant Response") throws {
+    func play(audioData: Data, title: String = "AI Assistant Response") async throws {
         // Stop any existing playback
         stop()
         
@@ -26,32 +27,184 @@ class AudioPlayer: NSObject, ObservableObject {
         fadeOutTimer?.invalidate()
         fadeOutTimer = nil
         
+        // Configure audio session for playback
+        // IMPORTANT: Deactivate first to reset any recording state, then configure for playback
         let audioSession = AVAudioSession.sharedInstance()
-        // Use .playAndRecord category to allow both recording and playback
-        // with .defaultToSpeaker option to play through speaker
-        try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
-        try audioSession.setActive(true)
-        
-        player = try AVAudioPlayer(data: audioData)
-        player?.delegate = self
-        player?.volume = 1.0
-        player?.prepareToPlay()
-        
-        let success = player?.play() ?? false
-        if !success {
-            throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to start playback"])
+        do {
+            // Log current audio session state
+            print("🔊 AudioPlayer: Current audio session state:")
+            print("   Category: \(audioSession.category.rawValue)")
+            print("   Mode: \(audioSession.mode.rawValue)")
+            print("   Is active: \(audioSession.isOtherAudioPlaying ? "other playing" : "available")")
+            
+            // First, deactivate to reset state (especially if coming from recording)
+            // Use .notifyOthersOnDeactivation to properly release recording resources
+            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+            print("🔊 AudioPlayer: Deactivated audio session to reset state")
+            
+            // Small delay to allow audio hardware to fully release recording resources
+            // This is critical for proper transition from recording to playback
+            try await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds
+            
+            // Set category for playback with speaker output
+            // Use .playAndRecord with .defaultToSpeaker to ensure audio plays through speaker
+            // This is necessary because .defaultToSpeaker option only works with .playAndRecord category
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+            print("🔊 AudioPlayer: Set audio category to .playAndRecord with .defaultToSpeaker")
+            
+            // Activate audio session for playback
+            // Don't use .notifyOthersOnDeactivation here - we want to take control
+            try audioSession.setActive(true)
+            print("🔊 AudioPlayer: Activated audio session for playback")
+            
+            // Verify audio session is configured correctly
+            print("🔊 AudioPlayer: Audio session configured:")
+            print("   Category: \(audioSession.category.rawValue)")
+            print("   Mode: \(audioSession.mode.rawValue)")
+            print("   Output volume: \(audioSession.outputVolume)")
+            print("   Current route: \(audioSession.currentRoute.description)")
+            
+        } catch {
+            print("❌ AudioPlayer: Failed to configure audio session: \(error)")
+            throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to configure audio session: \(error.localizedDescription)"])
         }
         
-        isPlaying = true
-        isPaused = false
+        print("🔊 AudioPlayer: Creating AVAudioPlayer with \(audioData.count) bytes of audio data")
         
-        // Setup Now Playing info for Control Center
-        setupNowPlaying(title: title, duration: player?.duration ?? 0)
-        
-        // Schedule fade out before end of playback for smooth ending
-        scheduleFadeOut()
-        
-        print("🔊 Playing TTS audio (volume: \(player?.volume ?? 0), duration: \(player?.duration ?? 0)s)")
+        do {
+            // Try to create player from data directly first
+            // If that fails, save to temporary file and play from file (for MP3 support)
+            var playerCreated = false
+            
+            // First attempt: try direct data initialization
+            if let directPlayer = try? AVAudioPlayer(data: audioData) {
+                // Check if player is valid by checking duration
+                if directPlayer.duration > 0 {
+                    player = directPlayer
+                    playerCreated = true
+                    print("🔊 AudioPlayer: Created player from data directly (duration: \(directPlayer.duration)s)")
+                } else {
+                    print("⚠️ AudioPlayer: Direct data player has zero duration, will try file method")
+                }
+            }
+            
+            // Second attempt: if direct method failed, save to temp file and play from file
+            // This is more reliable for MP3 and other formats
+            if !playerCreated {
+                // Create temporary file
+                let tempDir = FileManager.default.temporaryDirectory
+                let tempFile = tempDir.appendingPathComponent(UUID().uuidString).appendingPathExtension("mp3")
+                
+                do {
+                    try audioData.write(to: tempFile)
+                    print("🔊 AudioPlayer: Saved audio to temp file: \(tempFile.path)")
+                    
+                    // Create player from file
+                    player = try AVAudioPlayer(contentsOf: tempFile)
+                    playerCreated = true
+                    print("🔊 AudioPlayer: Created player from file (duration: \(player?.duration ?? 0)s)")
+                    
+                    // Clean up temp file after playback completes (handled in delegate)
+                    // Store temp file path for cleanup
+                    tempAudioFile = tempFile
+                } catch {
+                    print("❌ AudioPlayer: Failed to create player from file: \(error)")
+                    // Clean up temp file if it was created
+                    try? FileManager.default.removeItem(at: tempFile)
+                    throw error
+                }
+            }
+            
+            guard playerCreated, let audioPlayer = player else {
+                throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to create audio player"])
+            }
+            
+            audioPlayer.delegate = self
+            
+            // Set volume to maximum and enable playback
+            audioPlayer.volume = 1.0
+            audioPlayer.enableRate = false // Disable rate control for normal playback
+            
+            // Verify audio session is still active
+            let audioSession = AVAudioSession.sharedInstance()
+            if !audioSession.isOtherAudioPlaying {
+                // Ensure audio session is active before playing
+                try? audioSession.setActive(true)
+            }
+            
+            print("🔊 AudioPlayer: Preparing to play (format: \(audioPlayer.format.description), duration: \(audioPlayer.duration)s, volume: \(audioPlayer.volume))")
+            let prepared = audioPlayer.prepareToPlay()
+            print("🔊 AudioPlayer: prepareToPlay() returned: \(prepared)")
+            
+            if !prepared {
+                print("❌ AudioPlayer: prepareToPlay() failed - audio format may not be supported")
+                throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to prepare audio for playback"])
+            }
+            
+            // Verify player is ready
+            if audioPlayer.duration <= 0 {
+                print("❌ AudioPlayer: Invalid audio duration (\(audioPlayer.duration)s)")
+                throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid audio duration"])
+            }
+            
+            // Play audio
+            let success = audioPlayer.play()
+            print("🔊 AudioPlayer: play() returned: \(success)")
+            
+            if !success {
+                print("❌ AudioPlayer: play() failed - check audio session and player state")
+                // Try to reactivate audio session and retry
+                do {
+                    try audioSession.setActive(false)
+                    try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                    try audioSession.setActive(true)
+                    let retrySuccess = audioPlayer.play()
+                    print("🔊 AudioPlayer: Retry play() returned: \(retrySuccess)")
+                    if !retrySuccess {
+                        throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to start playback after retry"])
+                    }
+                } catch {
+                    throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Failed to start playback: \(error.localizedDescription)"])
+                }
+            }
+            
+            // Verify playback actually started
+            // Give it a moment to start (sometimes there's a small delay)
+            try await Task.sleep(nanoseconds: 50_000_000) // 0.05 seconds
+            
+            if !audioPlayer.isPlaying {
+                print("❌ AudioPlayer: Player is not playing after play() call")
+                print("   Player state: duration=\(audioPlayer.duration)s, volume=\(audioPlayer.volume)")
+                print("   Audio session active: \(audioSession.isOtherAudioPlaying ? "other playing" : "available")")
+                throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Player failed to start playback"])
+            }
+            
+            isPlaying = true
+            isPaused = false
+            
+            print("✅ AudioPlayer: Playback started successfully")
+            print("   isPlaying: \(audioPlayer.isPlaying)")
+            print("   duration: \(audioPlayer.duration)s")
+            print("   volume: \(audioPlayer.volume)")
+            print("   format: \(audioPlayer.format.description)")
+            print("   audio session route: \(audioSession.currentRoute.description)")
+            
+            // Setup Now Playing info for Control Center
+            setupNowPlaying(title: title, duration: audioPlayer.duration)
+            
+            // Schedule fade out before end of playback for smooth ending
+            scheduleFadeOut()
+            
+            print("🔊 Playing TTS audio (volume: \(audioPlayer.volume), duration: \(audioPlayer.duration)s, format: \(audioPlayer.format.description))")
+        } catch {
+            print("❌ AudioPlayer: Error creating or playing audio: \(error)")
+            // Clean up temp file if it exists
+            if let tempFile = tempAudioFile {
+                try? FileManager.default.removeItem(at: tempFile)
+                tempAudioFile = nil
+            }
+            throw error
+        }
     }
     
     private func scheduleFadeOut() {
@@ -187,13 +340,21 @@ class AudioPlayer: NSObject, ObservableObject {
         
         // Small delay before stopping to allow volume to settle
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            self?.player?.stop()
-            self?.isPlaying = false
-            self?.isPaused = false
+            guard let self = self else { return }
+            self.player?.stop()
+            self.isPlaying = false
+            self.isPaused = false
+            
+            // Clean up temporary file if it exists
+            if let tempFile = self.tempAudioFile {
+                try? FileManager.default.removeItem(at: tempFile)
+                self.tempAudioFile = nil
+                print("🗑️ AudioPlayer: Cleaned up temporary audio file")
+            }
             
             // Clear Now Playing info
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-            self?.nowPlayingInfo = [:]
+            self.nowPlayingInfo = [:]
             
             print("🛑 TTS audio stopped, Now Playing cleared")
         }
@@ -208,6 +369,13 @@ extension AudioPlayer: AVAudioPlayerDelegate {
         
         isPlaying = false
         isPaused = false
+        
+        // Clean up temporary file if it exists
+        if let tempFile = tempAudioFile {
+            try? FileManager.default.removeItem(at: tempFile)
+            tempAudioFile = nil
+            print("🗑️ AudioPlayer: Cleaned up temporary audio file after playback")
+        }
         
         // Clear Now Playing info
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil

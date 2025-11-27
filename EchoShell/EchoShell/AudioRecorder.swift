@@ -372,10 +372,19 @@ extension AudioRecorder {
         }
 
         // Check for laptop connection via settingsManager.laptopConfig (single source of truth)
-        guard let laptopConfig = settingsManager?.laptopConfig else {
+        guard let settingsManager = settingsManager else {
+            print("❌ iOS AudioRecorder: SettingsManager not configured")
+            DispatchQueue.main.async {
+                self.recognizedText = "Error: Settings not configured. Please restart the app."
+                self.isTranscribing = false
+            }
+            return
+        }
+        
+        guard let laptopConfig = settingsManager.laptopConfig else {
             print("❌ iOS AudioRecorder: Not connected to laptop (no laptop config)")
             DispatchQueue.main.async {
-                self.recognizedText = "Error: Not connected to laptop"
+                self.recognizedText = "Error: Not connected to laptop. Please connect in Settings."
                 self.isTranscribing = false
             }
             return
