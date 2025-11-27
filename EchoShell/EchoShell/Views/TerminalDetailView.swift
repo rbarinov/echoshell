@@ -97,7 +97,9 @@ struct TerminalDetailView: View {
     private var ptyTerminalView: some View {
         VStack(spacing: 0) {
             SwiftTermTerminalView(onInput: { input in
-                sendInput(input)
+                // Send exactly what user typed - no modifications
+                // SwiftTerm sends input character by character, so we pass it through as-is
+                self.wsClient.sendInput(input)
             }, onResize: { cols, rows in
                 resizeTerminal(cols: cols, rows: rows)
             }, onReady: { coordinator in
@@ -125,7 +127,8 @@ struct TerminalDetailView: View {
                 // Only process non-empty text to avoid feeding empty strings
                 guard !text.isEmpty else { return }
                 
-                // Remove zsh percent symbols and other artifacts
+                // For terminal display, we should pass raw output to SwiftTerm
+                // SwiftTerm handles ANSI sequences correctly, so we only remove zsh artifacts
                 var cleanedText = self.removeZshPercentSymbol(text)
                 
                 // Skip if cleaned text is empty
@@ -140,6 +143,7 @@ struct TerminalDetailView: View {
                     print("⚠️ Removed unmatched quote from terminal output")
                 }
                 
+                // Feed raw output to SwiftTerm - it handles ANSI sequences correctly
                 if let coordinator = self.terminalCoordinator {
                     coordinator.feed(cleanedText)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
@@ -258,6 +262,9 @@ struct TerminalDetailView: View {
     }
     
     private func sendInput(_ input: String) {
+        // Send exactly what user typed - no modifications
+        // SwiftTerm handles input character by character, so we pass it through as-is
+        // The server will normalize \n to \r if needed
         wsClient.sendInput(input)
     }
     
