@@ -129,11 +129,11 @@ struct UnifiedHeaderView: View {
             
             Button {
                 Task { @MainActor in
-                    EventBus.shared.createTerminalPublisher.send(.cursorCLI)
+                    EventBus.shared.createTerminalPublisher.send(.cursor)
                 }
             } label: {
                 HStack(spacing: 8) {
-                    terminalTypeIcon(for: .cursorCLI)
+                    terminalTypeIcon(for: .cursor)
                         .frame(width: 20, height: 20)
                     Text("Cursor")
                 }
@@ -141,11 +141,11 @@ struct UnifiedHeaderView: View {
             
             Button {
                 Task { @MainActor in
-                    EventBus.shared.createTerminalPublisher.send(.claudeCLI)
+                    EventBus.shared.createTerminalPublisher.send(.claude)
                 }
             } label: {
                 HStack(spacing: 8) {
-                    terminalTypeIcon(for: .claudeCLI)
+                    terminalTypeIcon(for: .claude)
                         .frame(width: 20, height: 20)
                     Text("Claude Code")
                 }
@@ -176,7 +176,7 @@ struct UnifiedHeaderView: View {
     @ViewBuilder
     private func terminalTypeIcon(for type: TerminalType) -> some View {
         switch type {
-        case .cursorCLI, .cursorAgent:
+        case .cursor, .cursor:
             if UIImage(named: "CursorLogo") != nil {
                 Image("CursorLogo")
                     .resizable()
@@ -187,7 +187,7 @@ struct UnifiedHeaderView: View {
                     .foregroundColor(.blue)
                     .frame(width: 20, height: 20)
             }
-        case .claudeCLI:
+        case .claude:
             if UIImage(named: "ClaudeLogo") != nil {
                 Image("ClaudeLogo")
                     .resizable()

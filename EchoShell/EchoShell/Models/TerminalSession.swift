@@ -9,9 +9,8 @@ import Foundation
 
 enum TerminalType: String, Codable {
     case regular = "regular"
-    case cursorAgent = "cursor_agent"
-    case cursorCLI = "cursor_cli"
-    case claudeCLI = "claude_cli"
+    case cursor = "cursor"
+    case claude = "claude"
 }
 
 struct TerminalSession: Identifiable, Codable, Hashable {
@@ -22,7 +21,7 @@ struct TerminalSession: Identifiable, Codable, Hashable {
     var lastUpdate: Date
     var terminalType: TerminalType
     var name: String?
-    var cursorAgentWorkingDir: String?
+    var cursorWorkingDir: String?
     
     // Hashable conformance - hash based on unique id
     func hash(into hasher: inout Hasher) {
@@ -43,7 +42,7 @@ struct TerminalSession: Identifiable, Codable, Hashable {
         lastUpdate: Date = Date(),
         terminalType: TerminalType = .regular,
         name: String? = nil,
-        cursorAgentWorkingDir: String? = nil
+        cursorWorkingDir: String? = nil
     ) {
         self.id = id
         self.workingDir = workingDir
@@ -52,7 +51,7 @@ struct TerminalSession: Identifiable, Codable, Hashable {
         self.lastUpdate = lastUpdate
         self.terminalType = terminalType
         self.name = name
-        self.cursorAgentWorkingDir = cursorAgentWorkingDir
+        self.cursorWorkingDir = cursorWorkingDir
     }
     
     // Custom decoding to handle optional fields from API
@@ -73,7 +72,7 @@ struct TerminalSession: Identifiable, Codable, Hashable {
         }
         
         name = try? container.decode(String.self, forKey: .name)
-        cursorAgentWorkingDir = try? container.decode(String.self, forKey: .cursorAgentWorkingDir)
+        cursorWorkingDir = try? container.decode(String.self, forKey: .cursorWorkingDir)
     }
     
     // Custom encoding
@@ -86,7 +85,7 @@ struct TerminalSession: Identifiable, Codable, Hashable {
         try container.encode(lastUpdate, forKey: .lastUpdate)
         try container.encode(terminalType.rawValue, forKey: .terminalType)
         try container.encodeIfPresent(name, forKey: .name)
-        try container.encodeIfPresent(cursorAgentWorkingDir, forKey: .cursorAgentWorkingDir)
+        try container.encodeIfPresent(cursorWorkingDir, forKey: .cursorWorkingDir)
     }
     
     enum CodingKeys: String, CodingKey {
@@ -97,16 +96,16 @@ struct TerminalSession: Identifiable, Codable, Hashable {
         case lastUpdate
         case terminalType
         case name
-        case cursorAgentWorkingDir
+        case cursorWorkingDir
     }
 }
 
 extension TerminalType {
     var isHeadless: Bool {
         switch self {
-        case .cursorCLI, .claudeCLI:
+        case .cursor, .claude:
             return true
-        default:
+        case .regular:
             return false
         }
     }

@@ -150,7 +150,7 @@ class SessionStateManager: ObservableObject {
     /// - Returns: true if agent mode is supported
     func supportsAgentMode(terminalType: TerminalType) -> Bool {
         switch terminalType {
-        case .cursorCLI, .claudeCLI, .cursorAgent:
+        case .cursor, .claude:
             return true
         case .regular:
             return false

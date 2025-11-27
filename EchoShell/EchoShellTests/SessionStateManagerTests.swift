@@ -181,21 +181,21 @@ struct SessionStateManagerTests {
     @Test("supportsAgentMode returns true for cursorCLI")
     func testSupportsAgentMode_CursorCLI_ReturnsTrue() async throws {
         let manager = await createTestManager(prefix: "test16")
-        let result = await manager.supportsAgentMode(terminalType: .cursorCLI)
+        let result = await manager.supportsAgentMode(terminalType: .cursor)
         #expect(result == true)
     }
     
     @Test("supportsAgentMode returns true for claudeCLI")
     func testSupportsAgentMode_ClaudeCLI_ReturnsTrue() async throws {
         let manager = await createTestManager(prefix: "test17")
-        let result = await manager.supportsAgentMode(terminalType: .claudeCLI)
+        let result = await manager.supportsAgentMode(terminalType: .claude)
         #expect(result == true)
     }
     
     @Test("supportsAgentMode returns true for cursorAgent")
     func testSupportsAgentMode_CursorAgent_ReturnsTrue() async throws {
         let manager = await createTestManager(prefix: "test18")
-        let result = await manager.supportsAgentMode(terminalType: .cursorAgent)
+        let result = await manager.supportsAgentMode(terminalType: .cursor)
         #expect(result == true)
     }
     

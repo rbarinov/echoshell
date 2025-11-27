@@ -10,7 +10,7 @@ import Foundation
 enum TerminalType: String, Codable {
     case regular = "regular"
     case cursor = "cursor"
-    case claudeCode = "claude_code"
+    case claude = "claude"
 }
 
 struct TerminalSession: Identifiable, Codable, Hashable {
@@ -97,9 +97,9 @@ struct TerminalSession: Identifiable, Codable, Hashable {
 extension TerminalType {
     var isHeadless: Bool {
         switch self {
-        case .cursor, .claudeCode:
+        case .cursor, .claude:
             return true
-        default:
+        case .regular:
             return false
         }
     }

@@ -140,7 +140,7 @@ class APIClient: ObservableObject {
                 lastUpdate: Date(),
                 terminalType: terminalType,
                 name: info.name,
-                cursorAgentWorkingDir: terminalType == .cursorAgent ? info.working_dir : nil
+                cursorWorkingDir: terminalType == .cursor ? info.working_dir : nil
             )
         }
     }
@@ -190,7 +190,7 @@ class APIClient: ObservableObject {
             lastUpdate: Date(),
             terminalType: responseTerminalType,
             name: response.name,
-            cursorAgentWorkingDir: responseTerminalType == .cursorAgent ? response.working_dir : nil
+            cursorWorkingDir: responseTerminalType == .cursor ? response.working_dir : nil
         )
     }
     

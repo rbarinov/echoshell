@@ -204,7 +204,7 @@ struct RecordingView: View {
     
     // Check if selected session is Cursor Agent terminal
     private var isCursorAgentTerminal: Bool {
-        return selectedSession?.terminalType == .cursorAgent
+        return selectedSession?.terminalType == .cursor
     }
 
     private var isHeadlessTerminal: Bool {
@@ -357,7 +357,7 @@ struct RecordingView: View {
                             if terminalViewModel.apiClient == nil {
                                 terminalViewModel.apiClient = APIClient(config: config)
                             }
-                                let terminalType: TerminalType = settingsManager.commandMode == .direct ? .cursorCLI : .regular
+                                let terminalType: TerminalType = settingsManager.commandMode == .direct ? .cursor : .regular
                                 let _ = try? await terminalViewModel.apiClient?.createSession(terminalType: terminalType)
                             await terminalViewModel.refreshSessions(config: config)
                         }
@@ -390,7 +390,7 @@ struct RecordingView: View {
                     )) {
                         ForEach(validSessions) { session in
                                 HStack {
-                                    if session.terminalType == .cursorAgent {
+                                    if session.terminalType == .cursor {
                                         Image(systemName: "brain.head.profile")
                                             .font(.system(size: 10))
                                     }
@@ -422,7 +422,7 @@ struct RecordingView: View {
                 .onChange(of: terminalViewModel.sessions) { oldSessions, newSessions in
                     // Validate selected session when sessions list changes
                         let validSessions = settingsManager.commandMode == .direct 
-                            ? newSessions.filter { $0.terminalType == .cursorAgent }
+                            ? newSessions.filter { $0.terminalType == .cursor }
                             : newSessions
                         
                     if let currentSelected = settingsManager.selectedSessionId,
@@ -444,10 +444,10 @@ struct RecordingView: View {
     private var createHeadlessTerminalView: some View {
         Menu {
             Button("Create Cursor CLI") {
-                createHeadlessSession(.cursorCLI)
+                createHeadlessSession(.cursor)
             }
             Button("Create Claude CLI") {
-                createHeadlessSession(.claudeCLI)
+                createHeadlessSession(.claude)
             }
         } label: {
             HStack(spacing: 6) {
@@ -753,7 +753,7 @@ struct RecordingView: View {
             // Reconnect WebSocket when mode changes to track output in direct mode
             if newValue == .direct, let config = settingsManager.laptopConfig, let sessionId = settingsManager.selectedSessionId {
                 // Only connect if selected session is cursor_agent
-                if terminalViewModel.sessions.first(where: { $0.id == sessionId })?.terminalType == .cursorAgent {
+                if terminalViewModel.sessions.first(where: { $0.id == sessionId })?.terminalType == .cursor {
                 connectToTerminalStream(config: config, sessionId: sessionId)
                     connectToRecordingStream(config: config, sessionId: sessionId)
                 }
@@ -971,7 +971,7 @@ struct RecordingView: View {
     private func connectToTerminalStream(config: TunnelConfig, sessionId: String) {
         wsClient.disconnect()
         guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }) else { return }
-        guard session.terminalType == .cursorAgent else { return }
+        guard session.terminalType == .cursor else { return }
 
         wsClient.connect(config: config, sessionId: sessionId) { _ in
             // Intentionally ignore raw output for recording view - clean output is streamed separately
@@ -987,7 +987,7 @@ struct RecordingView: View {
                             }
         
         guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }),
-              (session.terminalType == .cursorAgent || session.terminalType.isHeadless) else {
+              (session.terminalType == .cursor || session.terminalType.isHeadless) else {
             recordingStreamClient.disconnect()
             recordingStreamSessionId = nil
                         return

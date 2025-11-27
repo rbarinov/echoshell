@@ -176,7 +176,7 @@ struct SessionRow: View {
     private var terminalTypeIcon: some View {
         Group {
             switch session.terminalType {
-            case .cursorCLI, .cursorAgent:
+            case .cursor, .cursor:
                 // Cursor logo - unified style
                 if UIImage(named: "CursorLogo") != nil {
                     Image("CursorLogo")
@@ -188,7 +188,7 @@ struct SessionRow: View {
                         .foregroundColor(.blue)
                         .frame(width: 32, height: 32)
                 }
-            case .claudeCLI:
+            case .claude:
                 // Claude logo - unified style
                 if UIImage(named: "ClaudeLogo") != nil {
                     Image("ClaudeLogo")

@@ -371,7 +371,7 @@ struct ContentView: View {
                     isHeadlessTerminalSheetPresented = false
                 },
                 onCreateClaudeCLI: {
-                    createHeadlessSession(.claudeCode)
+                    createHeadlessSession(.claude)
                     isHeadlessTerminalSheetPresented = false
                 }
             )
@@ -825,7 +825,7 @@ private struct SessionPickerSheet: View {
         switch type {
         case .cursor:
             return "Cursor CLI"
-        case .claudeCode:
+        case .claude:
             return "Claude CLI"
         case .regular:
             return "Regular"

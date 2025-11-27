@@ -86,7 +86,7 @@ struct RecordingHeaderView: View {
     @ViewBuilder
     private func terminalTypeIcon(for type: TerminalType) -> some View {
         switch type {
-        case .cursorCLI, .cursorAgent:
+        case .cursor, .cursor:
             if UIImage(named: "CursorLogo") != nil {
                 Image("CursorLogo")
                     .resizable()
@@ -97,7 +97,7 @@ struct RecordingHeaderView: View {
                     .foregroundColor(.blue)
                     .frame(width: 20, height: 20)
             }
-        case .claudeCLI:
+        case .claude:
             if UIImage(named: "ClaudeLogo") != nil {
                 Image("ClaudeLogo")
                     .resizable()

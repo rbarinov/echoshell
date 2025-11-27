@@ -370,39 +370,30 @@ extension AudioRecorder {
             }
             return
         }
-        
-        guard apiClient != nil else {
-            print("❌ iOS AudioRecorder: No API client (not connected to laptop)")
+
+        // Check for laptop connection via settingsManager.laptopConfig (single source of truth)
+        guard let laptopConfig = settingsManager?.laptopConfig else {
+            print("❌ iOS AudioRecorder: Not connected to laptop (no laptop config)")
             DispatchQueue.main.async {
                 self.recognizedText = "Error: Not connected to laptop"
                 self.isTranscribing = false
             }
             return
         }
-        
+
         DispatchQueue.main.async {
             self.isTranscribing = true
             self.recognizedText = ""
         }
-        
+
         // Notify RecordingView to clear terminal output when transcription starts
         Task { @MainActor in
             EventBus.shared.transcriptionStarted = true
         }
-        
+
         let transcriptionStartTime = Date()
-        
+
         print("📱 iOS AudioRecorder: Starting transcription for file: \(url.path)")
-        
-        // Use laptop proxy endpoint for remote transcription
-        guard let laptopConfig = settingsManager?.laptopConfig else {
-            print("❌ Laptop config not available")
-            DispatchQueue.main.async {
-                self.recognizedText = "Error: Not connected to laptop"
-                self.isTranscribing = false
-            }
-            return
-        }
         // Build STT endpoint from laptop config (proxy endpoint via tunnel)
         let sttEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/stt/transcribe"
         let service = TranscriptionService(laptopAuthKey: laptopConfig.authKey, endpoint: sttEndpoint)

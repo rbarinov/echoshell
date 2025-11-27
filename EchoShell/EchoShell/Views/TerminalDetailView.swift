@@ -28,7 +28,7 @@ struct TerminalDetailView: View {
             return .pty
         }
         // For AI-powered terminals (cursor/claude/cursorAgent), default to agent mode
-        if session.terminalType == .cursorCLI || session.terminalType == .claudeCLI || session.terminalType == .cursorAgent {
+        if session.terminalType == .cursor || session.terminalType == .claude || session.terminalType == .cursor {
             return .agent
         }
         // Default to PTY for any other type
