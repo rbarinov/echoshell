@@ -281,6 +281,7 @@ struct TerminalSessionAgentView: View {
     @State private var lastTTSedText: String = "" // Track what text we've already generated TTS for
     @State private var ttsTriggeredForCurrentResponse: Bool = false // Track if TTS was triggered for current response
     @State private var agentResponseText: String = "" // Local storage for agent response (separate from global settingsManager)
+    @State private var lastCompletionText: String = "" // Track the last text for which we received completion signal
     
     var body: some View {
         ScrollView {
@@ -654,6 +655,7 @@ struct TerminalSessionAgentView: View {
             accumulatedText = ""
             agentResponseText = "" // Reset local agent response
             lastTTSedText = "" // Reset TTS tracking
+            lastCompletionText = "" // Reset completion tracking
             lastTTSAudioData = nil // Reset TTS audio data
             ttsTriggeredForCurrentResponse = false // Reset TTS trigger flag
             audioRecorder.startRecording()
@@ -688,25 +690,50 @@ struct TerminalSessionAgentView: View {
                     print("✅✅✅ iOS: isComplete=true detected! Processing completion...")
                     // Command completed - use full accumulated text from server
                     let finalText = message.text.isEmpty ? accumulatedText : message.text
+                    let trimmedFinalText = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
                     print("✅✅✅ iOS: finalText determined: \(finalText.count) chars (message.text: \(message.text.count), accumulatedText: \(accumulatedText.count))")
+                    
+                    // Check if we already processed this completion (prevent duplicate TTS)
+                    if trimmedFinalText == lastCompletionText && !trimmedFinalText.isEmpty {
+                        print("⚠️⚠️⚠️ iOS: Duplicate completion signal detected for same text, ignoring")
+                        return
+                    }
                     
                     accumulatedText = finalText
                     agentResponseText = finalText
+                    lastCompletionText = trimmedFinalText
                     print("✅✅✅ iOS: Command completed - received isComplete=true, final text (\(finalText.count) chars)")
                     print("✅✅✅ iOS: agentResponseText updated to: '\(agentResponseText.prefix(100))...'")
                     print("✅✅✅ iOS: Current state before TTS: \(getCurrentState())")
                     
-                    // Always trigger TTS when command is completed
-                    if !finalText.isEmpty, let laptopConfig = settingsManager.laptopConfig {
+                    // Always trigger TTS when command is completed (only once per unique text)
+                    if !trimmedFinalText.isEmpty, let laptopConfig = settingsManager.laptopConfig {
+                        // Check if we're already generating or playing TTS for this text
+                        if isGeneratingTTS {
+                            print("⚠️⚠️⚠️ iOS: TTS already generating, skipping duplicate call")
+                            return
+                        }
+                        
+                        if audioPlayer.isPlaying {
+                            print("⚠️⚠️⚠️ iOS: Audio already playing, skipping duplicate TTS")
+                            return
+                        }
+                        
+                        // Check if we already have TTS for this exact text
+                        if lastTTSedText == trimmedFinalText && lastTTSAudioData != nil {
+                            print("🔊🔊🔊 iOS: Already have TTS for this text, will play existing audio")
+                            // Will be handled by generateTTS which checks for existing audio
+                        }
+                        
                         print("✅✅✅ iOS: Triggering TTS for complete response")
-                        lastTTSedText = finalText
+                        lastTTSedText = trimmedFinalText
                         ttsTriggeredForCurrentResponse = true
                         // Don't set isGeneratingTTS here - let generateTTS set it to avoid race condition
                         print("✅✅✅ iOS: Calling generateTTS...")
                         generateTTS(for: finalText, config: laptopConfig)
                     } else {
                         print("⚠️⚠️⚠️ iOS: Command completed but no text available or no laptopConfig")
-                        print("⚠️⚠️⚠️ iOS: finalText.isEmpty=\(finalText.isEmpty), laptopConfig=\(settingsManager.laptopConfig != nil)")
+                        print("⚠️⚠️⚠️ iOS: finalText.isEmpty=\(trimmedFinalText.isEmpty), laptopConfig=\(settingsManager.laptopConfig != nil)")
                         ttsTriggeredForCurrentResponse = true // Mark as triggered even if empty
                     }
                 } else if message.isComplete == nil {
@@ -821,6 +848,12 @@ struct TerminalSessionAgentView: View {
         // Prevent duplicate TTS generation
         if isGeneratingTTS {
             print("⚠️⚠️⚠️ generateTTS: Already generating, skipping duplicate")
+            return
+        }
+        
+        // Check if audio is already playing
+        if audioPlayer.isPlaying {
+            print("⚠️⚠️⚠️ generateTTS: Audio already playing, skipping duplicate")
             return
         }
         
