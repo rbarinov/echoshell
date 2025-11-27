@@ -310,6 +310,9 @@ struct TerminalSessionAgentView: View {
             }
         }
         .onDisappear {
+            // Save terminal state before leaving
+            saveTerminalState()
+            
             recordingStreamClient.disconnect()
             // Re-enable automatic command sending when leaving this view
             audioRecorder.autoSendCommand = true
@@ -318,6 +321,10 @@ struct TerminalSessionAgentView: View {
                 NotificationCenter.default.removeObserver(observer)
                 transcriptionObserver = nil
             }
+        }
+        .onAppear {
+            // Load terminal state when appearing
+            loadTerminalState()
         }
     }
     
@@ -757,6 +764,50 @@ struct TerminalSessionAgentView: View {
                 }
             }
         }
+    }
+    
+    // Save terminal state to UserDefaults
+    private func saveTerminalState() {
+        let stateKey = "terminal_state_\(session.id)"
+        let state: [String: Any] = [
+            "agentResponseText": agentResponseText,
+            "accumulatedText": accumulatedText,
+            "lastTTSedText": lastTTSedText,
+            "recognizedText": audioRecorder.recognizedText,
+            "lastTTSAudioData": lastTTSAudioData?.base64EncodedString() ?? ""
+        ]
+        UserDefaults.standard.set(state, forKey: stateKey)
+        print("💾 Saved terminal state for session \(session.id)")
+    }
+    
+    // Load terminal state from UserDefaults
+    private func loadTerminalState() {
+        let stateKey = "terminal_state_\(session.id)"
+        if let state = UserDefaults.standard.dictionary(forKey: stateKey) {
+            agentResponseText = state["agentResponseText"] as? String ?? ""
+            accumulatedText = state["accumulatedText"] as? String ?? ""
+            lastTTSedText = state["lastTTSedText"] as? String ?? ""
+            audioRecorder.recognizedText = state["recognizedText"] as? String ?? ""
+            
+            if let audioDataString = state["lastTTSAudioData"] as? String,
+               !audioDataString.isEmpty,
+               let audioData = Data(base64Encoded: audioDataString) {
+                lastTTSAudioData = audioData
+            }
+            print("📂 Loaded terminal state for session \(session.id)")
+        }
+    }
+    
+    // Clear terminal state (called when terminal is closed on backend)
+    private func clearTerminalState() {
+        let stateKey = "terminal_state_\(session.id)"
+        UserDefaults.standard.removeObject(forKey: stateKey)
+        agentResponseText = ""
+        accumulatedText = ""
+        lastTTSedText = ""
+        audioRecorder.recognizedText = ""
+        lastTTSAudioData = nil
+        print("🗑️ Cleared terminal state for session \(session.id)")
     }
     
     private func generateTTS(for text: String, config: TunnelConfig) {
