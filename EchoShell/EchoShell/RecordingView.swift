@@ -712,10 +712,52 @@ struct RecordingView: View {
                         .cornerRadius(12)
                         .padding(.horizontal, 20)
                     
-                    // Replay button (show after TTS finished playing)
-                    if lastTTSAudioData != nil && !audioPlayer.isPlaying && getCurrentState() == .idle {
-                        HStack {
-                            Spacer()
+                    // Audio control buttons
+                    HStack {
+                        Spacer()
+                        
+                        // Stop button (show during playback)
+                        if audioPlayer.isPlaying {
+                            Button(action: {
+                                audioPlayer.pause()
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "pause.fill")
+                                        .font(.caption)
+                                    Text("Pause")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.orange.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        // Resume button (show when paused)
+                        else if audioPlayer.isPaused {
+                            Button(action: {
+                                audioPlayer.resume()
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "play.fill")
+                                        .font(.caption)
+                                    Text("Resume")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.green)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.green.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        // Replay button (show after TTS finished playing)
+                        else if lastTTSAudioData != nil && getCurrentState() == .idle {
                             Button(action: {
                                 replayLastTTS()
                             }) {

@@ -108,9 +108,20 @@ struct TerminalDetailView: View {
                 }
         }
         .onAppear {
+            // Clear terminal before connecting to avoid duplicate output
+            if let coordinator = self.terminalCoordinator {
+                coordinator.reset()
+            }
+            
             // Connect WebSocket for streaming
             wsClient.connect(config: config, sessionId: session.id) { text in
+                // Only process non-empty text to avoid feeding empty strings
+                guard !text.isEmpty else { return }
+                
                 let cleanedText = self.removeZshPercentSymbol(text)
+                
+                // Skip if cleaned text is empty
+                guard !cleanedText.isEmpty else { return }
                 
                 if let coordinator = self.terminalCoordinator {
                     coordinator.feed(cleanedText)
@@ -122,7 +133,7 @@ struct TerminalDetailView: View {
                 }
             }
             
-            // Load history
+            // Load history after a delay to ensure terminal is ready
             Task {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 await loadHistory()
@@ -253,15 +264,15 @@ struct TerminalSessionAgentView: View {
                 Spacer()
                     .frame(height: 20)
                 
-                recordButtonView
-                
+            recordButtonView
+            
                 // Status indicator with progress (immediately below button)
-                statusIndicatorView
-                
+            statusIndicatorView
+            
                 Spacer()
                     .frame(height: 0)
                 
-                resultDisplayView
+            resultDisplayView
             }
         }
         .onAppear {
@@ -349,12 +360,12 @@ struct TerminalSessionAgentView: View {
                         .padding(.horizontal, 20)
                 } else {
                     // Ready state - show inside status component (no dot for idle)
-                    Text(state.description)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                        .fontWeight(.medium)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
+                Text(state.description)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .fontWeight(.medium)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
                 }
             } else {
                 // Active states - show with pulsing and blinking dot
@@ -472,10 +483,52 @@ struct TerminalSessionAgentView: View {
                         .cornerRadius(12)
                         .padding(.horizontal, 20)
                     
-                    // Replay button (show after TTS finished playing)
-                    if lastTTSAudioData != nil && !audioPlayer.isPlaying && getCurrentState() == .idle {
-                        HStack {
-                            Spacer()
+                    // Audio control buttons
+                    HStack {
+                        Spacer()
+                        
+                        // Stop button (show during playback)
+                        if audioPlayer.isPlaying {
+                            Button(action: {
+                                audioPlayer.pause()
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "pause.fill")
+                                        .font(.caption)
+                                    Text("Pause")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.orange.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        // Resume button (show when paused)
+                        else if audioPlayer.isPaused {
+                            Button(action: {
+                                audioPlayer.resume()
+                            }) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "play.fill")
+                                        .font(.caption)
+                                    Text("Resume")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.green)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(Color.green.opacity(0.1))
+                                .cornerRadius(8)
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                        // Replay button (show after TTS finished playing)
+                        else if lastTTSAudioData != nil && getCurrentState() == .idle {
                             Button(action: {
                                 replayLastTTS()
                             }) {
@@ -733,7 +786,7 @@ struct TerminalSessionAgentView: View {
                 if cleanedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
                     print("⚠️ generateTTS: Cleaned text is empty, skipping TTS")
                     await MainActor.run {
-                        isGeneratingTTS = false
+                    isGeneratingTTS = false
                     }
                     return
                 }

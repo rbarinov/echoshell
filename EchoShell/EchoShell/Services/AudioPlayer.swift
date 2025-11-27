@@ -10,6 +10,7 @@ import AVFoundation
 
 class AudioPlayer: NSObject, ObservableObject {
     @Published var isPlaying = false
+    @Published var isPaused = false
     
     private var player: AVAudioPlayer?
     
@@ -34,19 +35,39 @@ class AudioPlayer: NSObject, ObservableObject {
         }
         
         isPlaying = true
+        isPaused = false
         
         print("🔊 Playing TTS audio (volume: \(player?.volume ?? 0), duration: \(player?.duration ?? 0)s)")
+    }
+    
+    func pause() {
+        player?.pause()
+        isPlaying = false
+        isPaused = true
+        print("⏸️ TTS audio paused")
+    }
+    
+    func resume() {
+        guard let player = player, isPaused else { return }
+        let success = player.play()
+        if success {
+            isPlaying = true
+            isPaused = false
+            print("▶️ TTS audio resumed")
+        }
     }
     
     func stop() {
         player?.stop()
         isPlaying = false
+        isPaused = false
     }
 }
 
 extension AudioPlayer: AVAudioPlayerDelegate {
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         isPlaying = false
+        isPaused = false
         print("🔊 TTS audio playback finished")
         
         // Notify that playback finished

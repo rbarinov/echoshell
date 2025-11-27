@@ -151,10 +151,11 @@ struct SwiftTermTerminalView: UIViewRepresentable {
             }
         }
         
-        // Reset terminal
+        // Reset terminal - clear screen and reset cursor
         func reset() {
             guard let terminalView = terminalView else { return }
-            terminalView.feed(text: "\u{001B}c")  // ESC c = Full reset
+            // Send full reset sequence: ESC c (reset) + ESC [ 2 J (clear screen) + ESC [ H (home cursor)
+            terminalView.feed(text: "\u{001B}c\u{001B}[2J\u{001B}[H")
         }
         
         // Make terminal become first responder (show keyboard)
