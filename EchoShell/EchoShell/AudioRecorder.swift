@@ -469,23 +469,42 @@ extension AudioRecorder {
                     }
                     
                 case .failure(let error):
-                    print("❌ Transcription error: \(error.localizedDescription)")
-                    self.recognizedText = "Transcription error: \(error.localizedDescription)"
+                    let errorDescription = error.localizedDescription
+                    print("❌ Transcription error: \(errorDescription)")
+                    print("❌ Transcription error details: \(error)")
                     
-                    // Clear file on error
-                    if let url = self.recordingURL {
-                        try? FileManager.default.removeItem(at: url)
-                        self.recordingURL = nil
-                    }
+                    // Check if this is a network error that might be transient
+                    let isNetworkError = errorDescription.contains("network") || 
+                                        errorDescription.contains("timeout") ||
+                                        errorDescription.contains("connection") ||
+                                        errorDescription.contains("HTTP 5")
                     
-                    // Reset transcription state to allow retry
-                    self.isTranscribing = false
-                    
-                    // Clear recognizedText after a delay to allow user to see the error
-                    // This ensures next attempt can start fresh
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                        if self.recognizedText == "Transcription error: \(error.localizedDescription)" {
-                            self.recognizedText = ""
+                    // For network errors, don't show error immediately - allow retry
+                    if isNetworkError {
+                        print("⚠️ Network error detected, will retry transcription")
+                        // Reset state to allow retry
+                        self.isTranscribing = false
+                        // Clear recognizedText to allow retry
+                        self.recognizedText = ""
+                    } else {
+                        // For other errors, show error message
+                        self.recognizedText = "Transcription error: \(errorDescription)"
+                        
+                        // Clear file on error
+                        if let url = self.recordingURL {
+                            try? FileManager.default.removeItem(at: url)
+                            self.recordingURL = nil
+                        }
+                        
+                        // Reset transcription state to allow retry
+                        self.isTranscribing = false
+                        
+                        // Clear recognizedText after a delay to allow user to see the error
+                        // This ensures next attempt can start fresh
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                            if self.recognizedText == "Transcription error: \(errorDescription)" {
+                                self.recognizedText = ""
+                            }
                         }
                     }
                 }

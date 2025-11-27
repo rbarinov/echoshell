@@ -42,9 +42,26 @@ class TranscriptionService {
         
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         
-        URLSession.shared.dataTask(with: request) { data, response, error in
+        // Add timeout configuration for better stability
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 30.0
+        configuration.timeoutIntervalForResource = 60.0
+        let session = URLSession(configuration: configuration)
+        
+        session.dataTask(with: request) { data, response, error in
             if let error = error {
-                print("❌ iOS TranscriptionService: Network error: \(error.localizedDescription)")
+                let errorDescription = error.localizedDescription
+                print("❌ iOS TranscriptionService: Network error: \(errorDescription)")
+                print("❌ iOS TranscriptionService: Error type: \(type(of: error))")
+                
+                // Check if this is a timeout or connection error
+                if errorDescription.contains("timeout") || 
+                   errorDescription.contains("timed out") ||
+                   errorDescription.contains("network") ||
+                   errorDescription.contains("connection") {
+                    print("⚠️ iOS TranscriptionService: Network timeout/connection error - may be transient")
+                }
+                
                 completion(.failure(error))
                 return
             }
@@ -53,8 +70,16 @@ class TranscriptionService {
                 guard (200...299).contains(httpResponse.statusCode) else {
                     let errorMessage = "HTTP \(httpResponse.statusCode)"
                     if let data = data, let errorString = String(data: data, encoding: .utf8) {
-                        print("❌ iOS TranscriptionService: \(errorMessage) - \(errorString)")
+                        print("❌ iOS TranscriptionService: \(errorMessage) - \(errorString.prefix(500))")
+                    } else {
+                        print("❌ iOS TranscriptionService: \(errorMessage) - No error details")
                     }
+                    
+                    // Provide more specific error for 5xx errors (server errors - may be transient)
+                    if (500...599).contains(httpResponse.statusCode) {
+                        print("⚠️ iOS TranscriptionService: Server error \(httpResponse.statusCode) - may be transient")
+                    }
+                    
                     completion(.failure(TranscriptionError.invalidResponse))
                     return
                 }
