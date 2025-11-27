@@ -12,17 +12,32 @@ export async function synthesizeSpeech(
   const defaultVoice = ttsProvider.getVoice();
   const providerType = ttsProvider.getProviderType();
 
-  const finalVoice = voice || defaultVoice;
-  const finalSpeed = speed ?? 1.0;
+  // Voice is always from server configuration (TTS_VOICE env var)
+  // Client-provided voice parameter is ignored
+  const finalVoice = defaultVoice;
+  
+  // Validate and clamp speed based on provider requirements
+  let finalSpeed = speed ?? 1.0;
+  if (providerType === 'elevenlabs') {
+    // ElevenLabs requires speed between 0.7 and 1.2
+    finalSpeed = Math.max(0.7, Math.min(1.2, finalSpeed));
+    // Round to 1 decimal place to avoid floating point precision issues
+    finalSpeed = Math.round(finalSpeed * 10) / 10;
+  } else if (providerType === 'openai') {
+    // OpenAI accepts speed between 0.25 and 4.0, but we'll keep reasonable limits
+    finalSpeed = Math.max(0.25, Math.min(4.0, finalSpeed));
+    // Round to 1 decimal place
+    finalSpeed = Math.round(finalSpeed * 10) / 10;
+  }
 
   console.log(`🔊 TTS Proxy: Synthesizing speech via ${providerType}`);
-  console.log(`   Endpoint: ${endpoint}`);
   console.log(`   Model: ${model}`);
-  console.log(`   Voice: ${finalVoice}`);
-  console.log(`   Speed: ${finalSpeed}`);
+  console.log(`   Voice: ${finalVoice} (client: ${voice || 'not specified'}, default: ${defaultVoice})`);
+  console.log(`   Speed: ${finalSpeed} (original: ${speed ?? 'not specified'}, validated for ${providerType})`);
   console.log(`   Text length: ${text.length} characters`);
 
   if (providerType === 'openai') {
+    console.log(`   Endpoint: ${endpoint}`);
     // OpenAI TTS API format
     const response = await fetch(endpoint, {
       method: 'POST',
@@ -47,7 +62,14 @@ export async function synthesizeSpeech(
     return Buffer.from(audioBuffer);
   } else if (providerType === 'elevenlabs') {
     // ElevenLabs TTS API format
-    const response = await fetch(endpoint, {
+    // Endpoint includes voice in URL path: /text-to-speech/{voice_id}
+    // Voice is always from server configuration (TTS_VOICE env var)
+    const baseUrl = ttsProvider.getBaseUrl() || 'https://api.elevenlabs.io/v1';
+    const elevenLabsEndpoint = `${baseUrl}/text-to-speech/${finalVoice}`;
+    
+    console.log(`   Endpoint: ${elevenLabsEndpoint}`);
+    
+    const response = await fetch(elevenLabsEndpoint, {
       method: 'POST',
       headers: {
         'xi-api-key': apiKey,

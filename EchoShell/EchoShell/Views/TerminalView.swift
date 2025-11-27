@@ -97,9 +97,8 @@ struct TerminalView: View {
                 navigationStateManager.navigateToTerminalsList()
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("CreateTerminal"))) { notification in
-            guard let terminalType = notification.userInfo?["terminalType"] as? TerminalType,
-                  let config = settingsManager.laptopConfig else { return }
+        .onReceive(EventBus.shared.createTerminalPublisher) { terminalType in
+            guard let config = settingsManager.laptopConfig else { return }
             
             Task {
                 await viewModel.createNewSession(
@@ -109,7 +108,7 @@ struct TerminalView: View {
                 await viewModel.refreshSessions(config: config)
             }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("NavigateBack"))) { _ in
+        .onReceive(EventBus.shared.navigateBackPublisher) { _ in
             if !navigationPath.isEmpty {
                 navigationPath.removeLast()
             }

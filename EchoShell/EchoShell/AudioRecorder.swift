@@ -386,10 +386,9 @@ extension AudioRecorder {
         }
         
         // Notify RecordingView to clear terminal output when transcription starts
-        NotificationCenter.default.post(
-            name: NSNotification.Name("TranscriptionStarted"),
-            object: nil
-        )
+        Task { @MainActor in
+            EventBus.shared.transcriptionStarted = true
+        }
         
         let transcriptionStartTime = Date()
         
@@ -455,11 +454,16 @@ extension AudioRecorder {
                     }
                     
                     // Notify that transcription is complete
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("TranscriptionCompleted"),
-                        object: nil,
-                        userInfo: ["text": text]
-                    )
+                    Task { @MainActor in
+                        EventBus.shared.transcriptionStarted = false
+                        EventBus.shared.transcriptionCompletedPublisher.send(
+                            EventBus.TranscriptionResult(
+                                text: text,
+                                language: language == "auto" ? nil : language,
+                                duration: self.lastTranscriptionDuration
+                            )
+                        )
+                    }
                     
                     // Send transcribed text to laptop for command execution
                     // Only send if autoSendCommand is enabled (default: true)
@@ -579,18 +583,22 @@ extension AudioRecorder {
                     if activeSession.terminalType.isHeadless {
                         _ = try await client.executeCommand(sessionId: sessionId, command: text)
                         await MainActor.run {
-                            NotificationCenter.default.post(
-                                name: NSNotification.Name("CommandSentToTerminal"),
-                                object: nil,
-                                userInfo: ["command": text, "sessionId": capturedSessionId, "transport": "headless"]
+                            EventBus.shared.commandSentPublisher.send(
+                                EventBus.CommandEvent(
+                                    command: text,
+                                    sessionId: capturedSessionId,
+                                    transport: "headless"
+                                )
                             )
                         }
                     } else {
                         await MainActor.run {
-                            NotificationCenter.default.post(
-                                name: NSNotification.Name("CommandSentToTerminal"),
-                                object: nil,
-                                userInfo: ["command": text, "sessionId": capturedSessionId, "transport": "interactive"]
+                            EventBus.shared.commandSentPublisher.send(
+                                EventBus.CommandEvent(
+                                    command: text,
+                                    sessionId: capturedSessionId,
+                                    transport: "interactive"
+                                )
                             )
                         }
                     }
@@ -697,10 +705,9 @@ extension AudioRecorder {
         print("🔊 Generating TTS for response... (operation ID: \(ttsOperationId?.uuidString ?? "nil"))")
         
         // Notify that TTS generation has started
-        NotificationCenter.default.post(
-            name: NSNotification.Name("AgentResponseTTSGenerating"),
-            object: nil
-        )
+        Task { @MainActor in
+            EventBus.shared.ttsGenerating = true
+        }
         
         Task {
             // Check cancellation at start
@@ -715,8 +722,8 @@ extension AudioRecorder {
                 let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
                 let language = settingsManager?.transcriptionLanguage.rawValue
                 let speed = settingsManager?.ttsSpeed ?? 1.0
-                let voice = selectVoiceForLanguage(settingsManager?.transcriptionLanguage ?? .auto)
-                let audioData = try await ttsHandler.synthesize(text: text, voice: voice, speed: speed, language: language)
+                // Voice is controlled by server configuration (TTS_VOICE env var), not sent from client
+                let audioData = try await ttsHandler.synthesize(text: text, speed: speed, language: language)
                 
                 // Check cancellation before posting notification
                 guard currentOperationId == ttsOperationId else {
@@ -724,7 +731,7 @@ extension AudioRecorder {
                     return
                 }
                 
-                // Play audio - use NotificationCenter to notify RecordingView
+                // Play audio - use EventBus to notify RecordingView
                 await MainActor.run {
                     // Check cancellation again on main thread
                     guard self.currentOperationId == ttsOperationId else {
@@ -732,10 +739,14 @@ extension AudioRecorder {
                         return
                     }
                     
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("AgentResponseTTSReady"),
-                        object: nil,
-                        userInfo: ["audioData": audioData, "text": text, "operationId": ttsOperationId?.uuidString ?? ""]
+                    EventBus.shared.ttsGenerating = false
+                    EventBus.shared.ttsReadyPublisher.send(
+                        EventBus.TTSReadyEvent(
+                            audioData: audioData,
+                            text: text,
+                            operationId: ttsOperationId?.uuidString ?? "",
+                            sessionId: nil // Global agent, not terminal-specific
+                        )
                     )
                 }
                 
@@ -750,17 +761,9 @@ extension AudioRecorder {
                 
                 // Reset TTS generation state
                 await MainActor.run {
-                    // Notify that TTS generation failed - this will reset isGeneratingTTS in RecordingView
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("AgentResponseTTSGenerating"),
-                        object: nil
-                    )
-                    
-                    // Post a failure notification so RecordingView can handle it
-                    NotificationCenter.default.post(
-                        name: NSNotification.Name("AgentResponseTTSFailed"),
-                        object: nil,
-                        userInfo: ["error": error.localizedDescription]
+                    EventBus.shared.ttsGenerating = false
+                    EventBus.shared.ttsFailedPublisher.send(
+                        EventBus.TTSError.synthesisFailed(message: error.localizedDescription)
                     )
                 }
             }

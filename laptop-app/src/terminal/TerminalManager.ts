@@ -2,11 +2,12 @@ import { spawn, IPty } from 'node-pty';
 import os from 'os';
 import fs from 'fs/promises';
 import { execSync } from 'child_process';
-import type { TunnelClient } from '../tunnel/TunnelClient.js';
-import { StateManager, type TerminalSessionState } from '../storage/StateManager.js';
+import type { TunnelClient } from '../tunnel/TunnelClient';
+import { StateManager, type TerminalSessionState } from '../storage/StateManager';
+import type { OutputRouter } from '../output/OutputRouter';
 
-type HeadlessTerminalType = 'cursor_cli' | 'claude_cli';
-type TerminalType = 'regular' | 'cursor_agent' | HeadlessTerminalType;
+type HeadlessTerminalType = 'cursor' | 'claude';
+type TerminalType = 'regular' | HeadlessTerminalType;
 
 interface TerminalSession {
   sessionId: string;
@@ -19,7 +20,6 @@ interface TerminalSession {
   inputBuffer: string[]; // Store input commands for history
   terminalType: TerminalType;
   name?: string;
-  cursorAgentWorkingDir?: string;
   headless?: {
     isRunning: boolean;
     cliSessionId?: string; // Session ID from CLI (cursor/claude) for context preservation
@@ -32,6 +32,7 @@ export class TerminalManager {
   private sessions = new Map<string, TerminalSession>();
   private outputListeners = new Map<string, Set<(data: string) => void>>();
   private tunnelClient: TunnelClient | null = null;
+  private outputRouter: OutputRouter | null = null;
   private stateManager: StateManager;
   private globalOutputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private globalInputListeners = new Set<(session: TerminalSession, data: string) => void>();
@@ -65,7 +66,6 @@ export class TerminalManager {
       createdAt: s.createdAt,
       terminalType: s.terminalType,
       name: s.name,
-      cursorAgentWorkingDir: s.cursorAgentWorkingDir
     }));
     
     await this.stateManager.saveSessionsState(sessions);
@@ -73,6 +73,10 @@ export class TerminalManager {
   
   setTunnelClient(tunnelClient: TunnelClient): void {
     this.tunnelClient = tunnelClient;
+  }
+
+  setOutputRouter(outputRouter: OutputRouter): void {
+    this.outputRouter = outputRouter;
   }
   
   writeInput(sessionId: string, data: string, isCommand: boolean = false): void {
@@ -91,16 +95,11 @@ export class TerminalManager {
       const originalBytes = Array.from(data).map(c => c.charCodeAt(0));
       console.log(`⌨️  Raw input: ${JSON.stringify(data)} (bytes: ${originalBytes.join(', ')})`);
       
-      // Handle cursor-agent case: it sends \n\n instead of \r
-      // Also handle SwiftTerm which may send \n instead of \r
-      // Always convert \n to \r if there's no \r in the data
-      // This ensures Enter key always sends \r (carriage return) which terminals expect
+      // Normalize input: convert \n to \r for Enter key
+      // Terminals expect \r (carriage return) to execute commands, not \n (newline)
       if (!normalizedData.includes('\r')) {
         // If there's no \r in the data, replace all \n sequences with \r
-        // This handles:
-        // - SwiftTerm sending \n instead of \r
-        // - cursor-agent sending \n\n instead of \r
-        // - Any other case where \n is used instead of \r
+        // This handles cases where \n is used instead of \r
         normalizedData = normalizedData.replace(/\n+/g, '\r');
       } else if (normalizedData.endsWith('\n') && !normalizedData.endsWith('\r\n')) {
         // If data has \r but ends with \n (not \r\n), replace trailing \n with \r
@@ -121,7 +120,6 @@ export class TerminalManager {
       }
       
       // Write to PTY - this is what actually sends data to the terminal
-      // For cursor-agent, the command should be sent as-is with \r at the end
       session.pty.write(normalizedData);
 
       // Notify global input listeners (recording stream manager, etc.)
@@ -193,7 +191,7 @@ export class TerminalManager {
       inputBuffer: [],
       terminalType,
       name,
-      cursorAgentWorkingDir: terminalType === 'cursor_agent' ? cwd : undefined,
+      // cursorAgentWorkingDir removed - not needed after unification
       headless: this.isHeadlessTerminal(terminalType)
         ? {
             isRunning: false
@@ -201,207 +199,11 @@ export class TerminalManager {
         : undefined
     };
 
-    if (this.isHeadlessTerminal(terminalType)) {
-      // For headless terminals, create an interactive shell process
-      // We'll write output to it, but need to prevent shell from executing JSON as commands
-      const shell = process.env.SHELL || (os.platform() === 'win32' ? 'powershell.exe' : 'bash');
-      
-      // Configure environment
-      const env = {
-        ...process.env,
-        TERM: 'xterm-256color',
-        TERM_PROGRAM: '',
-        VTE_VERSION: '',
-        ZDOTDIR: process.env.ZDOTDIR || process.env.HOME,
-        ZSH_DISABLE_COMPFIX: 'true',
-      } as Record<string, string>;
-      
-      delete env.BASH_ENV;
-      delete env.ENV;
-      
-      const shellArgs: string[] = [];
-      if (shell.includes('zsh')) {
-        shellArgs.push('-i');
-      } else if (shell.includes('bash')) {
-        shellArgs.push('-i');
-      }
-      
-      const pty = spawn(shell, shellArgs, {
-        name: 'xterm-256color',
-        cols: 80,
-        rows: 30,
-        cwd,
-        env
-      });
-      session.pty = pty;
-      session.pid = pty.pid;
-      // Get process group ID (Unix only)
-      if (os.platform() !== 'win32' && pty.pid) {
-        try {
-          session.processGroupId = this.getProcessGroupId(pty.pid);
-          console.log(`📊 [${sessionId}] Process group ID: ${session.processGroupId}`);
-        } catch (error) {
-          console.warn(`⚠️  [${sessionId}] Failed to get process group ID: ${error}`);
-        }
-      }
-      
-      // Keep echo enabled - we want to see commands and output
-      // pty.onData will capture everything (commands and output) and send to clients
-      // We just need to avoid sending data twice (once directly, once via pty.onData)
-      
-      // Capture output from shell for display
-      // For headless terminals, we need to parse JSON and extract session_id and assistant messages
-      pty.onData((data) => {
-        session.outputBuffer.push(data);
-        
-        // Keep only last 10000 lines for history
-        if (session.outputBuffer.length > 10000) {
-          session.outputBuffer.shift();
-        }
-
-        // For headless terminals, filter output BEFORE sending to terminal
-        // Only send assistant messages to terminal, not result messages or raw JSON
-        if (this.isHeadlessTerminal(terminalType)) {
-          // Process data line by line for JSON parsing
-          const lines = data.split('\n');
-          let terminalOutput = ''; // Accumulate only what should appear in terminal
-          
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            if (!trimmedLine) {
-              // Keep empty lines for formatting
-              terminalOutput += '\n';
-              continue;
-            }
-            
-            // Try to extract session_id
-            const sessionId = this.extractSessionIdFromLine(trimmedLine, terminalType);
-            if (sessionId && session.headless) {
-              const previousSessionId = session.headless.cliSessionId;
-              if (previousSessionId !== sessionId) {
-                session.headless.cliSessionId = sessionId;
-                console.log(`💾 [${session.sessionId}] Extracted and stored session_id from PTY output: ${sessionId}`);
-              }
-            }
-            
-            // Check for result message FIRST - don't send to terminal
-            if (this.isResultMessage(trimmedLine, terminalType)) {
-              console.log(`✅ [${session.sessionId}] Detected result message - command completed`);
-              
-              // Always mark as not running and send completion signal, even if already marked
-              if (session.headless) {
-                session.headless.isRunning = false;
-                session.headless.lastResultSeen = true;
-                // Clear completion timeout if exists
-                if (session.headless.completionTimeout) {
-                  clearTimeout(session.headless.completionTimeout);
-                  session.headless.completionTimeout = undefined;
-                }
-              }
-              
-              // Don't send result message to terminal - skip it completely
-              // Only send completion marker to recording stream for TTS
-              console.log(`📤 [${session.sessionId}] Sending [COMMAND_COMPLETE] marker to recording stream`);
-              this.emitHeadlessOutput(session, '[COMMAND_COMPLETE]');
-              
-              // Skip this line - don't add to terminal output
-              continue;
-            }
-            
-            // Try to extract assistant message text (only for assistant type, not result)
-            const text = this.extractAssistantTextFromLine(trimmedLine, terminalType);
-            if (text) {
-              console.log(`🎙️ [${session.sessionId}] Extracted assistant text from PTY: ${text.substring(0, 100)}...`);
-              // Add assistant text to terminal output (formatted nicely)
-              terminalOutput += text + '\n';
-              // Also send to recording stream (will be accumulated in handleHeadlessOutput)
-              this.emitHeadlessOutput(session, text);
-            } else {
-              // If it's not a result message and not an assistant message, it might be raw JSON
-              // Check if it's JSON - if so, don't send to terminal
-              try {
-                JSON.parse(trimmedLine);
-                // It's JSON but not result/assistant - skip it (might be thinking, system, etc.)
-                console.log(`🔇 [${session.sessionId}] Skipping non-assistant JSON message from terminal output`);
-                continue;
-              } catch (e) {
-                // Not JSON - might be shell output or prompt, include it
-                terminalOutput += line + '\n';
-              }
-            }
-          }
-          
-          // Send filtered output to terminal (only assistant messages, no JSON)
-          if (terminalOutput.trim().length > 0) {
-            if (this.tunnelClient) {
-              this.tunnelClient.sendTerminalOutput(session.sessionId, terminalOutput);
-            }
-            
-            const listeners = this.outputListeners.get(session.sessionId);
-            if (listeners) {
-              listeners.forEach(listener => listener(terminalOutput));
-            }
-          }
-        } else {
-          // For regular terminals, send all output as-is
-          if (this.tunnelClient) {
-            this.tunnelClient.sendTerminalOutput(session.sessionId, data);
-          }
-          
-          const listeners = this.outputListeners.get(session.sessionId);
-          if (listeners) {
-            listeners.forEach(listener => listener(data));
-          }
-          
-          // Send all output to global listeners
-          this.globalOutputListeners.forEach(listener => {
-            try {
-              listener(session, data);
-            } catch (error) {
-              console.error('❌ Global output listener error:', error);
-            }
-          });
-        }
-      });
-      
-      this.sessions.set(sessionId, session);
-      await this.saveSessionsState();
-      console.log(`✅ Created headless session: ${sessionId} (${terminalType}) in ${cwd} with interactive shell`);
-      return { sessionId, workingDir: cwd, terminalType, name };
-    }
-
-    // Create direct PTY session
-    const shell = process.env.SHELL || (os.platform() === 'win32' ? 'powershell.exe' : 'bash');
-    
-    // Configure environment to ensure proper shell prompt
-    const env = {
-      ...process.env,
-      TERM: 'xterm-256color',
-      TERM_PROGRAM: '',
-      VTE_VERSION: '',
-      ZDOTDIR: process.env.ZDOTDIR || process.env.HOME,
-      ZSH_DISABLE_COMPFIX: 'true',
-    } as Record<string, string>;
-    
-    delete env.BASH_ENV;
-    delete env.ENV;
-    
-    const shellArgs: string[] = [];
-    if (shell.includes('zsh')) {
-      shellArgs.push('-i');
-    } else if (shell.includes('bash')) {
-      shellArgs.push('-i');
-    }
-    
-    const pty = spawn(shell, shellArgs, {
-      name: 'xterm-256color',
-      cols: 80,
-      rows: 30,
-      cwd,
-      env
-    });
+    // Create PTY for all terminal types (unified logic)
+    const pty = this.createPTY(cwd);
     session.pty = pty;
     session.pid = pty.pid;
+    
     // Get process group ID (Unix only)
     if (os.platform() !== 'win32' && pty.pid) {
       try {
@@ -412,51 +214,13 @@ export class TerminalManager {
       }
     }
     
-    // Capture output
-    pty.onData((data) => {
-      session.outputBuffer.push(data);
-      
-      // Keep only last 10000 lines for history
-      if (session.outputBuffer.length > 10000) {
-        session.outputBuffer.shift();
-      }
-      
-      // Stream to tunnel (for iPhone)
-      if (this.tunnelClient) {
-        this.tunnelClient.sendTerminalOutput(sessionId, data);
-      }
-      
-      // Notify listeners (for WebSocket streaming)
-      const listeners = this.outputListeners.get(sessionId);
-      if (listeners) {
-        listeners.forEach(listener => listener(data));
-      }
-
-      // Notify global output listeners
-      this.globalOutputListeners.forEach(listener => {
-        try {
-          listener(session, data);
-        } catch (error) {
-          console.error('❌ Global output listener error:', error);
-        }
-      });
-    });
+    // Unified output handling for all terminal types
+    this.setupPTYOutputHandler(session);
     
     this.sessions.set(sessionId, session);
-    
-    // Save sessions to state file
     await this.saveSessionsState();
     
     console.log(`✅ Created terminal session: ${sessionId} (${terminalType}) in ${cwd}`);
-    
-    // If cursor_agent type, automatically start cursor-agent command
-    if (terminalType === 'cursor_agent') {
-      // Wait a bit for shell to initialize, then start cursor-agent
-      setTimeout(() => {
-        console.log(`🚀 Starting cursor-agent in session ${sessionId}...`);
-        this.writeInput(sessionId, 'cursor-agent\r', true);
-      }, 500);
-    }
     
     return { sessionId, workingDir: cwd, terminalType, name };
   }
@@ -498,7 +262,6 @@ export class TerminalManager {
     console.log(`📝 Command length: ${command.length}, bytes: ${Array.from(command).map(c => c.charCodeAt(0)).join(', ')}`);
     
     // Use writeInput with isCommand=true to ensure proper normalization and \r at the end
-    // This is especially important when cursor-agent is active
     // Command may come with \n\n from iPhone app, which needs to be normalized
     this.writeInput(sessionId, command, true);
     
@@ -543,14 +306,14 @@ export class TerminalManager {
     // Build command with proper arguments
     // Use environment variable if set, otherwise default to 'claude' (not 'claude-cli')
     const claudeBin = process.env.CLAUDE_HEADLESS_BIN || 'claude';
-    const terminalType = session.terminalType === 'cursor_cli' ? 'cursor-agent' : claudeBin;
+    const terminalType = session.terminalType === 'cursor' ? 'cursor-agent' : claudeBin;
     const currentCliSessionId = session.headless?.cliSessionId;
     
     // Build command line with --resume if we have session_id (for cursor-agent)
     // For claude, use --session-id instead
     let commandLine = `${terminalType} --output-format stream-json --print`;
     if (currentCliSessionId) {
-      if (session.terminalType === 'cursor_cli') {
+      if (session.terminalType === 'cursor') {
         commandLine += ` --resume ${currentCliSessionId}`;
       } else {
         commandLine += ` --session-id ${currentCliSessionId}`;
@@ -591,12 +354,8 @@ export class TerminalManager {
         console.log(`⏱️ [${session.sessionId}] Command completion timeout - marking as complete`);
         session.headless.isRunning = false;
         session.headless.completionTimeout = undefined;
-        // Send completion message to clients
-        // Don't send completion message to terminal display - it's only for recording stream
-        // The completion is already handled via [COMMAND_COMPLETE] marker for recording stream
-        // This prevents "Command completed" from appearing in terminal output
-        // Send completion marker for recording stream
-        this.emitHeadlessOutput(session, '\n\n[COMMAND_COMPLETE]');
+        // Completion detection is now handled by RecordingStreamManager via HeadlessOutputProcessor
+        // This timeout just unlocks the session for the next command
       }
     }, 60000); // 60 second timeout
     
@@ -624,27 +383,18 @@ export class TerminalManager {
     });
   }
 
-  private emitHeadlessOutput(session: TerminalSession, data: string): void {
-    const text = data?.trim();
-    if (!text) {
-      console.warn(`⚠️ [${session.sessionId}] emitHeadlessOutput: empty text, skipping`);
-      return;
-    }
-
-    // Don't write to PTY here - this is filtered output for Record view only
-    // Raw output (including assistant messages) is already sent via onRawOutput
-    // Writing here would cause shell to try to execute the text as commands
-
-    // Notify global output listeners (for recording stream)
-    // This handles the filtered output for Record view (watch/phone)
-    console.log(`📡 [${session.sessionId}] emitHeadlessOutput: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}" to ${this.globalOutputListeners.size} listeners`);
-    this.globalOutputListeners.forEach(listener => {
-      try {
-        listener(session, text);
-      } catch (error) {
-        console.error(`❌ [${session.sessionId}] Global output listener error:`, error);
+  /**
+   * Update headless session CLI session_id (called from RecordingStreamManager)
+   */
+  updateHeadlessSessionId(sessionId: string, cliSessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (session?.headless) {
+      const previousSessionId = session.headless.cliSessionId;
+      if (previousSessionId !== cliSessionId) {
+        session.headless.cliSessionId = cliSessionId;
+        console.log(`💾 [${sessionId}] Updated CLI session_id: ${cliSessionId}`);
       }
-    });
+    }
   }
   
   listSessions(): Array<{ sessionId: string; workingDir: string; createdAt: number; terminalType: TerminalType; name?: string }> {
@@ -767,7 +517,89 @@ export class TerminalManager {
   }
 
   private isHeadlessTerminal(type: TerminalType): type is HeadlessTerminalType {
-    return type === 'cursor_cli' || type === 'claude_cli';
+    return type === 'cursor' || type === 'claude';
+  }
+
+  /**
+   * Create PTY with interactive shell (unified for all terminal types)
+   */
+  private createPTY(cwd: string): IPty {
+    const shell = process.env.SHELL || (os.platform() === 'win32' ? 'powershell.exe' : 'bash');
+    
+    // Configure environment
+    const env = {
+      ...process.env,
+      TERM: 'xterm-256color',
+      TERM_PROGRAM: '',
+      VTE_VERSION: '',
+      ZDOTDIR: process.env.ZDOTDIR || process.env.HOME,
+      ZSH_DISABLE_COMPFIX: 'true',
+    } as Record<string, string>;
+    
+    delete env.BASH_ENV;
+    delete env.ENV;
+    
+    const shellArgs: string[] = [];
+    if (shell.includes('zsh')) {
+      shellArgs.push('-i');
+    } else if (shell.includes('bash')) {
+      shellArgs.push('-i');
+    }
+    
+    return spawn(shell, shellArgs, {
+      name: 'xterm-256color',
+      cols: 80,
+      rows: 30,
+      cwd,
+      env
+    });
+  }
+
+  /**
+   * Setup unified output handler for PTY (same for all terminal types)
+   */
+  private setupPTYOutputHandler(session: TerminalSession): void {
+    if (!session.pty) {
+      return;
+    }
+
+    session.pty.onData((data) => {
+      session.outputBuffer.push(data);
+      
+      // Keep only last 10000 lines for history
+      if (session.outputBuffer.length > 10000) {
+        session.outputBuffer.shift();
+      }
+
+      // Send raw output to global listeners (RecordingStreamManager)
+      // RecordingStreamManager handles filtering for headless terminals and collects responses for SSE
+      this.globalOutputListeners.forEach(listener => {
+        try {
+          listener(session, data);
+        } catch (error) {
+          console.error('❌ Global output listener error:', error);
+        }
+      });
+
+      // Send to terminal display for ALL terminal types
+      // RecordingStreamManager will also send filtered output for headless terminals
+      if (this.outputRouter) {
+        this.outputRouter.routeOutput({
+          sessionId: session.sessionId,
+          data: data,
+          destination: 'terminal_display'
+        });
+      } else if (this.tunnelClient) {
+        // Fallback to direct tunnel client if OutputRouter not set
+        this.tunnelClient.sendTerminalOutput(session.sessionId, data);
+      }
+      
+      // Notify WebSocket listeners
+      const listeners = this.outputListeners.get(session.sessionId);
+      if (listeners) {
+        listeners.forEach(listener => listener(data));
+      }
+    });
   }
   
   /**
@@ -865,105 +697,6 @@ export class TerminalManager {
     }
   }
   
-  // Extract session_id from JSON line (for headless terminals)
-  private extractSessionIdFromLine(line: string, terminalType: TerminalType): string | null {
-    if (!line || line.trim().length === 0) {
-      return null;
-    }
-
-    try {
-      const payload = JSON.parse(line);
-      if (!payload || typeof payload !== 'object') {
-        return null;
-      }
-
-      // Try to find session_id in various places
-      const candidates = [
-        payload.session_id,
-        payload.sessionId,
-        payload.message?.session_id,
-        payload.message?.sessionId,
-        payload.result?.session_id,
-        payload.result?.sessionId
-      ];
-
-      for (const candidate of candidates) {
-        if (typeof candidate === 'string' && candidate.trim().length > 0) {
-          const sessionId = candidate.trim();
-          if (payload.type === 'system' && payload.subtype === 'init') {
-            console.log(`🔍 [${terminalType}] Extracted session_id from system/init: ${sessionId}`);
-          }
-          return sessionId;
-        }
-      }
-
-      return null;
-    } catch (error) {
-      // Not JSON, skip silently
-      return null;
-    }
-  }
-  
-  // Extract assistant text from JSON line (for headless terminals)
-  private extractAssistantTextFromLine(line: string, _terminalType: TerminalType): string | null {
-    if (!line || line.trim().length === 0) {
-      return null;
-    }
-
-    try {
-      const payload = JSON.parse(line);
-      if (!payload || typeof payload !== 'object') {
-        return null;
-      }
-
-      // Only extract assistant messages (type: "assistant" with message.content)
-      if (payload.type === 'assistant' && payload.message?.content) {
-        interface ContentBlock {
-          type?: string;
-          text?: string;
-        }
-        const parts = Array.isArray(payload.message.content)
-          ? payload.message.content
-              .map((block: ContentBlock) => {
-                if (block.type === 'text' && block.text) {
-                  return block.text;
-                }
-                return null;
-              })
-              .filter((text: string | null): text is string => text !== null)
-          : [];
-
-        if (parts.length > 0) {
-          return parts.join('\n');
-        }
-      }
-
-      return null;
-    } catch (error) {
-      // Not JSON, skip silently
-      return null;
-    }
-  }
-  
-  // Check if line is a result message (indicates command completion)
-  private isResultMessage(line: string, _terminalType: TerminalType): boolean {
-    if (!line || line.trim().length === 0) {
-      return false;
-    }
-
-    try {
-      const payload = JSON.parse(line);
-      if (!payload || typeof payload !== 'object') {
-        return false;
-      }
-
-      // Check for result message type
-      return payload.type === 'result' && payload.subtype === 'success';
-    } catch (error) {
-      // Not JSON, skip silently
-      return false;
-    }
-  }
 }
 
 export type { TerminalType };

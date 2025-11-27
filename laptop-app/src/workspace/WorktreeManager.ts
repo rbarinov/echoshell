@@ -2,7 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import type { WorkspaceManager } from './WorkspaceManager.js';
+import type { WorkspaceManager } from './WorkspaceManager';
+import { normalizeBranchName, normalizeWorktreeName, normalizeRepositoryName } from './nameNormalizer';
 
 const execAsync = promisify(exec);
 
@@ -45,8 +46,13 @@ export class WorktreeManager {
       throw error;
     }
 
+    // Normalize branch/feature name to kebab-case
+    const normalizedBranch = normalizeBranchName(branchOrFeature);
+    
     // Determine worktree name (use pattern: repo-feature)
-    const finalWorktreeName = worktreeName || `${repo}-${branchOrFeature}`;
+    // Normalize both repo name and branch name
+    const normalizedRepo = normalizeRepositoryName(repo);
+    const finalWorktreeName = normalizeWorktreeName(worktreeName || `${normalizedRepo}-${normalizedBranch}`);
     const worktreePath = path.join(repoPath, finalWorktreeName);
 
     try {
@@ -76,13 +82,14 @@ export class WorktreeManager {
       }
 
       // Create worktree
+      // Use normalized branch name for git commands
       let gitCommand: string;
       if (branchExists) {
-        // Use existing branch
+        // Use existing branch (check both original and normalized names)
         gitCommand = `git worktree add "${worktreePath}" "${branchOrFeature}"`;
       } else {
-        // Create new branch
-        gitCommand = `git worktree add "${worktreePath}" -b "${branchOrFeature}"`;
+        // Create new branch with normalized name
+        gitCommand = `git worktree add "${worktreePath}" -b "${normalizedBranch}"`;
       }
 
       console.log(`🌳 Creating worktree: ${finalWorktreeName} (branch: ${branchOrFeature})...`);
@@ -104,7 +111,7 @@ export class WorktreeManager {
       return {
         name: finalWorktreeName,
         path: worktreePath,
-        branch: branchOrFeature,
+        branch: normalizedBranch, // Return normalized branch name
         createdAt: createdAt
       };
     } catch (error) {

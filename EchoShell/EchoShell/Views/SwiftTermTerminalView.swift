@@ -24,13 +24,20 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         let container = UIView(frame: .zero)
         container.backgroundColor = .black
         
-        // Create terminal view using SwiftTerm with default settings
+        // Create terminal view using SwiftTerm with proper settings for mobile
         let terminalView = SwiftTerm.TerminalView(frame: .zero)
         terminalView.terminalDelegate = context.coordinator
         terminalView.backgroundColor = .black
         terminalView.nativeBackgroundColor = .black
         terminalView.nativeForegroundColor = .white
         terminalView.translatesAutoresizingMaskIntoConstraints = false
+        
+        // Configure terminal for proper display on mobile
+        // Set proper font size for mobile readability (12pt is good for mobile)
+        terminalView.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        
+        // SwiftTerm handles tabs natively with standard 8-space tab stops
+        // No need to configure tab width - SwiftTerm uses standard VT100 tab stops
         
         // Ensure keyboard appears when terminal becomes first responder
         // SwiftTerm's TerminalView should handle this automatically, but we ensure it's enabled
@@ -43,15 +50,16 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         terminalView.inputView = nil
         
         // Use default SwiftTerm settings - it handles tabs, colors, and ANSI sequences automatically
-        // Enable scrolling
+        // Enable scrolling with proper configuration
         terminalView.isScrollEnabled = true
         terminalView.showsVerticalScrollIndicator = true
-        terminalView.bounces = true
-        terminalView.alwaysBounceVertical = true
+        terminalView.bounces = false // Disable bounce for better terminal feel
+        terminalView.alwaysBounceVertical = false
+        terminalView.showsHorizontalScrollIndicator = false // Hide horizontal scroll for terminal
         
         // Enable touch interaction
         terminalView.isUserInteractionEnabled = true
-        terminalView.isMultipleTouchEnabled = true
+        terminalView.isMultipleTouchEnabled = false // Disable multi-touch for terminal
         
         // Store terminal view in coordinator
         context.coordinator.terminalView = terminalView
@@ -115,13 +123,20 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         // Must be called on main thread
         func feed(_ text: String) {
             guard let terminalView = terminalView, !text.isEmpty else { return }
+            
+            // Ensure text is properly formatted for terminal
+            // SwiftTerm handles ANSI sequences, tabs, and all terminal formatting natively
+            // We just need to ensure we're on main thread and feed it directly
+            
             // Ensure we're on main thread
             if Thread.isMainThread {
+                // Feed text directly to SwiftTerm - it handles all formatting
                 terminalView.feed(text: text)
                 // Auto-scroll to bottom after feeding data (especially after clear command)
                 scrollToBottom()
             } else {
                 DispatchQueue.main.async {
+                    // Feed text directly to SwiftTerm - it handles all formatting
                     terminalView.feed(text: text)
                     // Auto-scroll to bottom after feeding data
                     self.scrollToBottom()

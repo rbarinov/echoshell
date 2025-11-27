@@ -1,0 +1,98 @@
+name: Publish Laptop App to GitHub Packages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'laptop-app/**'
+      - '.github/workflows/publish-laptop-app.yml'
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.1)'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@rbarinov'
+      
+      - name: Configure npm for GitHub Packages
+        run: |
+          echo "@rbarinov:registry=https://npm.pkg.github.com" >> ~/.npmrc
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GITHUB_TOKEN }}" >> ~/.npmrc
+      
+      - name: Install dependencies
+        working-directory: ./laptop-app
+        run: npm ci
+      
+      - name: Run security audit
+        working-directory: ./laptop-app
+        run: npm audit --audit-level=moderate
+      
+      - name: Run tests
+        working-directory: ./laptop-app
+        run: npm test
+        env:
+          NODE_OPTIONS: --experimental-vm-modules
+      
+      - name: Type check
+        working-directory: ./laptop-app
+        run: npm run type-check
+      
+      - name: Build package
+        working-directory: ./laptop-app
+        run: npm run build
+      
+      - name: Check if package is configured for publishing
+        id: check-publish-config
+        working-directory: ./laptop-app
+        run: |
+          if grep -q '"publishConfig"' package.json; then
+            echo "publish_enabled=true" >> $GITHUB_OUTPUT
+            echo "Package is configured for publishing"
+          else
+            echo "publish_enabled=false" >> $GITHUB_OUTPUT
+            echo "Package is not configured for publishing (no publishConfig in package.json)"
+            echo "To enable publishing, add to package.json:"
+            echo '  "publishConfig": { "registry": "https://npm.pkg.github.com" }'
+            echo '  "files": ["dist", "README.md", "LICENSE"]'
+            echo '  "types": "dist/index.d.ts"'
+            echo '  Update name to "@rbarinov/laptop-app" if using scoped package'
+          fi
+      
+      - name: Update version if provided
+        if: ${{ github.event.inputs.version != '' && steps.check-publish-config.outputs.publish_enabled == 'true' }}
+        working-directory: ./laptop-app
+        run: |
+          npm version ${{ github.event.inputs.version }} --no-git-tag-version
+      
+      - name: Publish to GitHub Packages
+        if: steps.check-publish-config.outputs.publish_enabled == 'true'
+        working-directory: ./laptop-app
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Skip publishing (package not configured)
+        if: steps.check-publish-config.outputs.publish_enabled == 'false'
+        run: |
+          echo "Skipping publish step - package.json is not configured for publishing"
+          echo "All checks (audit, tests, type-check, build) have passed successfully"

@@ -1,0 +1,149 @@
+# Tunnel Server - TypeScript Development Rules
+
+This file contains auto-applied rules for the tunnel-server TypeScript project.
+
+## Project Context
+
+This is the **tunnel-server** - a proxy server that enables communication between mobile devices (iPhone) and the laptop app without requiring a public IP address.
+
+## Core Rules
+
+All rules from the root `.cursorrules` apply. Additionally, the following TypeScript architecture rules MUST be followed:
+
+## TypeScript Architecture Rules
+
+**CRITICAL**: All code in this project MUST follow the patterns and principles defined in `../TYPESCRIPT_ARCHITECTURE_RULES.md`.
+
+### Key Requirements:
+
+1. **Separation of Concerns**
+   - Tunnel server is a **thin proxy layer**
+   - Main responsibility: Route requests between mobile devices and laptop
+   - No business logic: Business logic stays in laptop-app
+   - WebSocket hub: Manages bidirectional communication
+
+2. **Type Safety**
+   - **NO `any` types**: Use `unknown` and type guards instead
+   - **Runtime validation**: All inputs MUST be validated
+   - **Explicit return types**: All functions must have explicit return types
+   - **Type definitions**: Define clear types for tunnel messages
+
+3. **Error Handling**
+   - **Connection errors**: Handle WebSocket connection failures gracefully
+   - **Timeout handling**: Set timeouts for all async operations
+   - **Error propagation**: Forward errors appropriately
+   - **Logging**: Log all errors with context
+
+4. **Logging**
+   - **Structured logging**: Use structured JSON logs
+   - **Connection events**: Log connection/disconnection events
+   - **Request routing**: Log request routing for debugging
+   - **Never log secrets**: API keys, tokens must never appear in logs
+
+5. **Code Organization**
+   - **Single file structure**: Keep it simple (tunnel-server is simpler than laptop-app)
+   - **Clear separation**: WebSocket handling vs HTTP routing
+   - **Type definitions**: Define types for tunnel protocol
+
+6. **Security**
+   - **Authentication**: Validate tunnel API keys
+   - **Request validation**: Validate all incoming requests
+   - **Rate limiting**: Implement rate limiting per tunnel
+   - **TLS/WSS**: Use secure connections (WSS for WebSocket, HTTPS for HTTP)
+
+## Tunnel-Specific Rules
+
+### Tunnel Protocol
+- **WebSocket connection**: Laptop connects via WebSocket with API key
+- **HTTP proxy**: Mobile devices send HTTP requests, tunnel forwards to laptop
+- **Request routing**: Route `/api/{tunnel_id}/*` to connected laptop
+- **Bidirectional**: Support both HTTP → laptop and laptop → mobile
+
+### Connection Management
+- **Tunnel registration**: Laptops register with unique tunnel_id
+- **Connection state**: Track connected laptops
+- **Reconnection**: Handle laptop reconnections gracefully
+- **Cleanup**: Clean up disconnected tunnels
+
+## Code Examples
+
+### ✅ Good: Proper Error Handling
+```typescript
+class TunnelServer {
+  async handleWebSocketConnection(ws: WebSocket, apiKey: string): Promise<void> {
+    try {
+      const tunnel = await this.validateTunnel(apiKey);
+      
+      this.logger.info('Tunnel connected', {
+        tunnelId: tunnel.id,
+        timestamp: Date.now(),
+      });
+
+      ws.on('close', () => {
+        this.logger.info('Tunnel disconnected', { tunnelId: tunnel.id });
+        this.removeTunnel(tunnel.id);
+      });
+
+      this.registerTunnel(tunnel.id, ws);
+    } catch (error) {
+      this.logger.error('Tunnel connection failed', { error, apiKey: '***' });
+      ws.close(1008, 'Authentication failed');
+    }
+  }
+}
+```
+
+### ❌ Bad: Anti-patterns to Avoid
+```typescript
+// ❌ No error handling
+ws.on('message', (data) => {
+  forwardToLaptop(data); // What if this fails?
+});
+
+// ❌ Logging secrets
+logger.info('Tunnel connected', { apiKey }); // ❌ Never do this
+
+// ❌ Using any
+function handleRequest(req: any): void {
+  // No type safety
+}
+```
+
+## CI/CD Requirements
+
+**CRITICAL**: This package is published to GitHub Packages and MUST have:
+
+1. **GitHub Actions Workflow** (`.github/workflows/publish-tunnel-server.yml`):
+   - Must run `npm audit` before build (MANDATORY)
+   - Must run `npm test` before build (MANDATORY)
+   - Must run `npm run type-check` before build
+   - Must build and publish to GitHub Packages
+   - See `TYPESCRIPT_ARCHITECTURE_RULES.md` for workflow template
+
+2. **Build Process**:
+   - Security audit: `npm audit --audit-level=moderate`
+   - Tests: `npm test` (all must pass)
+   - Type check: `npm run type-check`
+   - Build: `npm run build`
+
+3. **Package Configuration**:
+   - `publishConfig` in `package.json` pointing to GitHub Packages
+   - `prepublishOnly` script to ensure build runs
+
+## When Making Changes
+
+1. **Before writing code**: Review `TYPESCRIPT_ARCHITECTURE_RULES.md`
+2. **Keep it simple**: Tunnel server should remain a thin proxy
+3. **Handle errors**: Add proper error handling for connection issues
+4. **Add logging**: Log important events (connections, disconnections, errors)
+5. **Test**: Test WebSocket connections and HTTP proxying
+6. **CI/CD**: Ensure GitHub Actions workflow includes audit + tests before publishing
+
+## Enforcement
+
+These rules are automatically applied by Cursor AI. When suggesting code changes, Cursor will:
+- Keep tunnel server as a thin proxy layer
+- Add proper error handling for connections
+- Use structured logging
+- Maintain type safety
+- Follow security best practices

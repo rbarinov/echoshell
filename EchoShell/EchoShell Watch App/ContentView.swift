@@ -560,10 +560,10 @@ struct ContentView: View {
             // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
             let ttsEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/tts/synthesize"
             
-            let voice = selectVoiceForLanguage(settingsManager.transcriptionLanguage)
             let language = settingsManager.transcriptionLanguage.rawValue
             
             // Call TTS proxy endpoint directly
+            // Voice is controlled by server configuration (TTS_VOICE env var), not sent from client
             var request = URLRequest(url: URL(string: ttsEndpoint)!)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -571,7 +571,6 @@ struct ContentView: View {
             
             var body: [String: Any] = [
                 "text": cleanedText,
-                "voice": voice,
                 "speed": settingsManager.ttsSpeed
             ]
             if language != "auto" {

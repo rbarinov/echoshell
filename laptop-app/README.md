@@ -128,7 +128,13 @@ npm run dev
 ### Terminal Management
 - `GET /terminal/list` - List active sessions
 - `POST /terminal/create` - Create new session
+  - `terminal_type`: `"regular"` | `"cursor"` | `"claude"`
+  - `cursor`: Headless Cursor Agent terminal (JSON output)
+  - `claude`: Headless Claude CLI terminal (JSON output)
+  - `regular`: Standard shell terminal
 - `POST /terminal/:id/execute` - Execute command
+- `POST /terminal/:id/rename` - Rename session
+- `POST /terminal/:id/resize` - Resize terminal
 
 ### AI Agent
 - `POST /agent/execute` - Execute command via AI agent
@@ -170,7 +176,22 @@ The AI agent can handle:
                                     Terminal Manager
                                               ↓
                                       [Execution]
+                                              ↓
+                                    Output Router
+                                    /    |    \
+                          Terminal  Recording  WebSocket
+                          Display   Stream     Clients
 ```
+
+### Key Components
+
+- **TerminalManager**: Manages PTY-based terminal sessions (regular, cursor, claude)
+- **OutputRouter**: Centralized routing for terminal output to different destinations
+- **HeadlessOutputProcessor**: Parses JSON output from headless terminals (cursor, claude)
+- **RecordingStreamManager**: Manages filtered output streams for TTS
+- **AIAgent**: LangChain-based agent for natural language command interpretation
+- **Zod Schemas**: Runtime validation for all API requests
+- **Structured Logging**: JSON-formatted logs with context and levels
 
 ## Security
 
@@ -200,18 +221,50 @@ The AI agent can handle:
 ### Project Structure
 ```
 src/
-├── index.ts              # Main application
+├── index.ts                    # Main application entry point
+├── server.ts                   # Express app and WebSocket server setup
+├── types.ts                    # Common types for tunnel requests/responses
 ├── tunnel/
-│   └── TunnelClient.ts   # Tunnel connection management
+│   └── TunnelClient.ts         # Tunnel connection management
 ├── keys/
-│   ├── KeyManager.ts     # Ephemeral key distribution
-│   ├── STTProvider.ts    # STT provider abstraction
-│   └── TTSProvider.ts   # TTS provider abstraction
+│   ├── KeyManager.ts           # Ephemeral key distribution
+│   ├── STTProvider.ts          # STT provider abstraction
+│   └── TTSProvider.ts          # TTS provider abstraction
 ├── terminal/
-│   └── TerminalManager.ts # Terminal session management
-└── agent/
-    ├── AIAgent.ts        # AI agent with LangChain
-    └── LLMProvider.ts   # LLM provider abstraction
+│   └── TerminalManager.ts      # Terminal session management (PTY-based)
+├── agent/
+│   ├── AIAgent.ts              # AI agent with LangChain
+│   └── LLMProvider.ts          # LLM provider abstraction
+├── output/
+│   ├── OutputRouter.ts         # Centralized output routing
+│   ├── HeadlessOutputProcessor.ts  # JSON parsing for headless terminals
+│   ├── RecordingStreamManager.ts   # TTS output stream management
+│   └── TerminalOutputProcessor.ts  # Terminal output processing
+├── routes/
+│   ├── terminal.ts             # Terminal management routes
+│   └── workspace.ts            # Workspace management routes
+├── handlers/
+│   ├── terminalHandler.ts      # Terminal request handler
+│   ├── keyHandler.ts           # Key management handler
+│   ├── workspaceHandler.ts     # Workspace handler
+│   ├── agentHandler.ts         # AI agent handler
+│   └── proxyHandler.ts         # STT/TTS proxy handler
+├── schemas/
+│   ├── terminalSchemas.ts      # Zod schemas for terminal requests
+│   ├── keySchemas.ts           # Zod schemas for key requests
+│   ├── workspaceSchemas.ts     # Zod schemas for workspace requests
+│   ├── agentSchemas.ts         # Zod schemas for agent requests
+│   └── proxySchemas.ts         # Zod schemas for proxy requests
+├── utils/
+│   ├── logger.ts               # Structured logging utility
+│   └── validation.ts           # Request validation utilities
+├── websocket/
+│   └── terminalWebSocket.ts   # WebSocket server for terminal streaming
+├── workspace/
+│   ├── WorkspaceManager.ts     # Workspace management
+│   └── WorktreeManager.ts      # Git worktree management
+└── storage/
+    └── StateManager.ts         # Application state management
 ```
 
 ### Testing Locally

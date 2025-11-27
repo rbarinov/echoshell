@@ -18,7 +18,7 @@ class LocalTTSHandler {
         self.endpoint = endpoint
     }
     
-    func synthesize(text: String, voice: String = "alloy", speed: Double = 1.0, language: String? = nil) async throws -> Data {
+    func synthesize(text: String, speed: Double = 1.0, language: String? = nil) async throws -> Data {
         var request = URLRequest(url: URL(string: endpoint)!)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -26,11 +26,11 @@ class LocalTTSHandler {
         
         var body: [String: Any] = [
             "text": text,
-            "voice": voice,
             "speed": speed
         ]
         
         // Add language if provided (for voice selection hints)
+        // Note: Voice is controlled by server configuration, not sent from client
         if let lang = language {
             body["language"] = lang
         }

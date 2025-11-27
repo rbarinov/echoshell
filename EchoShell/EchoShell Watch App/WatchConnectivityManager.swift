@@ -84,7 +84,7 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                 self.settingsManager.transcriptionLanguage = lang
             }
             
-            // Update TTS speed
+            // Update TTS speed (will be validated in settingsManager)
             if let ttsSpeed = context["ttsSpeed"] as? Double {
                 self.settingsManager.ttsSpeed = ttsSpeed
                 print("✅ Watch: Updated TTS speed to \(ttsSpeed)")
@@ -104,9 +104,8 @@ class WatchConnectivityManager: NSObject, ObservableObject {
             if let sessionId = context["selectedSessionId"] as? String {
                 self.settingsManager.selectedSessionId = sessionId
             }
-            if let speed = context["ttsSpeed"] as? Double {
-                self.settingsManager.ttsSpeed = max(0.8, min(2.0, speed))
-            }
+            // TTS speed validation is handled in settingsManager.didSet
+            // Range is 0.7-1.2 for ElevenLabs compatibility
             
             // Notify that settings changed
             NotificationCenter.default.post(name: NSNotification.Name("SettingsUpdated"), object: nil)

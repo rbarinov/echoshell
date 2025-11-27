@@ -53,8 +53,10 @@ describe('WorkspaceManager', () => {
       await expect(workspaceManager.createWorkspace('')).rejects.toThrow();
     });
 
-    it('should throw error for invalid characters in workspace name', async () => {
-      await expect(workspaceManager.createWorkspace('test/workspace')).rejects.toThrow();
+    it('should normalize workspace name with special characters', async () => {
+      // WorkspaceManager normalizes names, so 'test/workspace' becomes 'testworkspace'
+      const workspace = await workspaceManager.createWorkspace('test/workspace');
+      expect(workspace.name).toBe('testworkspace');
     });
 
     it('should throw error if workspace already exists', async () => {

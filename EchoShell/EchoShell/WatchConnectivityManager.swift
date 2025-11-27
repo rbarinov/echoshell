@@ -226,11 +226,14 @@ extension WatchConnectivityManager: WCSessionDelegate {
             print("      Upload: \(uploadSize) bytes, Download: \(downloadSize) bytes")
             
             // Post notification to update UI
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("TranscriptionStatsUpdated"),
-                    object: nil,
-                    userInfo: message
+            Task { @MainActor in
+                EventBus.shared.transcriptionStatsUpdatedPublisher.send(
+                    EventBus.TranscriptionStats(
+                        text: message["text"] as? String,
+                        duration: message["recordingDuration"] as? TimeInterval,
+                        language: message["language"] as? String,
+                        isFromWatch: true
+                    )
                 )
             }
         }
@@ -255,11 +258,14 @@ extension WatchConnectivityManager: WCSessionDelegate {
             print("      Upload: \(uploadSize) bytes, Download: \(downloadSize) bytes")
             
             // Post notification to update UI
-            DispatchQueue.main.async {
-                NotificationCenter.default.post(
-                    name: NSNotification.Name("TranscriptionStatsUpdated"),
-                    object: nil,
-                    userInfo: message
+            Task { @MainActor in
+                EventBus.shared.transcriptionStatsUpdatedPublisher.send(
+                    EventBus.TranscriptionStats(
+                        text: message["text"] as? String,
+                        duration: message["recordingDuration"] as? TimeInterval,
+                        language: message["language"] as? String,
+                        isFromWatch: true
+                    )
                 )
             }
             

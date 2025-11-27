@@ -1,0 +1,198 @@
+# Laptop App - TypeScript Development Rules
+
+This file contains auto-applied rules for the laptop-app TypeScript project.
+
+## Project Context
+
+This is the **laptop-app** - the main execution environment for the EchoShell voice-controlled terminal management system.
+
+## Core Rules
+
+All rules from the root `.cursorrules` apply. Additionally, the following TypeScript architecture rules MUST be followed:
+
+## TypeScript Architecture Rules
+
+**CRITICAL**: All code in this project MUST follow the patterns and principles defined in `../TYPESCRIPT_ARCHITECTURE_RULES.md`.
+
+### Key Requirements:
+
+1. **Separation of Concerns**
+   - Each module should have a single, well-defined responsibility
+   - Handlers only handle requests, Managers only manage resources
+   - Output routing is centralized in `OutputRouter`
+   - Validation is handled by Zod schemas in `schemas/`
+
+2. **Type Safety**
+   - **NO `any` types**: Use `unknown` and type guards instead
+   - **Runtime validation**: All API inputs MUST be validated with Zod schemas
+   - **Explicit return types**: All functions must have explicit return types
+   - **Type inference**: Use Zod's type inference: `z.infer<typeof Schema>`
+
+3. **Error Handling**
+   - **Never ignore errors**: All errors must be caught and handled or logged
+   - **Custom error types**: Use domain-specific error classes
+   - **Structured errors**: Include context in error messages
+   - **Log before throw**: Always log errors before re-throwing
+
+4. **Logging**
+   - **Structured logging**: Use `logger` from `src/utils/logger.ts` (JSON format)
+   - **Appropriate levels**: DEBUG for dev, INFO for events, WARN for issues, ERROR for failures
+   - **Context objects**: Always include relevant context in logs
+   - **Never log secrets**: API keys, tokens, passwords must never appear in logs
+
+5. **Code Organization**
+   - **One class per file**: Keep files focused
+   - **Barrel exports**: Use `index.ts` for clean imports
+   - **Import order**: External → Internal → Types
+   - **No circular dependencies**: Structure code to avoid cycles
+
+6. **Module Structure**
+   ```
+   src/
+   ├── handlers/     # Request handlers (HTTP/tunnel) - thin layer, delegates to managers
+   ├── routes/       # Express route definitions - only routing logic
+   ├── schemas/      # Zod validation schemas - all input validation
+   ├── utils/        # Shared utilities - pure functions, well-tested
+   ├── output/       # Output processing - routing, filtering, parsing
+   ├── terminal/     # Terminal management - PTY sessions, execution
+   ├── agent/        # AI agent - LangChain integration
+   ├── keys/         # Key management - ephemeral key distribution
+   ├── workspace/    # Workspace/worktree management
+   └── types.ts      # Shared type definitions
+   ```
+
+7. **Testing**
+   - **Unit tests**: Test individual functions/classes in isolation
+   - **Test location**: Co-located with source files in `__tests__/` directories
+   - **Mocking**: Mock external dependencies, not what you're testing
+   - **Coverage**: Aim for high coverage on business logic
+
+8. **Security**
+   - **Input validation**: ALL inputs must be validated with Zod schemas
+   - **Secrets**: Never commit secrets, use environment variables
+   - **Command injection**: Validate and sanitize all commands
+   - **Rate limiting**: Implement rate limiting for key operations
+
+## Terminal-Specific Rules
+
+### Terminal Types
+- **`regular`**: Standard shell terminal
+- **`cursor`**: Headless Cursor Agent terminal (JSON output)
+- **`claude`**: Headless Claude CLI terminal (JSON output)
+- **NO `cursor_agent`**: This type was removed and unified with `cursor`
+
+### Terminal Output Processing
+- **OutputRouter**: Centralized routing for all terminal output
+- **HeadlessOutputProcessor**: Parses JSON from headless terminals (`cursor`, `claude`)
+- **RecordingStreamManager**: Manages filtered output for TTS
+- **Unified PTY handling**: All terminals use the same PTY creation and output handling logic
+
+### Terminal Session Management
+- **PTY-based**: All terminals use `node-pty` for execution
+- **Session context**: Headless terminals preserve `session_id` between commands
+- **Output streams**: Dual streams (raw for display, filtered for TTS)
+
+## Code Examples
+
+### ✅ Good: Proper Handler Pattern
+```typescript
+import { z } from 'zod';
+import { logger } from '../utils/logger';
+import { validateRequest } from '../utils/validation';
+import { CreateTerminalRequestSchema } from '../schemas/terminalSchemas';
+
+export class TerminalHandler {
+  constructor(
+    private terminalManager: TerminalManager,
+    private logger: Logger
+  ) {}
+
+  async handleCreateRequest(req: TunnelRequest): Promise<TunnelResponse> {
+    const validation = validateRequest(req.body, CreateTerminalRequestSchema);
+    if (!validation.success) {
+      return { statusCode: 400, body: { error: validation.error } };
+    }
+
+    try {
+      const session = await this.terminalManager.createSession(
+        validation.data.terminal_type,
+        validation.data.working_dir
+      );
+      
+      this.logger.info('Terminal session created', {
+        sessionId: session.sessionId,
+        terminalType: session.terminalType,
+      });
+
+      return { statusCode: 200, body: session };
+    } catch (error) {
+      this.logger.error('Failed to create terminal session', { error });
+      throw error;
+    }
+  }
+}
+```
+
+### ❌ Bad: Anti-patterns to Avoid
+```typescript
+// ❌ No validation
+async handleRequest(req: any): Promise<any> {
+  const session = terminalManager.createSession(req.body.terminal_type);
+  return session;
+}
+
+// ❌ Ignored errors
+try {
+  await riskyOperation();
+} catch (error) {
+  // Silent failure
+}
+
+// ❌ Logging secrets
+logger.info('Key issued', { key: apiKey }); // ❌ Never do this
+
+// ❌ Using any
+function process(data: any): any {
+  return data.value;
+}
+```
+
+## CI/CD Requirements
+
+**CRITICAL**: If this package is published to GitHub Packages, it MUST have:
+
+1. **GitHub Actions Workflow** (`.github/workflows/publish-laptop-app.yml`):
+   - Must run `npm audit` before build (MANDATORY)
+   - Must run `npm test` before build (MANDATORY)
+   - Must run `npm run type-check` before build
+   - Must build and publish to GitHub Packages
+   - See `TYPESCRIPT_ARCHITECTURE_RULES.md` for workflow template
+
+2. **Build Process**:
+   - Security audit: `npm audit --audit-level=moderate`
+   - Tests: `npm test` (all must pass)
+   - Type check: `npm run type-check`
+   - Build: `npm run build`
+
+3. **Package Configuration**:
+   - `publishConfig` in `package.json` pointing to GitHub Packages
+   - `prepublishOnly` script to ensure build runs
+
+## When Making Changes
+
+1. **Before writing code**: Review `TYPESCRIPT_ARCHITECTURE_RULES.md`
+2. **Validate inputs**: Create/update Zod schemas if needed
+3. **Handle errors**: Add proper error handling and logging
+4. **Write tests**: Add tests for new functionality
+5. **Update docs**: Update README.md if architecture changes
+6. **CI/CD**: Ensure GitHub Actions workflow exists and includes audit + tests
+
+## Enforcement
+
+These rules are automatically applied by Cursor AI. When suggesting code changes, Cursor will:
+- Follow separation of concerns principles
+- Use Zod for validation
+- Add proper error handling
+- Use structured logging
+- Maintain type safety
+- Follow the module structure

@@ -43,6 +43,18 @@ jobs:
         working-directory: ./tunnel-server
         run: npm ci
       
+      - name: Run security audit
+        working-directory: ./tunnel-server
+        run: npm audit --audit-level=moderate
+      
+      - name: Run tests
+        working-directory: ./tunnel-server
+        run: npm test
+      
+      - name: Type check
+        working-directory: ./tunnel-server
+        run: npm run type-check
+      
       - name: Build package
         working-directory: ./tunnel-server
         run: npm run build

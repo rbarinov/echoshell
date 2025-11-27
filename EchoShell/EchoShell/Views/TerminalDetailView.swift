@@ -9,28 +9,40 @@
 import SwiftUI
 import SwiftTerm
 
-// TerminalViewMode is now defined in UnifiedHeaderView.swift
-
 struct TerminalDetailView: View {
     let session: TerminalSession
     let config: TunnelConfig
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var navigationStateManager: NavigationStateManager
+    @EnvironmentObject var sessionState: SessionStateManager
     @Environment(\.dismiss) var dismiss
     
-    @State private var viewMode: TerminalViewMode = .agent
     @StateObject private var wsClient = WebSocketClient()
     @State private var terminalCoordinator: SwiftTermTerminalView.Coordinator?
     @State private var pendingData: [String] = []
     
     // Determine initial view mode based on terminal type
     private var initialViewMode: TerminalViewMode {
-        // For AI-powered terminals (cursor/claude), default to agent mode
-        // For regular terminals, use PTY mode
-        if session.terminalType == .cursorCLI || session.terminalType == .claudeCLI {
+        // For regular terminals, ALWAYS use PTY mode (no agent mode available)
+        if session.terminalType == .regular {
+            return .pty
+        }
+        // For AI-powered terminals (cursor/claude/cursorAgent), default to agent mode
+        if session.terminalType == .cursorCLI || session.terminalType == .claudeCLI || session.terminalType == .cursorAgent {
             return .agent
         }
+        // Default to PTY for any other type
         return .pty
+    }
+    
+    // Computed property to get current view mode from SessionStateManager
+    private var viewMode: TerminalViewMode {
+        // If this is the active session, use activeViewMode
+        if session.id == sessionState.activeSessionId {
+            return sessionState.activeViewMode
+        }
+        // Otherwise, get the saved mode for this session
+        return sessionState.getViewMode(for: session.id)
     }
     
     @StateObject private var laptopHealthChecker = LaptopHealthChecker()
@@ -52,44 +64,54 @@ struct TerminalDetailView: View {
                 }
             }
         }
-        .onChange(of: viewMode) { oldValue, newValue in
+        .onChange(of: sessionState.activeViewMode) { oldValue, newValue in
+            // View mode changed via SessionStateManager (single source of truth)
             // Save state before mode switch (but don't disconnect streams)
             // This ensures agent responses continue to work when switching modes
-            print("🔄 Terminal view mode changed: \(oldValue) -> \(newValue)")
-            
-            // Notify header about mode change
-            let modeString = newValue == .agent ? "agent" : "pty"
-            NotificationCenter.default.post(
-                name: NSNotification.Name("TerminalViewModeChanged"),
-                object: nil,
-                userInfo: ["viewMode": modeString]
-            )
+            print("🔄 Terminal view mode changed: \(oldValue == .agent ? "agent" : "pty") -> \(newValue == .agent ? "agent" : "pty")")
             
             // Don't disconnect recording stream on mode switch - keep it connected
+            // Don't stop recording - allow continuous operation
             // This ensures agent responses continue to work when switching between agent/terminal modes
         }
         .navigationBarHidden(true)
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
-            // Set initial view mode
-            viewMode = initialViewMode
-            // Notify header about initial mode
-            let modeString = viewMode == .agent ? "agent" : "pty"
-            NotificationCenter.default.post(
-                name: NSNotification.Name("TerminalViewModeChanged"),
-                object: nil,
-                userInfo: ["viewMode": modeString]
-            )
+            // Activate this session in global state (single source of truth)
+            sessionState.setActiveSession(session.id, name: session.name ?? "", defaultMode: initialViewMode)
+            
+            // For regular terminals, ALWAYS force PTY mode (agent mode not available)
+            if session.terminalType == .regular {
+                sessionState.setViewMode(.pty, for: session.id)
+            } else {
+                // For AI terminals, use saved mode or initial mode
+                let savedMode = sessionState.getViewMode(for: session.id)
+                if savedMode == .pty || savedMode == .agent {
+                    // Use saved mode if it exists
+                    sessionState.setViewMode(savedMode, for: session.id)
+                } else {
+                    // Use initial mode if no saved mode
+                    sessionState.setViewMode(initialViewMode, for: session.id)
+                }
+            }
+            
             // Start health checker
             laptopHealthChecker.start(config: config)
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ToggleTerminalViewMode"))) { notification in
-            if let modeString = notification.userInfo?["viewMode"] as? String {
-                viewMode = modeString == "agent" ? .agent : .pty
-            }
-        }
         .onDisappear {
+            // Save view mode to global state before leaving (already handled by SessionStateManager)
+            // Don't deactivate session on disappear - keep state for navigation
             laptopHealthChecker.stop()
+        }
+        .onReceive(EventBus.shared.toggleTerminalViewModePublisher) { mode in
+            // For regular terminals, ignore toggle - always stay in PTY mode
+            if session.terminalType == .regular {
+                return
+            }
+            
+            // Update view mode via SessionStateManager (single source of truth)
+            let newMode: TerminalViewMode = mode == .agent ? .agent : .pty
+            sessionState.setViewMode(newMode, for: session.id)
         }
     }
     
@@ -127,34 +149,15 @@ struct TerminalDetailView: View {
                 // Only process non-empty text to avoid feeding empty strings
                 guard !text.isEmpty else { return }
                 
-                // For terminal display, we should pass raw output to SwiftTerm
-                // SwiftTerm handles ANSI sequences correctly, so we only remove zsh artifacts
-                var cleanedText = self.removeZshPercentSymbol(text)
-                
-                // Remove any stray single characters that might be artifacts (like 's', 'ss')
-                // But only if they appear on their own line or at the end
-                cleanedText = self.removeStrayCharacters(cleanedText)
-                
-                // Skip if cleaned text is empty
-                guard !cleanedText.isEmpty else { return }
-                
-                // Remove any dangling quotes that might cause terminal to hang
-                // Check if text ends with unmatched quote
-                let quoteCount = cleanedText.filter { $0 == "\"" || $0 == "'" }.count
-                if quoteCount % 2 != 0 {
-                    // Unmatched quote detected - remove trailing quotes
-                    cleanedText = cleanedText.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                    print("⚠️ Removed unmatched quote from terminal output")
-                }
-                
-                // Feed raw output to SwiftTerm - it handles ANSI sequences correctly
+                // Feed raw output directly to SwiftTerm
+                // SwiftTerm handles ANSI sequences, tabs, formatting, and all terminal artifacts correctly
                 if let coordinator = self.terminalCoordinator {
-                    coordinator.feed(cleanedText)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                    coordinator.feed(text)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                         coordinator.scrollToBottom()
                     }
                 } else {
-                    self.pendingData.append(cleanedText)
+                    self.pendingData.append(text)
                 }
             }
             
@@ -200,8 +203,7 @@ struct TerminalDetailView: View {
             await MainActor.run {
                 if let coordinator = self.terminalCoordinator {
                     if !history.isEmpty {
-                        let cleanedHistory = self.removeZshPercentSymbol(history)
-                        coordinator.feed(cleanedHistory)
+                        coordinator.feed(history)
                         print("✅ Loaded terminal history: \(history.count) characters")
                         
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
@@ -228,95 +230,6 @@ struct TerminalDetailView: View {
         }
     }
     
-    private func removeZshPercentSymbol(_ text: String) -> String {
-        var cleaned = text
-        
-        // Remove zsh-specific artifacts (History prompts, etc.)
-        cleaned = cleaned.replacingOccurrences(of: "History", with: "")
-        cleaned = cleaned.replacingOccurrences(of: "Load Full History", with: "")
-        
-        // Remove zsh percent symbol with ANSI sequences
-        // Pattern: ESC[ followed by color codes, then % symbol, then more color codes
-        cleaned = cleaned.replacingOccurrences(
-            of: "\\u{001B}\\[[0-9;]*m\\u{001B}\\[7m%\\u{001B}\\[27m\\u{001B}\\[[0-9;]*m",
-            with: "",
-            options: .regularExpression
-        )
-        
-        // Remove simple zsh percent symbol with reverse video
-        cleaned = cleaned.replacingOccurrences(
-            of: "\\u{001B}\\[7m%\\u{001B}\\[27m",
-            with: "",
-            options: .regularExpression
-        )
-        
-        // Remove zsh percent symbol with color codes
-        cleaned = cleaned.replacingOccurrences(
-            of: "\\u{001B}\\[[0-9;]*m%\\u{001B}\\[[0-9;]*m",
-            with: "",
-            options: .regularExpression
-        )
-        
-        // Remove standalone percent symbols (zsh prompt indicator)
-        cleaned = cleaned.replacingOccurrences(of: " %", with: " ", options: [])
-        cleaned = cleaned.replacingOccurrences(of: "% ", with: " ", options: [])
-        cleaned = cleaned.replacingOccurrences(of: "%(?=\\r|\\n)", with: "", options: .regularExpression)
-        
-        // Remove trailing percent symbols
-        while cleaned.hasSuffix("%") {
-            cleaned = String(cleaned.dropLast())
-        }
-        
-        // Remove percent after special characters
-        cleaned = cleaned.replacingOccurrences(of: "([~→])%", with: "$1", options: .regularExpression)
-        
-        // Remove any hanging quotes that might cause terminal to hang
-        // This is already handled in the WebSocket callback, but keep it here as backup
-        let quoteCount = cleaned.filter { $0 == "\"" || $0 == "'" }.count
-        if quoteCount % 2 != 0 {
-            // Unmatched quote detected - remove trailing quotes
-            cleaned = cleaned.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-        }
-        
-        return cleaned
-    }
-    
-    // Remove stray single characters that appear as artifacts (like 's', 'ss' on separate lines)
-    private func removeStrayCharacters(_ text: String) -> String {
-        var cleaned = text
-        
-        // Split into lines and filter out lines that are just single characters (likely artifacts)
-        let lines = cleaned.components(separatedBy: .newlines)
-        let filteredLines = lines.filter { line in
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            // Keep lines that are:
-            // - Empty (for formatting)
-            // - Longer than 2 characters
-            // - Part of JSON structure (contain {, }, [, ], :, ", etc.)
-            // - Contain meaningful content (numbers, multiple words, etc.)
-            if trimmed.isEmpty {
-                return true // Keep empty lines for formatting
-            }
-            if trimmed.count > 2 {
-                return true // Keep longer lines
-            }
-            // Filter out single/double character lines that are likely artifacts
-            // But keep lines that are part of JSON or have special characters
-            if trimmed.contains("{") || trimmed.contains("}") || 
-               trimmed.contains("[") || trimmed.contains("]") ||
-               trimmed.contains(":") || trimmed.contains("\"") ||
-               trimmed.contains(",") || trimmed.contains(".") ||
-               trimmed.rangeOfCharacter(from: CharacterSet.decimalDigits) != nil {
-                return true // Keep lines with JSON or meaningful content
-            }
-            // Filter out single/double character lines (likely artifacts like 's', 'ss')
-            return false
-        }
-        
-        cleaned = filteredLines.joined(separator: "\n")
-        
-        return cleaned
-    }
     
     private func sendInput(_ input: String) {
         // Send exactly what user typed - no modifications
@@ -343,19 +256,27 @@ struct TerminalSessionAgentView: View {
     let session: TerminalSession
     let config: TunnelConfig
     @EnvironmentObject var settingsManager: SettingsManager
-    
+
     @StateObject private var audioRecorder = AudioRecorder()
     @StateObject private var recordingStreamClient = RecordingStreamClient()
-    @StateObject private var audioPlayer = AudioPlayer()
-    @State private var isGeneratingTTS = false
+    @StateObject private var audioPlayer: AudioPlayer
+    @StateObject private var ttsService: TTSService
     @State private var pulseAnimation: Bool = false
-    @State private var lastTTSAudioData: Data? = nil
-    @State private var transcriptionObserver: NSObjectProtocol?
     @State private var accumulatedText: String = "" // Accumulate assistant messages until completion
     @State private var lastTTSedText: String = "" // Track what text we've already generated TTS for
     @State private var ttsTriggeredForCurrentResponse: Bool = false // Track if TTS was triggered for current response
     @State private var agentResponseText: String = "" // Local storage for agent response (separate from global settingsManager)
     @State private var lastCompletionText: String = "" // Track the last text for which we received completion signal
+
+    // Initialize with shared AudioPlayer and TTSService
+    init(session: TerminalSession, config: TunnelConfig) {
+        self.session = session
+        self.config = config
+
+        let player = AudioPlayer()
+        _audioPlayer = StateObject(wrappedValue: player)
+        _ttsService = StateObject(wrappedValue: TTSService(audioPlayer: player))
+    }
     
     var body: some View {
         ScrollView {
@@ -382,31 +303,49 @@ struct TerminalSessionAgentView: View {
             connectToRecordingStream()
             
             // Listen for transcription completion to send command to this session
-            transcriptionObserver = NotificationCenter.default.addObserver(
-                forName: NSNotification.Name("TranscriptionCompleted"),
-                object: nil,
-                queue: .main
-            ) { notification in
-                guard let text = notification.userInfo?["text"] as? String else { return }
-                sendCommandToSession(text)
-            }
+            // Handled via .onReceive below
         }
         .onDisappear {
             // Save terminal state before leaving
             saveTerminalState()
             
-            recordingStreamClient.disconnect()
+            // DON'T disconnect WebSocket on disappear - keep it connected in background
+            // This ensures we receive completion events even when user navigates away
+            // The connection will be cleaned up when the view is actually deallocated
+            
             // Re-enable automatic command sending when leaving this view
             audioRecorder.autoSendCommand = true
-            // Remove transcription observer
-            if let observer = transcriptionObserver {
-                NotificationCenter.default.removeObserver(observer)
-                transcriptionObserver = nil
-            }
         }
         .onAppear {
             // Load terminal state when appearing
             loadTerminalState()
+            
+            // Reconnect to stream if not already connected (in case it was disconnected)
+            if !recordingStreamClient.isConnected {
+                connectToRecordingStream()
+            }
+            
+            // Check if we have a completed response that needs TTS
+            // This handles the case where user navigated away and came back
+            let trimmedText = agentResponseText.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedText.isEmpty &&
+               trimmedText != lastTTSedText &&
+               !ttsService.isGenerating &&
+               !audioPlayer.isPlaying &&
+               ttsService.lastAudioData == nil,
+               let laptopConfig = settingsManager.laptopConfig {
+                // We have text but no TTS - generate it now
+                print("🔄 TerminalSessionAgentView: Found completed response without TTS, generating now")
+                lastTTSedText = trimmedText
+                ttsTriggeredForCurrentResponse = true
+                generateTTS(for: agentResponseText, config: laptopConfig)
+            } else if !trimmedText.isEmpty &&
+                      trimmedText == lastTTSedText &&
+                      ttsService.lastAudioData != nil &&
+                      !audioPlayer.isPlaying {
+                // We have TTS audio but it's not playing - offer to play it
+                print("🔄 TerminalSessionAgentView: Found completed response with TTS, ready to play")
+            }
         }
     }
     
@@ -506,7 +445,7 @@ struct TerminalSessionAgentView: View {
                                 pulseAnimation = false
                             }
                         }
-                        .onChange(of: isGeneratingTTS) { oldValue, newValue in
+                        .onChange(of: ttsService.isGenerating) { oldValue, newValue in
                             // Explicitly handle generatingTTS state changes
                             if newValue {
                                 // State is now generatingTTS, ensure animation is running
@@ -543,10 +482,10 @@ struct TerminalSessionAgentView: View {
                                 }
                             }
                         }
-                        .onChange(of: isGeneratingTTS) { oldValue, newValue in
-                            // When isGeneratingTTS changes, update pulse animation
+                        .onChange(of: ttsService.isGenerating) { oldValue, newValue in
+                            // When isGenerating changes, update pulse animation
                             if newValue && !pulseAnimation {
-                                print("🔄 isGeneratingTTS changed to true, starting pulse animation")
+                                print("🔄 isGenerating changed to true, starting pulse animation")
                                 pulseAnimation = false
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                                     pulseAnimation = true
@@ -569,90 +508,97 @@ struct TerminalSessionAgentView: View {
     private var resultDisplayView: some View {
         // Display last transcription/terminal output
         // Show when there's recognized text OR agentResponseText (agent response)
+        // Also show audio controls if TTS audio is available, even if no text to display
         // Use local agentResponseText instead of global settingsManager.lastTerminalOutput
         Group {
-            let shouldShow = !audioRecorder.recognizedText.isEmpty || !agentResponseText.isEmpty
+            let shouldShowText = !audioRecorder.recognizedText.isEmpty || !agentResponseText.isEmpty
+            let shouldShowAudioControls = ttsService.lastAudioData != nil || audioPlayer.isPlaying || audioPlayer.isPaused
             
-            if shouldShow && !audioRecorder.isTranscribing {
+            if (shouldShowText || shouldShowAudioControls) && !audioRecorder.isTranscribing {
                 VStack(alignment: .leading, spacing: 16) {
-                    // Display text based on what's available
-                    // Priority: show agent response (agentResponseText) if available, otherwise show recognized text (question)
-                    let displayText = !agentResponseText.isEmpty ? agentResponseText : audioRecorder.recognizedText
-                    
-                    Text(displayText)
-                        .font(.body)
-                        .foregroundColor(.primary)
-                        .lineLimit(nil)
-                        .padding(12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.secondary.opacity(0.1))
-                        .cornerRadius(12)
-                        .padding(.horizontal, 20)
-                    
-                    // Audio control buttons
-                    HStack {
-                        Spacer()
+                    // Display text based on what's available (only if there's text to show)
+                    if shouldShowText {
+                        // Priority: show agent response (agentResponseText) if available, otherwise show recognized text (question)
+                        let displayText = !agentResponseText.isEmpty ? agentResponseText : audioRecorder.recognizedText
                         
-                        // Stop button (show during playback)
-                        if audioPlayer.isPlaying {
-                            Button(action: {
-                                audioPlayer.pause()
-                            }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "pause.fill")
-                                        .font(.caption)
-                                    Text("Pause")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
-                                }
-                                .foregroundColor(.orange)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(Color.orange.opacity(0.1))
-                                .cornerRadius(8)
-                            }
+                        Text(displayText)
+                            .font(.body)
+                            .foregroundColor(.primary)
+                            .lineLimit(nil)
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.secondary.opacity(0.1))
+                            .cornerRadius(12)
                             .padding(.horizontal, 20)
-                        }
-                        // Resume button (show when paused)
-                        else if audioPlayer.isPaused {
-                            Button(action: {
-                                audioPlayer.resume()
-                            }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "play.fill")
-                                        .font(.caption)
-                                    Text("Resume")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
+                    }
+                    
+                    // Audio control buttons (always show if audio is available)
+                    if shouldShowAudioControls {
+                        HStack {
+                            Spacer()
+                            
+                            // Stop button (show during playback)
+                            if audioPlayer.isPlaying {
+                                Button(action: {
+                                    audioPlayer.stop()
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "stop.fill")
+                                            .font(.caption)
+                                        Text("Stop")
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                    }
+                                    .foregroundColor(.red)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Color.red.opacity(0.1))
+                                    .cornerRadius(8)
                                 }
-                                .foregroundColor(.green)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(Color.green.opacity(0.1))
-                                .cornerRadius(8)
+                                .padding(.horizontal, 20)
                             }
-                            .padding(.horizontal, 20)
-                        }
-                        // Replay button (show after TTS finished playing)
-                        else if lastTTSAudioData != nil && getCurrentState() == .idle {
-                            Button(action: {
-                                replayLastTTS()
-                            }) {
-                                HStack(spacing: 6) {
-                                    Image(systemName: "speaker.wave.2.fill")
-                                        .font(.caption)
-                                    Text("Replay")
-                                        .font(.caption)
-                                        .fontWeight(.medium)
+                            // Resume button (show when paused)
+                            else if audioPlayer.isPaused {
+                                Button(action: {
+                                    audioPlayer.resume()
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "play.fill")
+                                            .font(.caption)
+                                        Text("Resume")
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                    }
+                                    .foregroundColor(.green)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Color.green.opacity(0.1))
+                                    .cornerRadius(8)
                                 }
-                                .foregroundColor(.blue)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(Color.blue.opacity(0.1))
-                                .cornerRadius(8)
+                                .padding(.horizontal, 20)
                             }
-                            .padding(.horizontal, 20)
+                            // Replay button (show when TTS audio is available and not playing)
+                            if ttsService.lastAudioData != nil && !audioPlayer.isPlaying && !audioPlayer.isPaused {
+                                Button(action: {
+                                    ttsService.replay()
+                                }) {
+                                    HStack(spacing: 6) {
+                                        Image(systemName: "speaker.wave.2.fill")
+                                            .font(.caption)
+                                        Text("Replay")
+                                            .font(.caption)
+                                            .fontWeight(.medium)
+                                    }
+                                    .foregroundColor(.blue)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Color.blue.opacity(0.1))
+                                    .cornerRadius(8)
+                                }
+                                .padding(.horizontal, 20)
+                            }
                         }
+                        .padding(.top, shouldShowText ? 10 : 0)
                     }
                 }
                 .padding(.top, 10)
@@ -665,23 +611,6 @@ struct TerminalSessionAgentView: View {
         .padding(.bottom, 20)
     }
     
-    // Replay last TTS audio
-    private func replayLastTTS() {
-        guard let audioData = lastTTSAudioData else {
-            print("⚠️ No audio data to replay")
-            return
-        }
-        
-        Task { @MainActor in
-            do {
-                try self.audioPlayer.play(audioData: audioData)
-                print("🔊 Replaying last TTS audio")
-            } catch {
-                print("❌ Failed to replay TTS: \(error)")
-            }
-        }
-    }
-    
     // Determine current state - simplified logic
     private func getCurrentState() -> RecordingState {
         // Priority order: recording > transcribing > playing > generating > waiting > idle
@@ -691,8 +620,8 @@ struct TerminalSessionAgentView: View {
             return .transcribing
         } else if audioPlayer.isPlaying {
             return .playingTTS
-        } else if isGeneratingTTS {
-            print("🔍🔍🔍 getCurrentState: isGeneratingTTS=true, returning .generatingTTS")
+        } else if ttsService.isGenerating {
+            print("🔍🔍🔍 getCurrentState: isGenerating=true, returning .generatingTTS")
             return .generatingTTS
         } else if !audioRecorder.recognizedText.isEmpty && agentResponseText.isEmpty {
             // We have a question but no answer yet
@@ -700,8 +629,8 @@ struct TerminalSessionAgentView: View {
             return .waitingForAgent
         } else if !agentResponseText.isEmpty {
             // We have an answer - check if TTS is done
-            print("🔍🔍🔍 getCurrentState: agentResponseText=\(agentResponseText.count) chars, lastTTSAudioData=\(lastTTSAudioData != nil), ttsTriggered=\(ttsTriggeredForCurrentResponse)")
-            if lastTTSAudioData != nil {
+            print("🔍🔍🔍 getCurrentState: agentResponseText=\(agentResponseText.count) chars, lastAudioData=\(ttsService.lastAudioData != nil), ttsTriggered=\(ttsTriggeredForCurrentResponse)")
+            if ttsService.lastAudioData != nil {
                 // TTS was generated, we're done
                 print("🔍🔍🔍 getCurrentState: TTS audio available, returning .idle")
                 return .idle
@@ -730,20 +659,19 @@ struct TerminalSessionAgentView: View {
             agentResponseText = "" // Reset local agent response
             lastTTSedText = "" // Reset TTS tracking
             lastCompletionText = "" // Reset completion tracking
-            lastTTSAudioData = nil // Reset TTS audio data
+            ttsService.reset() // Reset TTS service state
             ttsTriggeredForCurrentResponse = false // Reset TTS trigger flag - CRITICAL for preventing duplicates
             audioRecorder.startRecording()
         }
     }
     
     private func cancelCurrentOperation() {
-        if audioRecorder.isRecording {
-            audioRecorder.stopRecording()
-        }
+        // Only stop recording if explicitly canceling (user action)
+        // Don't stop recording on view transitions - allow continuous operation
         if audioPlayer.isPlaying {
             audioPlayer.stop()
         }
-        isGeneratingTTS = false
+        // Note: TTSService manages isGenerating internally
     }
     
     private func connectToRecordingStream() {
@@ -751,10 +679,15 @@ struct TerminalSessionAgentView: View {
         print("🔌🔌🔌 TerminalSessionAgentView: Config - tunnelId=\(config.tunnelId), wsUrl=\(config.wsUrl)")
         
         recordingStreamClient.connect(config: config, sessionId: session.id) { message in
+            
             // Process filtered assistant messages for TTS
             Task { @MainActor in
                 print("📨📨📨 TerminalSessionAgentView: Received recording stream message: isComplete=\(message.isComplete?.description ?? "nil"), delta=\(message.delta?.count ?? 0) chars, text=\(message.text.count) chars")
                 print("📨📨📨 TerminalSessionAgentView: message.text preview: '\(message.text.prefix(100))...'")
+                
+                // Save state immediately on each message (real-time persistence)
+                // This ensures state is saved even if user navigates away
+                self.saveTerminalState()
                 
                 // For assistant messages (delta), append to accumulated text
                 // For completion (isComplete=true), use full text and trigger TTS immediately
@@ -774,8 +707,8 @@ struct TerminalSessionAgentView: View {
                     }
                     
                     // STRICT check: if TTS is already generating or playing for this text, ignore
-                    if isGeneratingTTS || audioPlayer.isPlaying || audioPlayer.isPaused {
-                        print("⚠️⚠️⚠️ iOS: TTS already in progress (generating=\(isGeneratingTTS), playing=\(audioPlayer.isPlaying), paused=\(audioPlayer.isPaused)), ignoring completion")
+                    if ttsService.isGenerating || audioPlayer.isPlaying || audioPlayer.isPaused {
+                        print("⚠️⚠️⚠️ iOS: TTS already in progress (generating=\(ttsService.isGenerating), playing=\(audioPlayer.isPlaying), paused=\(audioPlayer.isPaused)), ignoring completion")
                         // Still update the text for display, but don't trigger TTS
                         accumulatedText = finalText
                         agentResponseText = finalText
@@ -784,24 +717,14 @@ struct TerminalSessionAgentView: View {
                     }
                     
                     // STRICT check: if we already have TTS audio for this exact text, just play it (don't regenerate)
-                    if lastTTSedText == trimmedFinalText && lastTTSAudioData != nil {
+                    if lastTTSedText == trimmedFinalText && ttsService.lastAudioData != nil {
                         print("🔊🔊🔊 iOS: Already have TTS for this exact text, playing existing audio")
                         accumulatedText = finalText
                         agentResponseText = finalText
                         lastCompletionText = trimmedFinalText
                         // Play existing audio without regenerating
-                        do {
-                            try audioPlayer.play(audioData: lastTTSAudioData!)
-                            print("🔊🔊🔊 iOS: Playing existing TTS audio")
-                        } catch {
-                            print("❌❌❌ iOS: Failed to play existing audio: \(error), will regenerate")
-                            // If playback fails, regenerate
-                            if !trimmedFinalText.isEmpty, let laptopConfig = settingsManager.laptopConfig {
-                                lastTTSedText = trimmedFinalText
-                                ttsTriggeredForCurrentResponse = true
-                                generateTTS(for: finalText, config: laptopConfig)
-                            }
-                        }
+                        ttsService.replay()
+                        print("🔊🔊🔊 iOS: Playing existing TTS audio")
                         return
                     }
                     
@@ -809,20 +732,27 @@ struct TerminalSessionAgentView: View {
                     accumulatedText = finalText
                     agentResponseText = finalText
                     lastCompletionText = trimmedFinalText
+                    
+                    // Save state immediately after completion
+                    self.saveTerminalState()
+                    
                     print("✅✅✅ iOS: Command completed - received isComplete=true, final text (\(finalText.count) chars)")
                     print("✅✅✅ iOS: agentResponseText updated to: '\(agentResponseText.prefix(100))...'")
                     
                     // Trigger TTS only once for this completion
+                    // Check if view is still active (user might have navigated away)
                     if !trimmedFinalText.isEmpty, let laptopConfig = settingsManager.laptopConfig {
                         print("✅✅✅ iOS: Triggering TTS for complete response (first time)")
                         lastTTSedText = trimmedFinalText
                         ttsTriggeredForCurrentResponse = true
+                        
+                        // Generate TTS even if view is in background - it will be available when user returns
                         generateTTS(for: finalText, config: laptopConfig)
                     } else {
                         print("⚠️⚠️⚠️ iOS: Command completed but no text available or no laptopConfig")
                         ttsTriggeredForCurrentResponse = true
                     }
-                } else if message.isComplete == nil {
+                } else if message.isComplete == nil || message.isComplete == false {
                     // Delta message without isComplete field - only process if we haven't received completion yet
                     if ttsTriggeredForCurrentResponse {
                         print("⚠️⚠️⚠️ iOS: Received delta message after completion, ignoring to prevent duplicate")
@@ -869,6 +799,9 @@ struct TerminalSessionAgentView: View {
                     
                     if !updated {
                         print("⚠️ No text or delta in assistant message - skipping")
+                    } else {
+                        // Save state immediately after delta update (real-time persistence)
+                        self.saveTerminalState()
                     }
                     // Don't trigger TTS yet - wait for completion signal
                 }
@@ -910,12 +843,12 @@ struct TerminalSessionAgentView: View {
             "accumulatedText": accumulatedText,
             "lastTTSedText": lastTTSedText,
             "recognizedText": audioRecorder.recognizedText,
-            "lastTTSAudioData": lastTTSAudioData?.base64EncodedString() ?? ""
+            "lastTTSAudioData": ttsService.lastAudioData?.base64EncodedString() ?? ""
         ]
         UserDefaults.standard.set(state, forKey: stateKey)
         print("💾 Saved terminal state for session \(session.id)")
     }
-    
+
     // Load terminal state from UserDefaults
     private func loadTerminalState() {
         let stateKey = "terminal_state_\(session.id)"
@@ -924,16 +857,16 @@ struct TerminalSessionAgentView: View {
             accumulatedText = state["accumulatedText"] as? String ?? ""
             lastTTSedText = state["lastTTSedText"] as? String ?? ""
             audioRecorder.recognizedText = state["recognizedText"] as? String ?? ""
-            
+
             if let audioDataString = state["lastTTSAudioData"] as? String,
                !audioDataString.isEmpty,
                let audioData = Data(base64Encoded: audioDataString) {
-                lastTTSAudioData = audioData
+                ttsService.lastAudioData = audioData
             }
             print("📂 Loaded terminal state for session \(session.id)")
         }
     }
-    
+
     // Clear terminal state (called when terminal is closed on backend)
     private func clearTerminalState() {
         let stateKey = "terminal_state_\(session.id)"
@@ -942,129 +875,54 @@ struct TerminalSessionAgentView: View {
         accumulatedText = ""
         lastTTSedText = ""
         audioRecorder.recognizedText = ""
-        lastTTSAudioData = nil
+        ttsService.reset() // Reset TTS service state
         print("🗑️ Cleared terminal state for session \(session.id)")
     }
     
     private func generateTTS(for text: String, config: TunnelConfig) {
-        // Prevent duplicate TTS generation
-        if isGeneratingTTS {
-            print("⚠️⚠️⚠️ generateTTS: Already generating, skipping duplicate")
-            return
-        }
-        
-        // Check if audio is already playing
-        if audioPlayer.isPlaying {
-            print("⚠️⚠️⚠️ generateTTS: Audio already playing, skipping duplicate")
-            return
-        }
-        
         // Check if text is valid
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             print("🔇🔇🔇 generateTTS: Empty text, skipping")
             return
         }
-        
-        // Check if we already have TTS for this exact text
-        if lastTTSedText == trimmed && lastTTSAudioData != nil {
-            print("🔊🔊🔊 generateTTS: Using existing TTS audio for same text")
-            if !audioPlayer.isPlaying, let audioData = lastTTSAudioData {
-                do {
-                    try audioPlayer.play(audioData: audioData)
-                    print("🔊🔊🔊 generateTTS: Playing existing audio")
-                    return
-                } catch {
-                    print("❌❌❌ generateTTS: Failed to play existing audio: \(error), will regenerate")
-                }
-            } else {
-                print("⚠️⚠️⚠️ generateTTS: Audio already playing or no data, skipping")
-                return
+
+        // Check if we should generate TTS
+        if !ttsService.shouldGenerateTTS(
+            newText: trimmed,
+            lastText: lastTTSedText,
+            isPlaying: audioPlayer.isPlaying
+        ) {
+            print("⚠️⚠️⚠️ generateTTS: Skipping duplicate TTS")
+            // If we have existing audio for same text, play it
+            if lastTTSedText == trimmed && ttsService.lastAudioData != nil {
+                print("🔊🔊🔊 generateTTS: Using existing TTS audio for same text")
+                ttsService.replay()
             }
+            return
         }
-        
+
         print("🔊🔊🔊 generateTTS: Starting TTS generation for text (\(trimmed.count) chars)")
         print("🔊🔊🔊 generateTTS: Text preview: '\(trimmed.prefix(150))...'")
-        isGeneratingTTS = true
-        
+
         Task {
             do {
-                // Clean text for TTS (remove ANSI codes, etc.)
-                let cleanedText = cleanTerminalOutputForTTS(trimmed)
-                
-                // Skip if cleaned text is empty
-                if cleanedText.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
-                    print("⚠️ generateTTS: Cleaned text is empty, skipping TTS")
-                    await MainActor.run {
-                    isGeneratingTTS = false
-                    }
-                    return
-                }
-                
-                print("🔊 generateTTS: Cleaned text (\(cleanedText.count) chars) at \(settingsManager.ttsSpeed)x speed")
-                
-                // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
-                let ttsEndpoint = "\(config.apiBaseUrl)/proxy/tts/synthesize"
-                let ttsHandler = LocalTTSHandler(laptopAuthKey: config.authKey, endpoint: ttsEndpoint)
-                let language = settingsManager.transcriptionLanguage.rawValue
-                let speed = settingsManager.ttsSpeed
-                let voice = "alloy" // Default voice
-                
-                print("🔊 generateTTS: Calling TTS handler with endpoint: \(ttsEndpoint)")
-                let audioData = try await ttsHandler.synthesize(text: cleanedText, voice: voice, speed: speed, language: language)
-                
-                print("✅ generateTTS: TTS synthesis completed, audio data size: \(audioData.count) bytes")
-                
-                await MainActor.run {
-                    isGeneratingTTS = false
-                    lastTTSAudioData = audioData
-                    
-                    if audioPlayer.isPlaying {
-                        audioPlayer.stop()
-                    }
-                    
-                    do {
-                        try audioPlayer.play(audioData: audioData)
-                        print("🔊 generateTTS: TTS playback started")
-                    } catch {
-                        print("❌ Failed to play TTS: \(error)")
-                    }
-                }
+                // Use TTSService to synthesize and play
+                _ = try await ttsService.synthesizeAndPlay(
+                    text: trimmed,
+                    config: config,
+                    speed: settingsManager.ttsSpeed,
+                    language: settingsManager.transcriptionLanguage.rawValue,
+                    cleaningFunction: nil
+                )
+
+                print("✅ generateTTS: TTS synthesis and playback completed")
+
             } catch {
                 print("❌ TTS error: \(error)")
                 print("❌ TTS error details: \(error.localizedDescription)")
-                await MainActor.run {
-                    isGeneratingTTS = false
-                }
             }
         }
     }
     
-    // Clean terminal output for TTS (remove ANSI codes, etc.)
-    private func cleanTerminalOutputForTTS(_ text: String) -> String {
-        var cleaned = text
-        
-        // Remove ANSI escape sequences
-        cleaned = cleaned.replacingOccurrences(
-            of: #"\u{001B}\[[0-9;]*m"#,
-            with: "",
-            options: .regularExpression
-        )
-        
-        // Remove other control characters but keep newlines and tabs
-        cleaned = cleaned.replacingOccurrences(
-            of: #"[\u{0000}-\u{0008}\u{000B}\u{000C}\u{000E}-\u{001F}\u{007F}-\u{009F}]"#,
-            with: "",
-            options: .regularExpression
-        )
-        
-        // Normalize whitespace (multiple spaces/newlines to single)
-        cleaned = cleaned.replacingOccurrences(
-            of: #"\s+"#,
-            with: " ",
-            options: .regularExpression
-        )
-        
-        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
 }

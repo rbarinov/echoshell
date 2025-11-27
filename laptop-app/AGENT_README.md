@@ -56,8 +56,8 @@ Create, delete, list, and manage terminal sessions.
 
 **Examples:**
 - "create a new terminal"
-- "create a Cursor Agent terminal"
-- "create a Cursor Agent terminal in /Users/me/projects"
+- "create a cursor terminal"
+- "create a cursor terminal in /Users/me/projects"
 - "list all terminals"
 - "delete terminal session-123"
 - "rename terminal session-123 to dev"
@@ -82,7 +82,7 @@ Create and manage git worktrees for parallel feature development.
 - "create worktree feature-auth for repo myrepo in workspace my-workspace"
 - "list worktrees for repo myrepo in workspace my-workspace"
 - "remove worktree feature-auth from repo myrepo in workspace my-workspace"
-- "create cursor agent terminal in worktree feature-auth of repo myrepo in workspace my-workspace"
+- "create cursor terminal in worktree feature-auth of repo myrepo in workspace my-workspace"
 
 ### 8. Complex Multi-Step Tasks
 
@@ -125,7 +125,7 @@ Ask questions and get guidance.
 
 4. **Create a terminal in the worktree:**
    ```
-   "create cursor agent terminal in worktree feature-auth of repo myrepo in workspace my-project"
+   "create cursor terminal in worktree feature-auth of repo myrepo in workspace my-project"
    ```
 
 5. **Work in the worktree:**
@@ -142,7 +142,7 @@ Ask questions and get guidance.
 
 2. **Create a new terminal in a different worktree:**
    ```
-   "create cursor agent terminal in worktree feature-payment of repo myrepo in workspace my-project"
+   "create cursor terminal in worktree feature-payment of repo myrepo in workspace my-project"
    ```
 
 ## Best Practices
@@ -175,7 +175,8 @@ Ask questions and get guidance.
 ### Terminal Session Management
 
 - Name your terminals for easy identification
-- Use Cursor Agent terminals for AI-assisted development
+- Use `cursor` terminals for AI-assisted development (Cursor Agent)
+- Use `claude` terminals for Claude CLI-based development
 - Regular terminals are better for simple command execution
 - Delete unused terminals to keep the list clean
 
@@ -241,7 +242,8 @@ Ask questions and get guidance.
 
 ### Terminal Commands
 - `create terminal` - Create regular terminal
-- `create cursor agent terminal` - Create Cursor Agent terminal
+- `create cursor terminal` - Create Cursor Agent terminal (headless)
+- `create claude terminal` - Create Claude CLI terminal (headless)
 - `list terminals` - List all terminals
 - `delete terminal <session-id>` - Delete terminal
 - `rename terminal <session-id> to <name>` - Rename terminal
@@ -265,7 +267,7 @@ Ask questions and get guidance.
 
 4. **Start working:**
    ```
-   "create cursor agent terminal in worktree feature-new-ui of repo repo in workspace my-projects"
+   "create cursor terminal in worktree feature-new-ui of repo repo in workspace my-projects"
    ```
 
 Now you're ready to work with the AI agent! Experiment with different commands and find the workflow that works best for you.

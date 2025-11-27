@@ -8,6 +8,7 @@ import type { TerminalManager } from '../terminal/TerminalManager.js';
 import type { LLMProvider } from './LLMProvider.js';
 import type { WorkspaceManager } from '../workspace/WorkspaceManager.js';
 import type { WorktreeManager } from '../workspace/WorktreeManager.js';
+import { normalizeWorkspaceName, normalizeRepositoryName, normalizeBranchName, normalizeTerminalName } from '../workspace/nameNormalizer.js';
 
 const execAsync = promisify(exec);
 
@@ -15,12 +16,13 @@ interface Intent {
   type: 'terminal_command' | 'file_operation' | 'git_operation' | 'system_info' | 'complex_task' | 'terminal_management' | 'workspace_operation' | 'worktree_operation' | 'question';
   command?: string;
   details?: unknown;
-  action?: 'create' | 'delete' | 'list' | 'change_directory' | 'create_cursor_agent_terminal' | 'rename_terminal' | 'manage_terminals' | 'create_workspace' | 'remove_workspace' | 'list_workspaces' | 'clone_repository' | 'list_repositories' | 'create_worktree' | 'remove_worktree' | 'list_worktrees' | 'create_terminal_in_worktree';
+  action?: 'create' | 'delete' | 'list' | 'change_directory' | 'create_cursor_agent_terminal' | 'rename_terminal' | 'manage_terminals' | 'create_workspace' | 'remove_workspace' | 'list_workspaces' | 'clone_repository' | 'list_repositories' | 'create_project' | 'list_projects' | 'create_terminal_in_project' | 'create_worktree' | 'remove_worktree' | 'list_worktrees' | 'create_terminal_in_worktree';
   target?: string; // session ID, directory path, workspace name, repo name, or worktree name
-  terminal_type?: 'regular' | 'cursor_agent';
-  name?: string; // for renaming, workspace name, repo name, or worktree name
+  terminal_type?: 'regular' | 'cursor' | 'claude';
+  name?: string; // for renaming, workspace name, repo name, project name, or worktree name
   workspace?: string; // workspace name
   repo?: string; // repository name
+  project?: string; // project name
   branch_or_feature?: string; // branch or feature name for worktree
 }
 
@@ -138,50 +140,61 @@ export class AIAgent {
         details: z.any().optional(),
         action: z.enum(['create', 'delete', 'list', 'change_directory', 'create_cursor_agent_terminal', 'rename_terminal', 'manage_terminals', 'create_workspace', 'remove_workspace', 'list_workspaces', 'clone_repository', 'list_repositories', 'create_worktree', 'remove_worktree', 'list_worktrees', 'create_terminal_in_worktree']).optional(),
         target: z.string().optional(),
-        terminal_type: z.enum(['regular', 'cursor_agent']).optional(),
+        terminal_type: z.enum(['regular', 'cursor', 'claude']).optional(),
         name: z.string().optional(),
         workspace: z.string().optional(),
         repo: z.string().optional(),
         branch_or_feature: z.string().optional()
       }) as z.ZodType<Intent>;
     
-    // @ts-expect-error - Type instantiation is excessively deep, but works at runtime
+    // @ts-ignore - Type instantiation is excessively deep, but works at runtime
     const parser = StructuredOutputParser.fromZodSchema(schema);
     
     const prompt = PromptTemplate.fromTemplate(`
-You are an AI assistant that classifies user commands for a terminal management system.
+You are a Terminal Management Specialist - a focused AI assistant that classifies user commands for a terminal management system.
+
+PRIMARY ROLE: Classify commands related to terminal creation/management, workspace organization, repository management, and git worktrees.
+
+LANGUAGE: Always respond in the same language the user is using. Match the language automatically based on the user's input.
+
+NAME NORMALIZATION: All names (workspaces, repositories, branches, worktrees, terminals) will be automatically normalized to kebab-case format (lowercase, Latin characters, hyphens only). Extract names as provided by the user - normalization happens in code.
+
+SCOPE LIMITATION: If a command is clearly unrelated to terminal management, workspace operations, or git worktrees, classify it as 'question' with action 'out_of_scope'. Examples of out-of-scope: general knowledge questions, code writing requests, explanations of unrelated concepts.
 
 Classify this command into one of these categories:
-- terminal_command: Simple shell commands (ls, cd, npm install, etc.)
-- file_operation: File/directory operations (create, read, delete files)
-- git_operation: Git commands (clone, commit, push, status, etc.)
+- terminal_command: Simple shell commands (ls, cd, npm install, etc.) - ONLY if user explicitly wants to execute a command
+- file_operation: File/directory operations (create, read, delete files) - ONLY if user explicitly wants file operations
+- git_operation: Git commands (clone, commit, push, status, etc.) - ONLY if user explicitly wants git operations
 - system_info: System information queries (disk usage, processes, etc.)
 - complex_task: Multi-step tasks requiring planning
 - terminal_management: Commands to create/delete/list terminal sessions or change working directory
-- workspace_operation: Commands to create/remove/list workspaces or clone repositories into workspaces
+- workspace_operation: Commands to create/remove/list workspaces, clone repositories, or create/list projects in workspaces
 - worktree_operation: Commands to create/remove/list git worktrees
 - question: General questions that need answers (not commands to execute)
 
 For terminal_management, also specify:
 - action: 'create' (create regular terminal), 'create_cursor_agent_terminal' (create Cursor Agent terminal), 'delete' (delete terminal), 'list' (list terminals), 'change_directory' (change terminal working directory), 'rename_terminal' (rename terminal), 'manage_terminals' (bulk operations)
 - target: session ID (for delete/rename) or directory path (for change_directory/create)
-- terminal_type: 'regular' or 'cursor_agent' (for create actions)
+- terminal_type: 'regular', 'cursor', or 'claude' (for create actions)
 - name: new name for terminal (for rename_terminal action)
 
 Examples:
 - "create a new terminal" -> type: terminal_management, action: create, terminal_type: regular
-- "create a Cursor Agent terminal" -> type: terminal_management, action: create_cursor_agent_terminal, terminal_type: cursor_agent
-- "create a Cursor Agent terminal in /Users/me/projects" -> type: terminal_management, action: create_cursor_agent_terminal, terminal_type: cursor_agent, target: /Users/me/projects
+- "create a Cursor Agent terminal" -> type: terminal_management, action: create_cursor_agent_terminal, terminal_type: cursor
+- "create a Cursor Agent terminal in /Users/me/projects" -> type: terminal_management, action: create_cursor_agent_terminal, terminal_type: cursor, target: /Users/me/projects
 - "delete terminal session-123" -> type: terminal_management, action: delete, target: session-123
 - "rename terminal session-123 to dev" -> type: terminal_management, action: rename_terminal, target: session-123, name: dev
 - "list all terminals" -> type: terminal_management, action: list
 - "go to /Users/me/projects" -> type: terminal_management, action: change_directory, target: /Users/me/projects
 - "create workspace my-workspace" -> type: workspace_operation, action: create_workspace, name: my-workspace
 - "clone https://github.com/user/repo into workspace my-workspace" -> type: workspace_operation, action: clone_repository, workspace: my-workspace, target: https://github.com/user/repo
+- "create project Example Project in workspace my-workspace" -> type: workspace_operation, action: create_project, workspace: my-workspace, name: Example Project
+- "list projects in workspace my-workspace" -> type: workspace_operation, action: list_projects, workspace: my-workspace
 - "list workspaces" -> type: workspace_operation, action: list_workspaces
 - "create worktree feature-auth for repo myrepo in workspace my-workspace" -> type: worktree_operation, action: create_worktree, workspace: my-workspace, repo: myrepo, branch_or_feature: feature-auth
 - "list worktrees for repo myrepo in workspace my-workspace" -> type: worktree_operation, action: list_worktrees, workspace: my-workspace, repo: myrepo
-- "create cursor agent terminal in worktree feature-auth" -> type: worktree_operation, action: create_terminal_in_worktree, name: feature-auth, terminal_type: cursor_agent
+- "create cursor agent terminal in worktree feature-auth" -> type: worktree_operation, action: create_terminal_in_worktree, name: feature-auth, terminal_type: cursor
+- "create terminal in project Example Project in workspace my-workspace" -> type: workspace_operation, action: create_terminal_in_project, workspace: my-workspace, name: Example Project
 - "what is the current directory?" -> type: question
 - "how do I install npm?" -> type: question
 
@@ -190,10 +203,10 @@ User command: {command}
 {format_instructions}
 `);
     
-    // @ts-expect-error TS2589 - Type instantiation is excessively deep, but works at runtime
+    // @ts-ignore - Type instantiation is excessively deep, but works at runtime
     const input = await prompt.format({
       command,
-      // @ts-expect-error TS2589 - Type instantiation is excessively deep, but works at runtime
+      // @ts-ignore - Type instantiation is excessively deep, but works at runtime
       format_instructions: parser.getFormatInstructions()
     });
     
@@ -304,17 +317,17 @@ Example:
           // Use target directory, or fallback to WORK_ROOT_PATH env var, or HOME, or system homedir
           const workingDir = intent.target || process.env.WORK_ROOT_PATH || process.env.HOME || os.homedir();
           const terminalType = intent.terminal_type || 'regular';
-          const name = intent.name;
+          const name = intent.name ? normalizeTerminalName(intent.name) : undefined;
           const newSession = await terminalManager.createSession(terminalType, workingDir, name);
-          return `✅ Created new ${terminalType} terminal session: ${newSession.sessionId}${newSession.name ? ` (${newSession.name})` : ''}\nWorking directory: ${newSession.workingDir}`;
+          return `✅ Created ${terminalType} terminal: ${newSession.sessionId}${newSession.name ? ` (${newSession.name})` : ''}`;
         }
         
         case 'create_cursor_agent_terminal': {
           // Use target directory, or fallback to WORK_ROOT_PATH env var, or HOME, or system homedir
           const workingDir = intent.target || process.env.WORK_ROOT_PATH || process.env.HOME || os.homedir();
-          const name = intent.name;
-          const newSession = await terminalManager.createSession('cursor_agent', workingDir, name);
-          return `✅ Created new Cursor Agent terminal: ${newSession.sessionId}${newSession.name ? ` (${newSession.name})` : ''}\nWorking directory: ${newSession.workingDir}\nCursor Agent is starting automatically...`;
+          const name = intent.name ? normalizeTerminalName(intent.name) : undefined;
+          const newSession = await terminalManager.createSession('cursor', workingDir, name);
+          return `✅ Created cursor agent terminal: ${newSession.sessionId}${newSession.name ? ` (${newSession.name})` : ''}`;
         }
         
         case 'delete': {
@@ -349,24 +362,25 @@ Example:
             return `❌ Terminal session ${targetSessionId} not found`;
           }
           
-          terminalManager.renameSession(targetSessionId, newName);
-          return `✅ Renamed terminal session ${targetSessionId} to: ${newName}`;
+          // Normalize terminal name to kebab-case
+          const normalizedName = normalizeTerminalName(newName);
+          terminalManager.renameSession(targetSessionId, normalizedName);
+          return `✅ Renamed terminal session ${targetSessionId} to: ${normalizedName}`;
         }
         
         case 'list': {
           const sessions = terminalManager.listSessions();
           if (sessions.length === 0) {
-            return '📂 No active terminal sessions';
+            return 'No active terminals';
           }
           
-          let result = `📂 Active terminal sessions (${sessions.length}):\n\n`;
-          sessions.forEach((s, index) => {
-            const isCurrent = s.sessionId === currentSessionId ? ' (current)' : '';
-            const typeLabel = s.terminalType === 'cursor_agent' ? ' [Cursor Agent]' : ' [Regular]';
-            const nameLabel = s.name ? ` "${s.name}"` : '';
-            result += `${index + 1}. ${s.sessionId}${nameLabel}${typeLabel}${isCurrent}\n   Directory: ${s.workingDir}\n\n`;
-          });
-          return result;
+          const sessionList = sessions.map((s, index) => {
+            const typeLabel = s.terminalType === 'cursor' ? 'cursor' : s.terminalType === 'claude' ? 'claude' : 'regular';
+            const nameLabel = s.name || s.sessionId;
+            return `${index + 1}. ${nameLabel} (${typeLabel})`;
+          }).join('. ');
+          
+          return `${sessions.length} terminals: ${sessionList}`;
         }
         
         case 'manage_terminals': {
@@ -380,7 +394,7 @@ Example:
           let result = `📂 Terminal Management\n\nActive sessions (${sessions.length}):\n\n`;
           sessions.forEach((s, index) => {
             const isCurrent = s.sessionId === currentSessionId ? ' (current)' : '';
-            const typeLabel = s.terminalType === 'cursor_agent' ? ' [Cursor Agent]' : ' [Regular]';
+            const typeLabel = s.terminalType === 'cursor' ? ' [Cursor]' : s.terminalType === 'claude' ? ' [Claude]' : ' [Regular]';
             const nameLabel = s.name ? ` "${s.name}"` : '';
             result += `${index + 1}. ${s.sessionId}${nameLabel}${typeLabel}${isCurrent}\n`;
           });
@@ -409,23 +423,62 @@ Example:
   }
   
   private async handleQuestion(command: string, _sessionId: string, _terminalManager?: TerminalManager): Promise<string> {
-    // Use LLM to answer questions
+    // Use LLM to answer questions with scope limitation
     const prompt = `
-You are a helpful AI assistant for a terminal management system. The user asked: "${command}"
+You are a Terminal Management Specialist - a focused AI assistant for a terminal management system.
 
-Provide a helpful answer. If the question is about terminal commands or system operations, you can provide guidance.
-If you need to check something in the terminal, you can suggest commands to run.
+PRIMARY ROLE: Help with terminal management, workspace organization, repository management, and git worktrees.
 
-Be concise and helpful.
+LANGUAGE: Always respond in the same language the user is using. If the user asks in Russian, respond in Russian. If the user asks in English, respond in English. Match the language automatically based on the user's input.
+
+RESPONSE STYLE:
+- Always respond as briefly as possible without losing essential information
+- Use concise, action-oriented language
+- Format responses for voice output (short sentences, clear structure)
+
+SCOPE:
+You can help with:
+- Creating/managing terminals (regular, cursor, claude)
+- Creating/managing workspaces (organizations/clients)
+- Cloning/searching repositories
+- Creating/managing git worktrees
+- Basic system information queries related to terminal management
+
+You CANNOT help with:
+- General knowledge questions (weather, science, history, etc.)
+- Writing code or scripts
+- Explaining concepts unrelated to terminal management
+- Any task outside your core responsibilities
+
+REJECTION FORMAT:
+If asked about something outside your scope, respond briefly in the same language as the user:
+- English: "I can only help with terminal management, workspace organization, and git worktrees."
+- Russian: "Я могу помочь только с управлением терминалами, организацией workspace и git worktrees."
+
+The user asked: "${command}"
+
+Detect the user's language and respond in the same language. Provide a brief, helpful answer if it's within your scope. If it's outside your scope, reject it using the appropriate language format above.
 `;
     
     try {
       const llm = this.llmProvider.getLLM();
       const response = await llm.invoke(prompt);
-      return response.content as string;
+      const content = response.content as string;
+      
+      // Ensure response is brief (limit to 200 characters for voice output)
+      if (content.length > 200) {
+        // Try to extract the first sentence or key point
+        const firstSentence = content.split(/[.!?]/)[0];
+        if (firstSentence.length <= 200) {
+          return firstSentence;
+        }
+        return content.substring(0, 197) + '...';
+      }
+      
+      return content;
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      return `❌ Error answering question: ${errorMessage}`;
+      return `❌ Error: ${errorMessage}`;
     }
   }
 
@@ -443,8 +496,10 @@ Be concise and helpful.
           if (!workspaceName) {
             return '❌ Please specify workspace name';
           }
-          const workspace = await this.workspaceManager.createWorkspace(workspaceName);
-          return `✅ Created workspace: ${workspace.name}\nPath: ${workspace.path}`;
+          // Normalize workspace name to kebab-case
+          const normalizedName = normalizeWorkspaceName(workspaceName);
+          const workspace = await this.workspaceManager.createWorkspace(normalizedName);
+          return `✅ Created workspace: ${workspace.name}`;
         }
 
         case 'remove_workspace': {
@@ -452,20 +507,19 @@ Be concise and helpful.
           if (!workspaceName) {
             return '❌ Please specify workspace name to remove';
           }
-          await this.workspaceManager.removeWorkspace(workspaceName);
-          return `✅ Removed workspace: ${workspaceName}`;
+          // Normalize workspace name to kebab-case
+          const normalizedName = normalizeWorkspaceName(workspaceName);
+          await this.workspaceManager.removeWorkspace(normalizedName);
+          return `✅ Removed workspace: ${normalizedName}`;
         }
 
         case 'list_workspaces': {
           const workspaces = await this.workspaceManager.listWorkspaces();
           if (workspaces.length === 0) {
-            return '📂 No workspaces found';
+            return 'No workspaces found';
           }
-          let result = `📂 Workspaces (${workspaces.length}):\n\n`;
-          workspaces.forEach((w, index) => {
-            result += `${index + 1}. ${w.name}\n   Path: ${w.path}\n\n`;
-          });
-          return result;
+          const workspaceList = workspaces.map((w, index) => `${index + 1}. ${w.name}`).join('. ');
+          return `${workspaces.length} workspaces: ${workspaceList}`;
         }
 
         case 'clone_repository': {
@@ -477,8 +531,11 @@ Be concise and helpful.
           if (!repoUrl) {
             return '❌ Please specify repository URL';
           }
-          const repo = await this.workspaceManager.cloneRepository(workspace, repoUrl, intent.name);
-          return `✅ Cloned repository: ${repo.name}\nPath: ${repo.path}\nRemote: ${repo.remoteUrl || 'N/A'}`;
+          // Normalize workspace and repository names to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const normalizedRepoName = intent.name ? normalizeRepositoryName(intent.name) : undefined;
+          const repo = await this.workspaceManager.cloneRepository(normalizedWorkspace, repoUrl, normalizedRepoName);
+          return `✅ Cloned repository: ${repo.name}`;
         }
 
         case 'list_repositories': {
@@ -486,15 +543,72 @@ Be concise and helpful.
           if (!workspace) {
             return '❌ Please specify workspace name';
           }
-          const repos = await this.workspaceManager.listRepositories(workspace);
+          // Normalize workspace name to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const repos = await this.workspaceManager.listRepositories(normalizedWorkspace);
           if (repos.length === 0) {
-            return `📂 No repositories found in workspace "${workspace}"`;
+            return `No repositories in workspace "${normalizedWorkspace}"`;
           }
-          let result = `📂 Repositories in "${workspace}" (${repos.length}):\n\n`;
-          repos.forEach((r, index) => {
-            result += `${index + 1}. ${r.name}\n   Path: ${r.path}\n   Remote: ${r.remoteUrl || 'N/A'}\n\n`;
-          });
-          return result;
+          const repoList = repos.map((r, index) => `${index + 1}. ${r.name}`).join('. ');
+          return `${repos.length} repositories: ${repoList}`;
+        }
+
+        case 'create_project': {
+          const workspace = intent.workspace || intent.target;
+          const projectName = intent.name || intent.project;
+          if (!workspace) {
+            return '❌ Please specify workspace name';
+          }
+          if (!projectName) {
+            return '❌ Please specify project name';
+          }
+          // Normalize workspace and project names to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const project = await this.workspaceManager.createProject(normalizedWorkspace, projectName);
+          return `✅ Created project: ${project.name} in workspace ${normalizedWorkspace}`;
+        }
+
+        case 'list_projects': {
+          const workspace = intent.workspace || intent.target;
+          if (!workspace) {
+            return '❌ Please specify workspace name';
+          }
+          // Normalize workspace name to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const projects = await this.workspaceManager.listProjects(normalizedWorkspace);
+          if (projects.length === 0) {
+            return `No projects in workspace "${normalizedWorkspace}"`;
+          }
+          const projectList = projects.map((p, index) => `${index + 1}. ${p.name}`).join('. ');
+          return `${projects.length} projects: ${projectList}`;
+        }
+
+        case 'create_terminal_in_project': {
+          const workspace = intent.workspace;
+          const projectName = intent.name || intent.project;
+          const terminalType = intent.terminal_type || 'cursor';
+          
+          if (!workspace || !projectName) {
+            return '❌ Please specify workspace and project name';
+          }
+
+          if (!_terminalManager) {
+            return '❌ Terminal manager is not available';
+          }
+
+          // Normalize workspace and project names to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const normalizedProjectName = normalizeRepositoryName(projectName);
+          const normalizedTerminalName = `${normalizedWorkspace}-${normalizedProjectName}-${terminalType}`;
+
+          try {
+            const projectPath = await this.workspaceManager.getProjectPath(normalizedWorkspace, normalizedProjectName);
+            const newSession = await _terminalManager.createSession(terminalType, projectPath, normalizedTerminalName);
+            return `✅ Created ${terminalType} terminal in project: ${normalizedProjectName}`;
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            return `❌ Error: ${errorMessage}`;
+          }
         }
 
         default:
@@ -530,8 +644,14 @@ Be concise and helpful.
             return '❌ Please specify branch or feature name';
           }
 
-          const worktree = await this.worktreeManager.createWorktree(workspace, repo, branchOrFeature, intent.name);
-          return `✅ Created worktree: ${worktree.name}\nPath: ${worktree.path}\nBranch: ${worktree.branch}`;
+          // Normalize all names to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const normalizedRepo = normalizeRepositoryName(repo);
+          const normalizedBranch = normalizeBranchName(branchOrFeature);
+          const normalizedWorktreeName = intent.name ? normalizeTerminalName(intent.name) : undefined;
+
+          const worktree = await this.worktreeManager.createWorktree(normalizedWorkspace, normalizedRepo, normalizedBranch, normalizedWorktreeName);
+          return `✅ Created worktree: ${worktree.name} (branch: ${worktree.branch})`;
         }
 
         case 'remove_worktree': {
@@ -549,8 +669,13 @@ Be concise and helpful.
             return '❌ Please specify worktree name to remove';
           }
 
-          await this.worktreeManager.removeWorktree(workspace, repo, worktreeName);
-          return `✅ Removed worktree: ${worktreeName}`;
+          // Normalize all names to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const normalizedRepo = normalizeRepositoryName(repo);
+          const normalizedWorktreeName = normalizeTerminalName(worktreeName);
+
+          await this.worktreeManager.removeWorktree(normalizedWorkspace, normalizedRepo, normalizedWorktreeName);
+          return `✅ Removed worktree: ${normalizedWorktreeName}`;
         }
 
         case 'list_worktrees': {
@@ -564,41 +689,48 @@ Be concise and helpful.
             return '❌ Please specify repository name';
           }
 
-          const worktrees = await this.worktreeManager.listWorktrees(workspace, repo);
+          // Normalize workspace and repository names to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const normalizedRepo = normalizeRepositoryName(repo);
+
+          const worktrees = await this.worktreeManager.listWorktrees(normalizedWorkspace, normalizedRepo);
           if (worktrees.length === 0) {
-            return `🌳 No worktrees found for repository "${repo}" in workspace "${workspace}"`;
+            return `No worktrees for "${normalizedRepo}" in "${normalizedWorkspace}"`;
           }
-          let result = `🌳 Worktrees for "${repo}" in "${workspace}" (${worktrees.length}):\n\n`;
-          worktrees.forEach((w, index) => {
-            result += `${index + 1}. ${w.name}\n   Path: ${w.path}\n   Branch: ${w.branch}\n\n`;
-          });
-          return result;
+          const worktreeList = worktrees.map((w, index) => `${index + 1}. ${w.name} (${w.branch})`).join('. ');
+          return `${worktrees.length} worktrees: ${worktreeList}`;
         }
 
         case 'create_terminal_in_worktree': {
           const workspace = intent.workspace;
           const repo = intent.repo;
           const worktreeName = intent.name || intent.target;
-          const terminalType = intent.terminal_type || 'cursor_agent';
+          const terminalType = intent.terminal_type || 'cursor';
           
           if (!workspace || !repo || !worktreeName) {
             // Try to infer from context or ask for clarification
-            return '❌ Please specify workspace, repository, and worktree name. Example: "create cursor agent terminal in worktree feature-auth of repo myrepo in workspace my-workspace"';
+            return '❌ Please specify workspace, repository, and worktree name';
           }
 
           if (!terminalManager) {
             return '❌ Terminal manager is not available';
           }
 
+          // Normalize all names to kebab-case
+          const normalizedWorkspace = normalizeWorkspaceName(workspace);
+          const normalizedRepo = normalizeRepositoryName(repo);
+          const normalizedWorktreeName = normalizeTerminalName(worktreeName);
+          const normalizedTerminalName = `${normalizedWorkspace}-${normalizedRepo}-${terminalType}`;
+
           // Validate worktree exists
-          const isValid = await this.worktreeManager.validateWorktree(workspace, repo, worktreeName);
+          const isValid = await this.worktreeManager.validateWorktree(normalizedWorkspace, normalizedRepo, normalizedWorktreeName);
           if (!isValid) {
-            return `❌ Worktree "${worktreeName}" does not exist or is invalid`;
+            return `❌ Worktree "${normalizedWorktreeName}" does not exist or is invalid`;
           }
 
-          const worktreePath = this.worktreeManager.getWorktreePath(workspace, repo, worktreeName);
-          const newSession = await terminalManager.createSession(terminalType === 'cursor_agent' ? 'cursor_agent' : 'regular', worktreePath, worktreeName);
-          return `✅ Created ${terminalType} terminal in worktree: ${worktreeName}\nSession: ${newSession.sessionId}\nPath: ${worktreePath}`;
+          const worktreePath = this.worktreeManager.getWorktreePath(normalizedWorkspace, normalizedRepo, normalizedWorktreeName);
+          const newSession = await terminalManager.createSession(terminalType, worktreePath, normalizedTerminalName);
+          return `✅ Created ${terminalType} terminal in worktree: ${normalizedWorktreeName}`;
         }
 
         default:

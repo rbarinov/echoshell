@@ -3,6 +3,7 @@ import path from 'path';
 import os from 'os';
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import { normalizeWorkspaceName, normalizeRepositoryName } from './nameNormalizer.js';
 
 const execAsync = promisify(exec);
 
@@ -17,6 +18,12 @@ export interface RepositoryInfo {
   path: string;
   remoteUrl?: string;
   clonedAt: number;
+}
+
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  createdAt: number;
 }
 
 export class WorkspaceManager {
@@ -55,10 +62,10 @@ export class WorkspaceManager {
       throw new Error('Workspace name cannot be empty');
     }
 
-    // Sanitize workspace name (remove invalid characters)
-    const sanitizedName = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
-    if (sanitizedName !== name.trim()) {
-      throw new Error(`Invalid workspace name. Use only letters, numbers, hyphens, and underscores.`);
+    // Normalize workspace name to kebab-case (handles transliteration, spaces, etc.)
+    const sanitizedName = normalizeWorkspaceName(name);
+    if (!sanitizedName || sanitizedName.length === 0) {
+      throw new Error('Workspace name cannot be normalized to a valid name');
     }
 
     const workspacePath = path.join(this.rootPath, sanitizedName);
@@ -149,8 +156,11 @@ export class WorkspaceManager {
       }
     }
 
-    // Sanitize repo name
-    const sanitizedRepoName = finalRepoName.trim().replace(/[^a-zA-Z0-9_-]/g, '-');
+    // Normalize repo name to kebab-case (handles transliteration, spaces, etc.)
+    const sanitizedRepoName = normalizeRepositoryName(finalRepoName);
+    if (!sanitizedRepoName || sanitizedRepoName.length === 0) {
+      throw new Error('Repository name cannot be normalized to a valid name');
+    }
     const repoPath = path.join(workspacePath, sanitizedRepoName);
 
     try {
@@ -222,6 +232,137 @@ export class WorkspaceManager {
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error(`❌ Failed to list workspaces: ${errorMessage}`);
+      throw error;
+    }
+  }
+
+  async createProject(workspace: string, projectName: string): Promise<ProjectInfo> {
+    await this.ensureInitialized();
+
+    const workspacePath = path.join(this.rootPath, workspace);
+
+    // Verify workspace exists
+    try {
+      const stats = await fs.stat(workspacePath);
+      if (!stats.isDirectory()) {
+        throw new Error(`Workspace "${workspace}" does not exist`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Workspace "${workspace}" does not exist`);
+      }
+      throw error;
+    }
+
+    // Normalize project name to kebab-case
+    const sanitizedProjectName = normalizeRepositoryName(projectName);
+    if (!sanitizedProjectName || sanitizedProjectName.length === 0) {
+      throw new Error('Project name cannot be normalized to a valid name');
+    }
+
+    const projectPath = path.join(workspacePath, sanitizedProjectName);
+
+    try {
+      // Check if project already exists
+      try {
+        const stats = await fs.stat(projectPath);
+        if (stats.isDirectory()) {
+          throw new Error(`Project "${sanitizedProjectName}" already exists in workspace "${workspace}"`);
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error;
+        }
+      }
+
+      // Create project directory
+      await fs.mkdir(projectPath, { recursive: true });
+      console.log(`✅ Created project: ${sanitizedProjectName} at ${projectPath}`);
+
+      return {
+        name: sanitizedProjectName,
+        path: projectPath,
+        createdAt: Date.now()
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`❌ Failed to create project: ${errorMessage}`);
+      throw error;
+    }
+  }
+
+  async getProjectPath(workspace: string, projectName: string): Promise<string> {
+    await this.ensureInitialized();
+
+    const workspacePath = path.join(this.rootPath, workspace);
+    const normalizedProjectName = normalizeRepositoryName(projectName);
+    const projectPath = path.join(workspacePath, normalizedProjectName);
+
+    // Verify project exists
+    try {
+      const stats = await fs.stat(projectPath);
+      if (!stats.isDirectory()) {
+        throw new Error(`Project "${normalizedProjectName}" does not exist in workspace "${workspace}"`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Project "${normalizedProjectName}" does not exist in workspace "${workspace}"`);
+      }
+      throw error;
+    }
+
+    return projectPath;
+  }
+
+  async listProjects(workspace: string): Promise<ProjectInfo[]> {
+    await this.ensureInitialized();
+
+    const workspacePath = path.join(this.rootPath, workspace);
+
+    // Verify workspace exists
+    try {
+      const stats = await fs.stat(workspacePath);
+      if (!stats.isDirectory()) {
+        throw new Error(`Workspace "${workspace}" does not exist`);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new Error(`Workspace "${workspace}" does not exist`);
+      }
+      throw error;
+    }
+
+    try {
+      const entries = await fs.readdir(workspacePath);
+      const projects: ProjectInfo[] = [];
+
+      for (const entry of entries) {
+        const entryPath = path.join(workspacePath, entry);
+        try {
+          const stats = await fs.stat(entryPath);
+          if (stats.isDirectory()) {
+            // Check if it's a git repository (has .git folder)
+            const gitPath = path.join(entryPath, '.git');
+            const isGitRepo = await fs.stat(gitPath).then(() => true).catch(() => false);
+            
+            // Include both git repos and regular project folders
+            const createdAt = stats.birthtimeMs || stats.mtimeMs;
+            projects.push({
+              name: entry,
+              path: entryPath,
+              createdAt: createdAt
+            });
+          }
+        } catch (error) {
+          // Skip entries we can't stat
+          console.warn(`⚠️  Could not stat ${entryPath}:`, error);
+        }
+      }
+
+      return projects.sort((a, b) => a.name.localeCompare(b.name));
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`❌ Failed to list projects: ${errorMessage}`);
       throw error;
     }
   }

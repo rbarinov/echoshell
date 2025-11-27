@@ -107,7 +107,7 @@ struct SettingsView: View {
                 }
                 
             Section(header: Text("Text-to-Speech"),
-                       footer: Text("Adjust the playback speed for voice responses. Range: 0.8x to 2.0x")) {
+                       footer: Text("Adjust the playback speed for voice responses. Range: 0.7x to 1.2x (compatible with ElevenLabs)")) {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
                             Image(systemName: "speaker.wave.2.fill")
@@ -120,14 +120,14 @@ struct SettingsView: View {
                                 .monospacedDigit()
                         }
                         
-                        Slider(value: $settingsManager.ttsSpeed, in: 0.8...2.0, step: 0.1) {
+                        Slider(value: $settingsManager.ttsSpeed, in: 0.7...1.2, step: 0.1) {
                             Text("Speed")
                         } minimumValueLabel: {
-                            Text("0.8x")
+                            Text("0.7x")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         } maximumValueLabel: {
-                            Text("2.0x")
+                            Text("1.2x")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }

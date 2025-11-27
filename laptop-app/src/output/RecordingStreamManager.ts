@@ -1,8 +1,10 @@
-import { TerminalManager, type TerminalType } from '../terminal/TerminalManager.js';
-import type { TunnelClient } from '../tunnel/TunnelClient.js';
-import { TerminalScreenEmulator } from './TerminalScreenEmulator.js';
-import { TerminalOutputProcessor } from './TerminalOutputProcessor.js';
-import { RecordingOutputProcessor, RecordingProcessResult } from './RecordingOutputProcessor.js';
+import { TerminalManager, type TerminalType } from '../terminal/TerminalManager';
+import type { TunnelClient } from '../tunnel/TunnelClient';
+import { TerminalScreenEmulator } from './TerminalScreenEmulator';
+import { TerminalOutputProcessor } from './TerminalOutputProcessor';
+import { RecordingOutputProcessor, RecordingProcessResult } from './RecordingOutputProcessor';
+import { HeadlessOutputProcessor } from './HeadlessOutputProcessor';
+import type { OutputRouter } from './OutputRouter';
 
 interface SessionState {
   emulator: TerminalScreenEmulator;
@@ -18,10 +20,12 @@ type TunnelClientResolver = () => TunnelClient | null;
 
 export class RecordingStreamManager {
   private sessionStates = new Map<string, SessionState>();
+  private headlessProcessor = new HeadlessOutputProcessor();
 
   constructor(
-    terminalManager: TerminalManager,
-    private readonly tunnelClientResolver: TunnelClientResolver
+    private terminalManager: TerminalManager,
+    private readonly tunnelClientResolver: TunnelClientResolver,
+    private outputRouter: OutputRouter
   ) {
     terminalManager.addGlobalOutputListener((session, data) => {
       this.handleTerminalOutput(session.sessionId, session.terminalType, data);
@@ -87,179 +91,108 @@ export class RecordingStreamManager {
   }
 
   private handleTerminalOutput(sessionId: string, terminalType: TerminalType, data: string): void {
-    if (terminalType === 'cursor_cli' || terminalType === 'claude_cli') {
-      this.handleHeadlessOutput(sessionId, data);
+    // For headless terminals (cursor, claude), handle JSON output and collect responses for SSE
+    if (terminalType === 'cursor' || terminalType === 'claude') {
+      this.handleHeadlessOutput(sessionId, data, terminalType);
       return;
     }
 
-    if (terminalType !== 'cursor_agent') {
-      return;
-    }
-
-    const state = this.getSessionState(sessionId);
-    state.emulator.processOutput(data);
-    this.logRawChunk(sessionId, data);
-
-    const screenOutput = state.emulator.getScreenContent();
-    const newOutput = state.outputProcessor.extractNewLines(screenOutput);
-
-    let outputToProcess = '';
-    if (newOutput.trim().length > 0) {
-      outputToProcess = newOutput;
-    } else if (!state.hasBroadcast && screenOutput.trim().length > 0) {
-      outputToProcess = screenOutput;
-    } else {
-      outputToProcess = '';
-    }
-
-    if (outputToProcess.trim().length === 0) {
-      return;
-    }
-
-    const result = state.recordingProcessor.processOutput(outputToProcess, screenOutput);
-    if (!result) {
-      return;
-    }
-
-    const wasBroadcast = state.hasBroadcast;
-    state.hasBroadcast = true;
-    const preview = this.normalizePreview(result.delta);
-    if (this.shouldLogPreview(preview, wasBroadcast)) {
-      console.log(
-        `🎙️ Recording stream update` +
-          ` | session=${sessionId}` +
-          ` | type=${wasBroadcast ? 'delta' : 'initial'}` +
-          ` | full=${result.fullText.length} chars` +
-          ` | delta=${result.delta.length} chars` +
-          (preview.length > 0 ? ` | preview="${preview}"` : '')
-      );
-    }
-    this.broadcastRecordingOutput(sessionId, result);
+    // For regular terminals, no special processing needed
+    // Output is already sent to terminal_display by TerminalManager
+    // Recording stream is not used for regular terminals
   }
 
-  private handleHeadlessOutput(sessionId: string, data: string): void {
-    const text = data?.trim();
-    
-    // Check if this is a result message (JSON with type: "result")
-    let isResultMessage = false;
-    let resultText = '';
-    try {
-      const parsed = JSON.parse(text);
-      if (parsed.type === 'result' && parsed.subtype === 'success' && !parsed.is_error) {
-        isResultMessage = true;
-        resultText = parsed.result || '';
-        console.log(`✅✅✅ [${sessionId}] Detected result message in RecordingStreamManager: result=${resultText.length} chars`);
-      }
-    } catch (e) {
-      // Not JSON, continue with normal processing
-    }
-    
-    // Check for completion marker FIRST
-    const isComplete = text === '[COMMAND_COMPLETE]' || text.includes('[COMMAND_COMPLETE]') || isResultMessage;
-    
-    if (isComplete && (text === '[COMMAND_COMPLETE]' || isResultMessage)) {
-      // Completion detected - either via marker or result message
-      // Send final message with accumulated text and isComplete=true to trigger TTS
-      const state = this.getSessionState(sessionId);
-      let fullText = state.headlessFullText || '';
-      
-      // If we got result message with text, prefer it over accumulated text
-      if (isResultMessage && resultText.length > 0) {
-        console.log(`✅✅✅ [${sessionId}] Result message contains text (${resultText.length} chars), using it as final text`);
-        // If accumulated text is empty or result text is different, use result text
-        if (fullText.length === 0 || !fullText.includes(resultText.trim())) {
-          fullText = resultText.trim();
-        }
-      }
-      
-      console.log(`✅✅✅ [${sessionId}] Command completed (${isResultMessage ? 'via result message' : 'via COMMAND_COMPLETE marker'}) - sending final output for TTS: ${fullText.length} chars`);
-      console.log(`✅✅✅ [${sessionId}] Full text preview: "${fullText.substring(0, 200)}..."`);
-      
-      if (fullText.length === 0) {
-        console.warn(`⚠️⚠️⚠️ [${sessionId}] WARNING: headlessFullText is empty when command completed!`);
-        console.warn(`⚠️⚠️⚠️ [${sessionId}] lastHeadlessDelta: ${state.lastHeadlessDelta.length} chars`);
-        // Use lastHeadlessDelta as fallback if headlessFullText is empty
-        const fallbackText = state.lastHeadlessDelta || '';
-        if (fallbackText.length > 0) {
-          console.log(`✅✅✅ [${sessionId}] Using fallback text for completion: ${fallbackText.length} chars`);
-          this.broadcastRecordingOutput(sessionId, {
-            fullText: fallbackText,
-            delta: '',
-            rawFiltered: '',
-            isComplete: true
-          });
-        } else {
-          // Even if empty, send completion signal so iOS can transition out of waiting state
-          console.log(`⚠️⚠️⚠️ [${sessionId}] No text available, sending empty completion signal`);
-          this.broadcastRecordingOutput(sessionId, {
-            fullText: '',
-            delta: '',
-            rawFiltered: '',
-            isComplete: true
-          });
-        }
-      } else {
-        console.log(`✅✅✅ [${sessionId}] Broadcasting completion with fullText: ${fullText.length} chars, isComplete=true`);
-        this.broadcastRecordingOutput(sessionId, {
-          fullText: fullText,
-          delta: '', // No new delta, just completion signal
-          rawFiltered: '',
-          isComplete: true
-        });
-      }
-      // Reset state for next command
-      state.lastHeadlessDelta = '';
-      // Don't reset headlessFullText here - keep it for potential retry or debugging
-      return;
-    }
-    
-    if (!text || text.length === 0) {
-      console.log(`⚠️ [${sessionId}] handleHeadlessOutput: empty text, skipping`);
-      return;
-    }
-
-    console.log(`📥 [${sessionId}] RecordingStreamManager received headless output: ${text.substring(0, 100)}...`);
-
-    // Remove completion marker if present (shouldn't happen, but just in case)
-    // Also skip result messages as they're already handled above
-    if (isResultMessage) {
-      console.log(`⏭️ [${sessionId}] Skipping result message - already processed as completion`);
-      return;
-    }
-    
-    const cleanText = isComplete ? text.replace('[COMMAND_COMPLETE]', '').trim() : text;
-
-    if (cleanText.length === 0 && !isComplete) {
-      console.log(`⚠️ [${sessionId}] handleHeadlessOutput: cleanText is empty and not complete, skipping`);
-      return;
-    }
-
+  private handleHeadlessOutput(sessionId: string, data: string, terminalType: TerminalType): void {
     const state = this.getSessionState(sessionId);
     
-    // For assistant messages, append to accumulated text
-    // Check if this is a duplicate delta (skip if same as last)
-    if (state.lastHeadlessDelta === cleanText && !isComplete && cleanText.length > 0) {
-      console.log(`⏭️ [${sessionId}] handleHeadlessOutput: duplicate delta, skipping`);
+    // Process raw output using HeadlessOutputProcessor
+    const processed = this.headlessProcessor.processChunk(data, terminalType);
+    
+    // Update session_id if found
+    if (processed.sessionId) {
+      this.updateHeadlessSessionId(sessionId, processed.sessionId);
+    }
+    
+    // Handle completion
+    if (processed.isComplete) {
+      this.handleHeadlessCompletion(sessionId, state);
+      return;
+    }
+    
+    // Process assistant messages
+    if (processed.assistantMessages.length > 0) {
+      for (const message of processed.assistantMessages) {
+        this.processAssistantMessage(sessionId, state, message);
+      }
+    }
+    
+    // Send filtered output to terminal display (via OutputRouter)
+    if (processed.rawOutput.trim().length > 0) {
+      this.outputRouter.routeOutput({
+        sessionId,
+        data: processed.rawOutput,
+        destination: 'terminal_display'
+      });
+    }
+  }
+
+  private processAssistantMessage(sessionId: string, state: SessionState, message: string): void {
+    // Check for duplicates
+    if (state.lastHeadlessDelta === message && message.length > 0) {
+      console.log(`⏭️ [${sessionId}] Duplicate assistant message, skipping`);
       return;
     }
 
-    state.lastHeadlessDelta = cleanText;
+    state.lastHeadlessDelta = message;
     
-    // Append assistant text to accumulated full text
-    if (cleanText.length > 0) {
+    // Append to accumulated text
+    if (message.length > 0) {
       const previousLength = state.headlessFullText.length;
       state.headlessFullText =
-        state.headlessFullText.length > 0 ? `${state.headlessFullText}\n\n${cleanText}` : cleanText;
+        state.headlessFullText.length > 0 
+          ? `${state.headlessFullText}\n\n${message}` 
+          : message;
       console.log(`📝 [${sessionId}] Appended assistant text: ${previousLength} → ${state.headlessFullText.length} chars`);
     }
 
-    console.log(`📤 [${sessionId}] Broadcasting recording output: fullText=${state.headlessFullText.length} chars, delta=${cleanText.length} chars, isComplete=${isComplete}`);
+    // Broadcast to recording stream (for TTS)
     this.broadcastRecordingOutput(sessionId, {
       fullText: state.headlessFullText,
-      delta: cleanText,
-      rawFiltered: cleanText,
-      isComplete: false // Not complete yet, more assistant messages may come
+      delta: message,
+      rawFiltered: message,
+      isComplete: false
     });
+  }
+
+  private handleHeadlessCompletion(sessionId: string, state: SessionState): void {
+    console.log(`✅ [${sessionId}] Command completed - sending final output for TTS`);
+    
+    let fullText = state.headlessFullText || '';
+    
+    if (fullText.length === 0) {
+      console.warn(`⚠️ [${sessionId}] headlessFullText is empty when command completed`);
+      const fallbackText = state.lastHeadlessDelta || '';
+      if (fallbackText.length > 0) {
+        console.log(`✅ [${sessionId}] Using fallback text for completion: ${fallbackText.length} chars`);
+        fullText = fallbackText;
+      }
+    }
+    
+    // Send completion signal
+    this.broadcastRecordingOutput(sessionId, {
+      fullText: fullText,
+      delta: '',
+      rawFiltered: '',
+      isComplete: true
+    });
+    
+    // Reset state for next command
+    state.lastHeadlessDelta = '';
+    // Keep headlessFullText for potential retry or debugging
+  }
+
+  private updateHeadlessSessionId(sessionId: string, cliSessionId: string): void {
+    this.terminalManager.updateHeadlessSessionId(sessionId, cliSessionId);
   }
 
   private logRawChunk(sessionId: string, raw: string): void {
@@ -292,22 +225,17 @@ export class RecordingStreamManager {
   }
 
   private broadcastRecordingOutput(sessionId: string, result: RecordingProcessResult): void {
-    const tunnelClient = this.tunnelClientResolver();
-    if (!tunnelClient) {
-      console.warn(`⚠️⚠️⚠️ Recording stream: no tunnel client available for session ${sessionId}`);
-      return;
-    }
-
-    const message = {
-      text: result.fullText,
-      delta: result.delta,
-      raw: result.rawFiltered,
-      timestamp: Date.now(),
-      isComplete: result.isComplete || false
-    };
-    
-    console.log(`📤📤📤 [${sessionId}] Broadcasting recording output: text=${message.text.length} chars, delta=${message.delta.length} chars, isComplete=${message.isComplete}`);
-    tunnelClient.sendRecordingOutput(sessionId, message);
+    // Use OutputRouter instead of direct tunnel client access
+    this.outputRouter.routeOutput({
+      sessionId,
+      data: result.rawFiltered || result.delta,
+      destination: 'recording_stream',
+      metadata: {
+        fullText: result.fullText,
+        delta: result.delta,
+        isComplete: result.isComplete
+      }
+    });
   }
 }
 

@@ -171,8 +171,24 @@ class WatchSettingsManager: ObservableObject {
         }
     }
     
-    @Published var ttsSpeed: Double {
+    // TTS playback speed (0.7 to 1.2, default 1.0) - compatible with ElevenLabs API requirements
+    private var isUpdatingTtsSpeed = false
+    @Published var ttsSpeed: Double = 1.0 {
         didSet {
+            // Prevent infinite recursion
+            guard !isUpdatingTtsSpeed else { return }
+            
+            // Clamp to valid range (0.7-1.2 for ElevenLabs compatibility)
+            let clampedSpeed = max(0.7, min(1.2, ttsSpeed))
+            // Round to 1 decimal place to avoid floating point precision issues
+            let roundedSpeed = round(clampedSpeed * 10) / 10
+            
+            if roundedSpeed != ttsSpeed {
+                isUpdatingTtsSpeed = true
+                ttsSpeed = roundedSpeed
+                isUpdatingTtsSpeed = false
+            }
+            
             UserDefaults.standard.set(ttsSpeed, forKey: "ttsSpeed")
         }
     }
@@ -223,11 +239,17 @@ class WatchSettingsManager: ObservableObject {
         
         self.selectedSessionId = UserDefaults.standard.string(forKey: "selectedSessionId")
         
+        // Load TTS speed (default 1.0, range 0.7-1.2 for ElevenLabs compatibility)
         if UserDefaults.standard.object(forKey: "ttsSpeed") != nil {
-            self.ttsSpeed = UserDefaults.standard.double(forKey: "ttsSpeed")
-            self.ttsSpeed = max(0.8, min(2.0, self.ttsSpeed))
+            let loadedSpeed = UserDefaults.standard.double(forKey: "ttsSpeed")
+            // Clamp to valid range (0.7-1.2) and round to 1 decimal place
+            isUpdatingTtsSpeed = true
+            ttsSpeed = round(max(0.7, min(1.2, loadedSpeed)) * 10) / 10
+            isUpdatingTtsSpeed = false
         } else {
-            self.ttsSpeed = 1.2
+            isUpdatingTtsSpeed = true
+            ttsSpeed = 1.0 // Default speed
+            isUpdatingTtsSpeed = false
         }
     }
     

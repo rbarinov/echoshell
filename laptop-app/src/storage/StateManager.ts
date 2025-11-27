@@ -16,9 +16,8 @@ interface TerminalSessionState {
   sessionId: string;
   workingDir: string;
   createdAt: number;
-  terminalType?: 'regular' | 'cursor_agent' | 'cursor_cli' | 'claude_cli';
+  terminalType?: 'regular' | 'cursor' | 'claude';
   name?: string;
-  cursorAgentWorkingDir?: string;
 }
 
 interface AppState {
