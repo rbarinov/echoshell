@@ -552,18 +552,9 @@ export class TerminalManager {
         session.headless.isRunning = false;
         session.headless.completionTimeout = undefined;
         // Send completion message to clients
-        const completionMsg = '✅ Command completed (timeout)\n';
-        session.outputBuffer.push(completionMsg);
-        if (session.outputBuffer.length > 10000) {
-          session.outputBuffer.shift();
-        }
-        if (this.tunnelClient) {
-          this.tunnelClient.sendTerminalOutput(session.sessionId, completionMsg);
-        }
-        const listeners = this.outputListeners.get(session.sessionId);
-        if (listeners) {
-          listeners.forEach(listener => listener(completionMsg));
-        }
+        // Don't send completion message to terminal display - it's only for recording stream
+        // The completion is already handled via [COMMAND_COMPLETE] marker for recording stream
+        // This prevents "Command completed" from appearing in terminal output
         // Send completion marker for recording stream
         this.emitHeadlessOutput(session, '\n\n[COMMAND_COMPLETE]');
       }
