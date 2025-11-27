@@ -112,8 +112,8 @@ class RecordingStreamClient: ObservableObject {
                     break
                 }
                 self.receiveMessage()
-            case .failure(let error):
-                print("❌ Recording stream error: \(error.localizedDescription)")
+            case .failure:
+                print("❌ Recording stream error: Connection failed")
                 Task { @MainActor in
                     self.isConnected = false
                     self.connectionError = error.localizedDescription
