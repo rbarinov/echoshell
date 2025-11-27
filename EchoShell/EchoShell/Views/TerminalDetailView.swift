@@ -138,6 +138,23 @@ struct TerminalDetailView: View {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 await loadHistory()
             }
+            
+            // Monitor connection state and reload history on reconnection
+            Task {
+                var lastState: ConnectionState = .disconnected
+                while true {
+                    try? await Task.sleep(nanoseconds: 1_000_000_000) // Check every second
+                    
+                    let currentState = wsClient.connectionState
+                    // If we just reconnected (was disconnected/reconnecting, now connected)
+                    if (lastState == .disconnected || lastState == .reconnecting) && 
+                       currentState == .connected {
+                        print("✅ Terminal WebSocket reconnected, reloading history...")
+                        await loadHistory()
+                    }
+                    lastState = currentState
+                }
+            }
         }
         .onDisappear {
             wsClient.disconnect()

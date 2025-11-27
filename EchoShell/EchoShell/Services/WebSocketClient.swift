@@ -30,7 +30,10 @@ class WebSocketClient: ObservableObject {
     private var healthCheckTimer: Timer?
     
     func connect(config: TunnelConfig, sessionId: String, onMessage: ((String) -> Void)? = nil) {
-        self.onMessageCallback = onMessage
+        // Always preserve callback for reconnection
+        if let callback = onMessage {
+            self.onMessageCallback = callback
+        }
         self.config = config
         self.sessionId = sessionId
         
