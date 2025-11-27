@@ -874,18 +874,35 @@ async function handleTerminalRequest(method: string, path: string, body: unknown
     console.log(`🌉 [Tunnel] POST /terminal/${sessionId}/execute - Command: ${JSON.stringify(command)}`);
     console.log(`⚡ Command bytes: ${Array.from(command || '').map(c => c.charCodeAt(0)).join(', ')}`);
     
-    const output = await terminalManager.executeCommand(sessionId, command || '');
-    
-    console.log(`✅ [Tunnel] Command executed in ${sessionId}, output length: ${output.length}`);
-    
-    return {
-      statusCode: 200,
-      body: {
-        session_id: sessionId,
-        command,
-        output
-      }
-    };
+    try {
+      const output = await terminalManager.executeCommand(sessionId, command || '');
+      
+      console.log(`✅ [Tunnel] Command executed in ${sessionId}, output length: ${output.length}`);
+      
+      return {
+        statusCode: 200,
+        body: {
+          session_id: sessionId,
+          command,
+          output
+        }
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`❌ [Tunnel] Error executing command in ${sessionId}: ${errorMessage}`);
+      
+      // Continue execution even if there's an error (e.g., circular structure in logging)
+      // Return success response with empty output to allow command to proceed
+      return {
+        statusCode: 200,
+        body: {
+          session_id: sessionId,
+          command,
+          output: '',
+          error: errorMessage
+        }
+      };
+    }
   }
   
   const resizeMatch = path.match(/^\/terminal\/([^\/]+)\/resize$/);
