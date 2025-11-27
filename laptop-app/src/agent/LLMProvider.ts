@@ -50,7 +50,10 @@ class CerebrasProvider implements LLMProvider {
 
   constructor(config: LLMProviderConfig) {
     if (!config.baseUrl) {
-      throw new Error('Cerebras provider requires AGENT_BASE_URL to be set');
+      throw new Error(
+        'Cerebras provider requires AGENT_BASE_URL to be set. ' +
+        'Please set AGENT_BASE_URL=https://api.cerebras.ai/v1 in your .env file'
+      );
     }
     
     this.modelName = config.modelName || 'gpt-oss-120b';

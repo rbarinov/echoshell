@@ -37,7 +37,9 @@ npm run dev
 **Agent Configuration (LLM):**
 - `AGENT_API_KEY` - **Required** API key for the LLM agent
 - `AGENT_PROVIDER` - Provider type (`openai`, `cerebras`) - default: `openai`
-- `AGENT_MODEL_NAME` - Model name (e.g., `gpt-4o-mini`, `gpt-4`) - default: `gpt-4o-mini`
+- `AGENT_MODEL_NAME` - Model name (e.g., `gpt-4o-mini`, `gpt-4`, `gpt-oss-120b`) - default: `gpt-4o-mini` (OpenAI) or `gpt-oss-120b` (Cerebras)
+- `AGENT_BASE_URL` - **Required for Cerebras** - Base URL for Cerebras API: `https://api.cerebras.ai/v1`
+- `AGENT_TEMPERATURE` - Temperature setting (default: `0`)
 
 **STT Configuration (Speech-to-Text):**
 - `STT_API_KEY` - **Required** API key for STT provider
@@ -58,11 +60,24 @@ npm run dev
 
 ### Example Configuration
 
+**OpenAI Configuration:**
 ```bash
 # Agent (LLM) - using GPT-4o-mini for speed and cost efficiency
 AGENT_PROVIDER=openai
 AGENT_API_KEY=sk-...
 AGENT_MODEL_NAME=gpt-4o-mini
+AGENT_TEMPERATURE=0
+```
+
+**Cerebras Configuration:**
+```bash
+# Agent (LLM) - using Cerebras Cloud
+AGENT_PROVIDER=cerebras
+AGENT_API_KEY=your-cerebras-api-key-here
+AGENT_BASE_URL=https://api.cerebras.ai/v1  # REQUIRED for Cerebras
+AGENT_MODEL_NAME=gpt-oss-120b  # Default Cerebras model
+AGENT_TEMPERATURE=0
+```
 
 # STT (Speech-to-Text)
 STT_PROVIDER=openai

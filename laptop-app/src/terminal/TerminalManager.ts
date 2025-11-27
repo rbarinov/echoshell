@@ -560,9 +560,11 @@ export class TerminalManager {
       console.log(`🆕 [${session.sessionId}] Starting new CLI session (no existing session_id)`);
     }
     
-    // Escape prompt for shell (escape backslashes and quotes, wrap in double quotes)
-    const escapedPrompt = prompt.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-    commandLine += ` "${escapedPrompt}"\n`;
+    // Escape prompt for shell using single quotes (safer for shell escaping)
+    // Single quotes preserve all characters literally, except single quotes themselves
+    // For single quotes inside, we need to close the quote, add escaped quote, and reopen
+    const escapedPrompt = prompt.replace(/'/g, "'\\''");
+    commandLine += ` '${escapedPrompt}'\r`;
     
     // Write command to PTY - shell will execute it
     if (session.pty) {

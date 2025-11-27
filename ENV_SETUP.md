@@ -12,10 +12,18 @@ Create this file in the `laptop-app` directory:
 
 ```bash
 # Agent Configuration (LLM for command processing)
+# Option 1: OpenAI (default)
 AGENT_PROVIDER=openai
 AGENT_API_KEY=sk-your-agent-api-key-here
 AGENT_MODEL_NAME=gpt-4o-mini  # Fastest and most cost-effective option
 AGENT_TEMPERATURE=0
+
+# Option 2: Cerebras Cloud (requires AGENT_BASE_URL)
+# AGENT_PROVIDER=cerebras
+# AGENT_API_KEY=your-cerebras-api-key-here
+# AGENT_BASE_URL=https://api.cerebras.ai/v1  # REQUIRED for Cerebras
+# AGENT_MODEL_NAME=gpt-oss-120b  # Default Cerebras model
+# AGENT_TEMPERATURE=0
 
 # STT Configuration (Speech-to-Text)
 STT_PROVIDER=openai
@@ -105,8 +113,8 @@ You can also create a single `.env` file at the project root (`/Users/roman/work
 |----------|----------|-------------|---------|
 | `AGENT_PROVIDER` | No | Provider type (`openai`, `cerebras`) | `openai` |
 | `AGENT_API_KEY` | **Yes** | API key for the LLM agent | - |
-| `AGENT_MODEL_NAME` | No | Model name (e.g., `gpt-4o-mini`, `gpt-4`, `gpt-oss-120b`) | `gpt-4o-mini` |
-| `AGENT_BASE_URL` | No | Base URL for providers (required for Cerebras) | - |
+| `AGENT_MODEL_NAME` | No | Model name (e.g., `gpt-4o-mini`, `gpt-4`, `gpt-oss-120b`) | `gpt-4o-mini` (OpenAI) or `gpt-oss-120b` (Cerebras) |
+| `AGENT_BASE_URL` | **Yes** (Cerebras) | Base URL for providers. **Required for Cerebras**: `https://api.cerebras.ai/v1` | - |
 | `AGENT_TEMPERATURE` | No | Temperature setting | `0` |
 
 #### STT Configuration (Speech-to-Text)
