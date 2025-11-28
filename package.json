@@ -16,6 +16,8 @@
     "dev:tunnel-server": "cd tunnel-server && DOTENV_CONFIG_PATH=./.env npm run dev",
     "start:laptop-app": "cd laptop-app && DOTENV_CONFIG_PATH=./.env npm run start",
     "start:tunnel-server": "cd tunnel-server && DOTENV_CONFIG_PATH=./.env npm run start",
+    "start:laptop-app:prod": "cd laptop-app && DOTENV_CONFIG_PATH=./.env npm run start:prod",
+    "start:tunnel-server:prod": "cd tunnel-server && DOTENV_CONFIG_PATH=./.env npm run start:prod",
     "start:prod": "npm run build && npm run start:laptop-app & npm run start:tunnel-server",
     "type-check": "cd laptop-app && npm run type-check && cd ../tunnel-server && npm run type-check",
     "type-check:laptop-app": "cd laptop-app && npm run type-check",

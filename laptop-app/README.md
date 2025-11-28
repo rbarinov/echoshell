@@ -103,6 +103,8 @@ See [ENV_SETUP.md](../ENV_SETUP.md) for detailed configuration documentation.
 
 ## Usage
 
+### Development Mode (auto-reload on changes)
+
 1. Start the tunnel server (in another terminal):
 ```bash
 cd ../tunnel-server
@@ -117,6 +119,28 @@ npm run dev
 3. Scan the QR code with your iPhone app
 
 4. Start giving voice commands!
+
+### Production Mode (no auto-reload)
+
+If you want to run without auto-reload on file changes:
+
+**From root directory:**
+```bash
+# Build and start (rebuilds before starting)
+npm run start:laptop-app:prod
+
+# Or just start (uses already built code)
+npm run start:laptop-app
+```
+
+**From laptop-app directory:**
+```bash
+# Build and start (rebuilds before starting)
+npm run start:prod
+
+# Or just start (uses already built code)
+npm start
+```
 
 ## API Endpoints
 
