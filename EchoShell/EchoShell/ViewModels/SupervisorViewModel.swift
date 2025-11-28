@@ -226,21 +226,57 @@ class SupervisorViewModel: ObservableObject, ChatViewModelProtocol {
                 print("🎤 SupervisorViewModel: Transcription: \(transcribedText)")
                 
                 // If we have a pending audio message, update it with the transcription
-                if let pendingId = pendingUserAudioMessageId,
-                   let index = chatHistory.firstIndex(where: { $0.id == pendingId }) {
-                    // Update the audio message with transcription text in metadata
-                    let existingMessage = chatHistory[index]
-                    let updatedMessage = ChatMessage(
-                        id: existingMessage.id,
-                        timestamp: existingMessage.timestamp,
-                        type: .tts_audio,
-                        content: "🎤 \(transcribedText)", // Show transcription in content
-                        metadata: ChatMessage.Metadata(
-                            ttsText: transcribedText,
-                            audioFilePath: existingMessage.metadata?.audioFilePath
+                if let pendingId = pendingUserAudioMessageId {
+                    // Update audio message metadata only
+                    if let index = chatHistory.firstIndex(where: { $0.id == pendingId }) {
+                        let existingMessage = chatHistory[index]
+                        let existingMetadata = existingMessage.metadata
+                        let updatedMessage = ChatMessage(
+                            id: existingMessage.id,
+                            timestamp: existingMessage.timestamp,
+                            type: existingMessage.type,
+                            content: existingMessage.content,
+                            metadata: ChatMessage.Metadata(
+                                toolName: existingMetadata?.toolName,
+                                toolInput: existingMetadata?.toolInput,
+                                toolOutput: existingMetadata?.toolOutput,
+                                thinking: existingMetadata?.thinking,
+                                errorCode: existingMetadata?.errorCode,
+                                stackTrace: existingMetadata?.stackTrace,
+                                completion: existingMetadata?.completion,
+                                ttsText: transcribedText,
+                                ttsDuration: existingMetadata?.ttsDuration,
+                                audioFilePath: existingMetadata?.audioFilePath,
+                                isPlaceholder: false,
+                                parentMessageId: existingMetadata?.parentMessageId
+                            )
                         )
-                    )
-                    chatHistory[index] = updatedMessage
+                        chatHistory[index] = updatedMessage
+                    }
+                    
+                    // Replace placeholder text message with actual transcription
+                    if let placeholderIndex = chatHistory.firstIndex(where: {
+                        $0.metadata?.isPlaceholder == true && $0.metadata?.parentMessageId == pendingId
+                    }) {
+                        chatHistory[placeholderIndex] = ChatMessage(
+                            id: chatHistory[placeholderIndex].id,
+                            timestamp: chatHistory[placeholderIndex].timestamp,
+                            type: .user,
+                            content: transcribedText,
+                            metadata: nil
+                        )
+                    } else {
+                        // Fallback: append new text message
+                        let userMessage = ChatMessage(
+                            id: UUID().uuidString,
+                            timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                            type: .user,
+                            content: transcribedText,
+                            metadata: nil
+                        )
+                        chatHistory.append(userMessage)
+                    }
+                    
                     pendingUserAudioMessageId = nil
                 } else {
                     // No pending audio message - create text-only user message
@@ -372,9 +408,11 @@ class SupervisorViewModel: ObservableObject, ChatViewModelProtocol {
         
         // Save user's voice message to chat BEFORE sending
         if let userAudioPath = saveUserAudioToFile(audioData) {
+            let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+            let voiceMessageId = UUID().uuidString
             let userVoiceMessage = ChatMessage(
-                id: UUID().uuidString,
-                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                id: voiceMessageId,
+                timestamp: timestamp,
                 type: .tts_audio,
                 content: "🎤 Voice message",
                 metadata: ChatMessage.Metadata(
@@ -383,7 +421,21 @@ class SupervisorViewModel: ObservableObject, ChatViewModelProtocol {
                 )
             )
             chatHistory.append(userVoiceMessage)
-            pendingUserAudioMessageId = userVoiceMessage.id // Track for updating with transcription
+            pendingUserAudioMessageId = voiceMessageId // Track for updating with transcription
+            
+            // Add placeholder text message for transcription (will replace content later)
+        let placeholderTextMessage = ChatMessage(
+                id: UUID().uuidString,
+                timestamp: timestamp + 1,
+                type: .user,
+                content: "… transcribing …",
+                metadata: ChatMessage.Metadata(
+                    isPlaceholder: true,
+                    parentMessageId: voiceMessageId
+                )
+            )
+            chatHistory.append(placeholderTextMessage)
+            
             saveChatHistory()
         }
         

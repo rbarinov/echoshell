@@ -35,6 +35,8 @@ struct ChatMessage: Codable, Identifiable, Equatable {
         let ttsText: String? // Text that was synthesized to speech (for tts_audio messages)
         let ttsDuration: Double? // Duration of audio in seconds (if known)
         let audioFilePath: String? // Path to saved audio file (relative to Documents)
+        let isPlaceholder: Bool?
+        let parentMessageId: String?
         
         init(
             toolName: String? = nil,
@@ -46,7 +48,9 @@ struct ChatMessage: Codable, Identifiable, Equatable {
             completion: Bool? = nil,
             ttsText: String? = nil,
             ttsDuration: Double? = nil,
-            audioFilePath: String? = nil
+            audioFilePath: String? = nil,
+            isPlaceholder: Bool? = nil,
+            parentMessageId: String? = nil
         ) {
             self.toolName = toolName
             self.toolInput = toolInput
@@ -58,6 +62,8 @@ struct ChatMessage: Codable, Identifiable, Equatable {
             self.ttsText = ttsText
             self.ttsDuration = ttsDuration
             self.audioFilePath = audioFilePath
+            self.isPlaceholder = isPlaceholder
+            self.parentMessageId = parentMessageId
         }
     }
     
