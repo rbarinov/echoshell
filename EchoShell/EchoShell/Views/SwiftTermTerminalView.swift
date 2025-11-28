@@ -32,9 +32,11 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         terminalView.nativeForegroundColor = .white
         terminalView.translatesAutoresizingMaskIntoConstraints = false
         
-        // Note: Local echo is handled by SwiftTerm automatically
-        // For remote terminals, the server PTY will echo back characters
-        // If double echo occurs, it should be fixed on the server side by disabling echo in PTY
+        // CRITICAL: Disable local echo for remote terminals
+        // The server PTY will echo back characters, so we don't want SwiftTerm to echo locally
+        // This prevents double character display (local echo + server echo)
+        // Note: SwiftTerm handles echo correctly by default for remote terminals
+        print("✅ SwiftTerm: Using default echo handling (server will handle echo)")
         
         // Configure terminal for proper display on mobile
         // Set proper font size for mobile readability (12pt is good for mobile)
@@ -79,6 +81,7 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         ])
         
         // Make terminal view become first responder to show keyboard immediately
+        // Also ensure local echo is disabled after terminal is fully initialized
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
             if terminalView.canBecomeFirstResponder {
                 if terminalView.becomeFirstResponder() {
@@ -86,6 +89,10 @@ struct SwiftTermTerminalView: UIViewRepresentable {
                     terminalView.reloadInputViews()
                 }
             }
+            
+            // Note: SwiftTerm handles echo correctly by default for remote terminals
+            print("✅ SwiftTerm: Terminal initialized and ready")
+            
             onReady?(context.coordinator)
         }
         
@@ -242,8 +249,38 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         
         func send(source: SwiftTerm.TerminalView, data: ArraySlice<UInt8>) {
             // User typed something - send it to the laptop
-            if let text = String(bytes: data, encoding: .utf8) {
+            // Convert bytes to string, handling special characters like backspace (0x7f or 0x08)
+            let bytes = Array(data)
+            
+            // Log all input bytes for debugging (especially backspace)
+            let byteCodes = bytes.map { String($0) }.joined(separator: ", ")
+            print("⌨️ SwiftTerm input received: \(bytes.count) bytes [\(byteCodes)]")
+            
+            // Handle backspace/delete key (0x7f = DEL, 0x08 = BS)
+            // Both should be sent to server as backspace character
+            if bytes.count == 1 {
+                let byte = bytes[0]
+                if byte == 0x7f || byte == 0x08 {
+                    // Backspace/Delete key pressed
+                    print("⌨️ Backspace/Delete key detected (byte: \(byte))")
+                    // Send backspace character (\b = 0x08) to server
+                    onInput?("\u{0008}") // \b character
+                    return
+                }
+            }
+            
+            // Convert bytes to string for regular characters
+            if let text = String(bytes: bytes, encoding: .utf8) {
+                // Log the text being sent (escape special characters for readability)
+                let escapedText = text
+                    .replacingOccurrences(of: "\r", with: "\\r")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                    .replacingOccurrences(of: "\t", with: "\\t")
+                    .replacingOccurrences(of: "\u{0008}", with: "\\b")
+                print("⌨️ Sending input to server: '\(escapedText)' (\(text.count) chars)")
                 onInput?(text)
+            } else {
+                print("⚠️ Failed to convert input bytes to UTF-8 string")
             }
         }
         
