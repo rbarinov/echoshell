@@ -217,7 +217,11 @@ export class RecordingStreamManager {
       console.log(`💾 [${sessionId}] Saved tts_audio message to chat history`);
     }
 
-    // Send tts_ready event via OutputRouter
+    // Send tts_audio message to iOS via WebSocket (so it appears in chat)
+    this.outputRouter.sendChatMessage(sessionId, ttsAudioMessage);
+    console.log(`📤 [${sessionId}] Sent tts_audio message to iOS via WebSocket`);
+
+    // Send tts_ready event via OutputRouter (for TTS synthesis)
     this.outputRouter.routeOutput({
       sessionId,
       data: combinedText,
