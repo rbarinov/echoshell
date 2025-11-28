@@ -171,6 +171,23 @@ export class TunnelHandler {
       }
 
     const streamKey = `${tunnelId}:${message.sessionId}:recording`;
+    
+    // Check if this is a tts_ready event (isComplete === true with text)
+    // Send as tts_ready event instead of recording_output
+    if (message.isComplete === true && message.text) {
+      const ttsPayload = {
+        type: 'tts_ready',
+        session_id: message.sessionId,
+        text: message.text,
+        timestamp: message.timestamp ?? Date.now(),
+      };
+      const payloadString = JSON.stringify(ttsPayload);
+      Logger.debug('Sending tts_ready event', { tunnelId, sessionId: message.sessionId, textLength: message.text.length });
+      this.streamManager.broadcastToRecordingStream(streamKey, payloadString);
+      return;
+    }
+    
+    // Regular recording output format
     const payload: Record<string, unknown> = {
       type: 'recording_output',
       session_id: message.sessionId,

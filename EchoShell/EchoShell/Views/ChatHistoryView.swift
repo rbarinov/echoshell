@@ -16,18 +16,32 @@ struct ChatHistoryView: View {
     @State private var copiedMessageId: String? = nil
     
     // Group messages by conversation turn (user + assistant responses)
+    // Filter out system messages before grouping
+    private var filteredMessages: [ChatMessage] {
+        messages.filter { $0.type != .system }
+    }
+    
     private var groupedMessages: [[ChatMessage]] {
         var groups: [[ChatMessage]] = []
         var currentGroup: [ChatMessage] = []
+        var lastMessageType: ChatMessage.MessageType? = nil
         
-        for message in messages {
-            if message.type == .user && !currentGroup.isEmpty {
-                // Start new group when we see a user message
+        for message in filteredMessages {
+            // Start new group when:
+            // 1. We see a user message (new conversation turn)
+            // 2. Message type changes (e.g., assistant -> tool, tool -> assistant)
+            let shouldStartNewGroup = message.type == .user || 
+                                     (lastMessageType != nil && message.type != lastMessageType)
+            
+            if shouldStartNewGroup && !currentGroup.isEmpty {
                 groups.append(currentGroup)
                 currentGroup = [message]
             } else {
+                // Merge consecutive messages of same type into one block
                 currentGroup.append(message)
             }
+            
+            lastMessageType = message.type
         }
         
         if !currentGroup.isEmpty {
@@ -49,30 +63,67 @@ struct ChatHistoryView: View {
                                     .padding(.vertical, 8)
                             }
                             
-                            ForEach(group) { message in
+                            // If group has multiple messages of same type, merge them
+                            if group.count > 1 && group.allSatisfy({ $0.type == group.first?.type }) {
+                                // Merge multiple messages into one bubble
+                                let mergedContent = group.map { $0.content }.joined(separator: "\n\n")
+                                let firstMessage = group.first!
+                                let mergedMessage = ChatMessage(
+                                    id: firstMessage.id,
+                                    timestamp: firstMessage.timestamp,
+                                    type: firstMessage.type,
+                                    content: mergedContent,
+                                    metadata: firstMessage.metadata
+                                )
+                                
                                 ChatBubbleView(
-                                    message: message,
-                                    isExpanded: expandedToolMessages.contains(message.id),
-                                    isCopied: copiedMessageId == message.id,
+                                    message: mergedMessage,
+                                    isExpanded: expandedToolMessages.contains(firstMessage.id),
+                                    isCopied: copiedMessageId == firstMessage.id,
                                     onToggleExpand: {
-                                        if expandedToolMessages.contains(message.id) {
-                                            expandedToolMessages.remove(message.id)
+                                        if expandedToolMessages.contains(firstMessage.id) {
+                                            expandedToolMessages.remove(firstMessage.id)
                                         } else {
-                                            expandedToolMessages.insert(message.id)
+                                            expandedToolMessages.insert(firstMessage.id)
                                         }
                                     },
                                     onCopy: {
-                                        UIPasteboard.general.string = message.content
-                                        copiedMessageId = message.id
-                                        // Reset copied state after 2 seconds
+                                        UIPasteboard.general.string = mergedContent
+                                        copiedMessageId = firstMessage.id
                                         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
-                                            if copiedMessageId == message.id {
+                                            if copiedMessageId == firstMessage.id {
                                                 copiedMessageId = nil
                                             }
                                         }
                                     }
                                 )
-                                .id(message.id)
+                                .id(firstMessage.id)
+                            } else {
+                                // Show messages separately
+                                ForEach(group) { message in
+                                    ChatBubbleView(
+                                        message: message,
+                                        isExpanded: expandedToolMessages.contains(message.id),
+                                        isCopied: copiedMessageId == message.id,
+                                        onToggleExpand: {
+                                            if expandedToolMessages.contains(message.id) {
+                                                expandedToolMessages.remove(message.id)
+                                            } else {
+                                                expandedToolMessages.insert(message.id)
+                                            }
+                                        },
+                                        onCopy: {
+                                            UIPasteboard.general.string = message.content
+                                            copiedMessageId = message.id
+                                            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                                                if copiedMessageId == message.id {
+                                                    copiedMessageId = nil
+                                                }
+                                            }
+                                        }
+                                    )
+                                    .id(message.id)
+                                }
                             }
                         }
                     }
@@ -446,19 +497,19 @@ struct ToolMessageView: View {
         messages: [
             ChatMessage(
                 id: "1",
-                timestamp: Date().timeIntervalSince1970.magnitude,
+                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
                 type: .user,
                 content: "List files in current directory"
             ),
             ChatMessage(
                 id: "2",
-                timestamp: Date().timeIntervalSince1970.magnitude,
+                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
                 type: .assistant,
                 content: "I'll list the files for you."
             ),
             ChatMessage(
                 id: "3",
-                timestamp: Date().timeIntervalSince1970.magnitude,
+                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
                 type: .tool,
                 content: "Tool: bash\nInput: ls -la\nOutput: file1.txt\nfile2.py",
                 metadata: ChatMessage.Metadata(
@@ -469,7 +520,7 @@ struct ToolMessageView: View {
             ),
             ChatMessage(
                 id: "4",
-                timestamp: Date().timeIntervalSince1970.magnitude,
+                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
                 type: .assistant,
                 content: "Here are the files in the directory."
             )

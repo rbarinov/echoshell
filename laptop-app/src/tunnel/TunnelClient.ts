@@ -83,7 +83,7 @@ export class TunnelClient {
 
   sendRecordingOutput(
     sessionId: string,
-    payload: { text: string; delta: string; raw?: string; timestamp: number; isComplete?: boolean }
+    payload: { text: string; delta: string; raw?: string; timestamp: number; isComplete?: boolean; isTTSReady?: boolean }
   ): void {
     if (!this.ws) {
       console.error(`❌❌❌ TunnelClient: WebSocket is null, cannot send recording_output`);
@@ -95,6 +95,32 @@ export class TunnelClient {
       return;
     }
     
+    // If this is a tts_ready event, send it as tts_ready type
+    if (payload.isTTSReady === true) {
+      const ttsMessage = {
+        type: 'tts_ready',
+        session_id: sessionId,
+        text: payload.text,
+        timestamp: payload.timestamp
+      };
+      const messageStr = JSON.stringify(ttsMessage);
+      console.log(`🎙️🎙️🎙️ TunnelClient: Sending tts_ready event to tunnel: sessionId=${sessionId}, text=${payload.text.length} chars`);
+      
+      try {
+        this.ws.send(messageStr, (error) => {
+          if (error) {
+            console.error(`❌❌❌ TunnelClient: Error sending tts_ready: ${error.message}`);
+          } else {
+            console.log(`✅✅✅ TunnelClient: Successfully sent tts_ready event (${messageStr.length} bytes)`);
+          }
+        });
+      } catch (error) {
+        console.error(`❌❌❌ TunnelClient: Exception while sending tts_ready: ${error}`);
+      }
+      return;
+    }
+    
+    // Legacy format for streaming messages
     const message = {
       type: 'recording_output',
       sessionId,

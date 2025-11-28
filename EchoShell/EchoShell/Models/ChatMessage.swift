@@ -30,6 +30,7 @@ struct ChatMessage: Codable, Identifiable, Equatable {
         let thinking: String?
         let errorCode: String?
         let stackTrace: String?
+        let completion: Bool?
         
         init(
             toolName: String? = nil,
@@ -37,7 +38,8 @@ struct ChatMessage: Codable, Identifiable, Equatable {
             toolOutput: String? = nil,
             thinking: String? = nil,
             errorCode: String? = nil,
-            stackTrace: String? = nil
+            stackTrace: String? = nil,
+            completion: Bool? = nil
         ) {
             self.toolName = toolName
             self.toolInput = toolInput
@@ -45,6 +47,7 @@ struct ChatMessage: Codable, Identifiable, Equatable {
             self.thinking = thinking
             self.errorCode = errorCode
             self.stackTrace = stackTrace
+            self.completion = completion
         }
     }
     

@@ -136,21 +136,54 @@ export class RecordingStreamManager {
 
   /**
    * Send tts_ready event with accumulated assistant messages
+   * Extracts text content suitable for TTS - removes code blocks and thinking, but preserves inline terms
    */
   private sendTTSReady(sessionId: string, state: SessionState): void {
-    // Extract text-only content from assistant messages
+    // Extract TTS-friendly content from assistant messages
     const assistantTexts = state.assistantMessages
       .map(msg => {
-        // Extract plain text (remove markdown code blocks, formatting)
-        let text = msg.content;
-        // Remove code blocks (```...```)
+        // Start with message content
+        let text = msg.content || '';
+
+        // Remove thinking/metadata content (if present in content)
+        // Thinking is usually in metadata, but check content too
+        if (msg.metadata?.thinking) {
+          // Skip thinking - it's internal reasoning, not for TTS
+        }
+
+        // Remove code blocks (```language\ncode\n```)
+        // These are usually long and not suitable for TTS
         text = text.replace(/```[\s\S]*?```/g, '');
-        // Remove inline code (`...`)
+
+        // IMPORTANT: Keep inline code (`term`) - these are often technical terms
+        // Just remove the backticks for natural TTS reading
         text = text.replace(/`([^`]+)`/g, '$1');
-        // Remove markdown links [text](url)
+
+        // Remove markdown links [text](url) - keep only text
         text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
-        // Clean up extra whitespace
-        text = text.replace(/\s+/g, ' ').trim();
+
+        // Remove markdown headers (# Header) - but keep the text
+        text = text.replace(/^#{1,6}\s+/gm, '');
+
+        // Remove markdown bold/italic (**text** or *text*) - but keep the text
+        text = text.replace(/\*\*([^\*]+)\*\*/g, '$1');
+        text = text.replace(/\*([^\*]+)\*/g, '$1');
+
+        // Remove markdown list markers but keep content
+        text = text.replace(/^[\s]*[-*+]\s+/gm, '');
+        text = text.replace(/^[\s]*\d+\.\s+/gm, '');
+
+        // Remove markdown blockquotes (> text) - but keep the text
+        text = text.replace(/^>\s+/gm, '');
+
+        // Remove markdown horizontal rules (--- or ***)
+        text = text.replace(/^[-*]{3,}$/gm, '');
+
+        // Clean up extra whitespace and newlines
+        text = text.replace(/\n{3,}/g, '\n\n'); // Max 2 newlines
+        text = text.replace(/\s+/g, ' '); // Multiple spaces to single
+        text = text.trim();
+
         return text;
       })
       .filter(text => text.length > 0);
@@ -158,11 +191,11 @@ export class RecordingStreamManager {
     const combinedText = assistantTexts.join('\n\n');
 
     if (combinedText.length === 0) {
-      console.warn(`⚠️ [${sessionId}] No assistant text to send for TTS`);
+      console.warn(`⚠️ [${sessionId}] No assistant text to send for TTS (all content was code/formatting)`);
       return;
     }
 
-    console.log(`🎙️ [${sessionId}] Sending tts_ready with ${assistantTexts.length} assistant messages (${combinedText.length} chars)`);
+    console.log(`🎙️ [${sessionId}] Sending tts_ready with ${assistantTexts.length} assistant messages (${combinedText.length} chars, dry summary)`);
 
     // Send tts_ready event via OutputRouter
     this.outputRouter.routeOutput({

@@ -7,6 +7,7 @@ import { KeyManager } from './keys/KeyManager';
 import { TunnelClient, type TunnelConfig } from './tunnel/TunnelClient';
 import { AIAgent } from './agent/AIAgent';
 import { StateManager } from './storage/StateManager';
+import { ChatHistoryDatabase } from './database/ChatHistoryDatabase';
 import { RecordingStreamManager } from './output/RecordingStreamManager';
 import { OutputRouter } from './output/OutputRouter';
 import { createLLMProvider } from './agent/LLMProvider';
@@ -64,7 +65,8 @@ app.use(localhostOnly);
 
 // Initialize components
 const stateManager = new StateManager();
-const terminalManager = new TerminalManager(stateManager);
+const chatHistoryDb = new ChatHistoryDatabase();
+const terminalManager = new TerminalManager(stateManager, chatHistoryDb);
 
 // Initialize providers
 const llmProvider = createLLMProvider();

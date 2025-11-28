@@ -160,9 +160,10 @@ class RecordingStreamClient: ObservableObject {
                 DispatchQueue.main.async {
                     self.onTTSReadyCallback?(ttsEvent.text)
                 }
-                return
+                return // IMPORTANT: Return early to prevent processing as legacy message
             } catch {
                 print("❌❌❌ RecordingStreamClient: Failed to decode TTSReadyEvent: \(error)")
+                // Continue to legacy format handling
             }
         }
         
@@ -175,10 +176,17 @@ class RecordingStreamClient: ObservableObject {
         print("📨📨📨 RecordingStreamClient parsed message: type=\(message.type), session_id=\(message.session_id), text=\(message.text.count) chars, delta=\(message.delta?.count ?? 0) chars, isComplete=\(message.isComplete?.description ?? "nil")")
         
         // If message is complete and we have tts_ready callback, use it (for backward compatibility)
+        // BUT: Only if we haven't already processed a tts_ready event (prevent duplicates)
         if message.isComplete == true, let ttsCallback = onTTSReadyCallback {
-            print("🎙️ RecordingStreamClient: Legacy isComplete=true, triggering tts_ready callback")
-            DispatchQueue.main.async {
-                ttsCallback(message.text)
+            // Check if this is a legacy format that should trigger TTS
+            // Only trigger if message type is not already "tts_ready" (to prevent double processing)
+            if messageType != "tts_ready" {
+                print("🎙️ RecordingStreamClient: Legacy isComplete=true, triggering tts_ready callback")
+                DispatchQueue.main.async {
+                    ttsCallback(message.text)
+                }
+            } else {
+                print("⚠️ RecordingStreamClient: Skipping legacy TTS callback (already processed tts_ready event)")
             }
         }
         

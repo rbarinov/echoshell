@@ -157,6 +157,18 @@ class SessionStateManager: ObservableObject {
         }
     }
     
+    /// Check if terminal is headless (cursor/claude)
+    /// - Parameter terminalType: Terminal type
+    /// - Returns: true if terminal is headless
+    func isHeadlessTerminal(terminalType: TerminalType) -> Bool {
+        switch terminalType {
+        case .cursor, .claude:
+            return true
+        case .regular:
+            return false
+        }
+    }
+    
     /// Activate a session (legacy method for compatibility)
     /// - Parameter sessionId: Session identifier
     func activateSession(_ sessionId: String) {

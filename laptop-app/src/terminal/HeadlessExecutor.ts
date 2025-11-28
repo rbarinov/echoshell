@@ -13,6 +13,8 @@ export class HeadlessExecutor {
   private stdoutCallbacks: Set<(data: string) => void> = new Set();
   private stderrCallbacks: Set<(data: string) => void> = new Set();
   private exitCallbacks: Set<(code: number | null) => void> = new Set();
+  private executionTimeoutTimer: NodeJS.Timeout | null = null;
+  private readonly EXECUTION_TIMEOUT_MS = 60000; // 60 seconds
 
   constructor(workingDir: string, terminalType: HeadlessTerminalType) {
     this.workingDir = workingDir;
@@ -24,9 +26,35 @@ export class HeadlessExecutor {
    * @param prompt - The user prompt/command to execute
    */
   async execute(prompt: string): Promise<void> {
-    // Kill any existing subprocess
+    // Clear any existing timeout
+    this.clearExecutionTimeout();
+
+    // Kill any existing subprocess and wait for it to fully terminate
+    // This is critical for Claude CLI which locks sessions
     if (this.subprocess) {
+      console.log(`🛑 [HeadlessExecutor] Killing existing subprocess before new execution`);
+      const subprocessRef = this.subprocess;
       this.kill();
+
+      // Wait longer for Claude CLI to release the session lock
+      // Claude CLI needs more time to clean up session state
+      const waitTime = this.terminalType === 'claude' ? 1500 : 500;
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+
+      // Force kill if still running (double-check with reference)
+      if (subprocessRef && !subprocessRef.killed && subprocessRef.pid) {
+        console.log(`💀 [HeadlessExecutor] Force killing stubborn subprocess (PID: ${subprocessRef.pid})`);
+        try {
+          subprocessRef.kill('SIGKILL');
+          // Wait a bit more after force kill
+          await new Promise(resolve => setTimeout(resolve, 300));
+        } catch (error) {
+          console.error(`❌ [HeadlessExecutor] Error force killing:`, error);
+        }
+      }
+
+      // Clear reference to ensure we don't reuse it
+      this.subprocess = null;
     }
 
     // Build command and arguments
@@ -74,6 +102,10 @@ export class HeadlessExecutor {
     // Setup exit handler
     this.subprocess.on('exit', (code: number | null) => {
       console.log(`✅ [HeadlessExecutor] Process exited with code: ${code}`);
+
+      // Clear timeout on process exit
+      this.clearExecutionTimeout();
+
       this.exitCallbacks.forEach(callback => {
         try {
           callback(code);
@@ -87,6 +119,10 @@ export class HeadlessExecutor {
     // Setup error handler
     this.subprocess.on('error', (error: Error) => {
       console.error(`❌ [HeadlessExecutor] Process error:`, error);
+
+      // Clear timeout on error
+      this.clearExecutionTimeout();
+
       this.stderrCallbacks.forEach(callback => {
         try {
           callback(`Process error: ${error.message}\n`);
@@ -95,6 +131,9 @@ export class HeadlessExecutor {
         }
       });
     });
+
+    // Start execution timeout timer
+    this.startExecutionTimeout();
   }
 
   /**
@@ -120,17 +159,22 @@ export class HeadlessExecutor {
       
       return { command: 'cursor-agent', args };
     } else {
-      // Claude CLI format: claude --verbose --print -p "prompt" --output-format stream-json [--session-id <session_id>]
-      args.push('--verbose');
+      // Claude CLI format: claude --verbose --print -p "prompt" --output-format stream-json [--resume <session_id>]
+      // Note: --verbose is REQUIRED when using --print with --output-format stream-json
+      // --resume is used to continue an existing session, not --session-id
+      // --session-id is for creating a new session with a specific ID (must be UUID)
+      // --resume is for resuming an existing session by its ID
+      args.push('--verbose'); // REQUIRED for --print with --output-format stream-json
       args.push('--print');
       args.push('-p', prompt);
       args.push('--output-format', 'stream-json');
       
       if (this.cliSessionId) {
-        args.push('--session-id', this.cliSessionId);
-        console.log(`🔄 [HeadlessExecutor] Using existing CLI session_id: ${this.cliSessionId}`);
+        // Use --resume to continue existing session (not --session-id)
+        args.push('--resume', this.cliSessionId);
+        console.log(`🔄 [HeadlessExecutor] Resuming Claude CLI session: ${this.cliSessionId}`);
       } else {
-        console.log(`🆕 [HeadlessExecutor] Starting new CLI session (no existing session_id)`);
+        console.log(`🆕 [HeadlessExecutor] Starting new Claude CLI session (no existing session_id)`);
       }
       
       return { command: 'claude', args };
@@ -160,26 +204,43 @@ export class HeadlessExecutor {
    * Kill the subprocess
    */
   kill(): void {
-    if (this.subprocess) {
-      console.log(`🛑 [HeadlessExecutor] Killing subprocess`);
+    if (this.subprocess && !this.subprocess.killed) {
+      console.log(`🛑 [HeadlessExecutor] Killing subprocess (PID: ${this.subprocess.pid})`);
+      
+      const subprocessRef = this.subprocess;
       
       // Try graceful shutdown first
-      if (this.subprocess.kill) {
-        try {
-          this.subprocess.kill('SIGTERM');
-          
-          // Wait up to 2 seconds for graceful shutdown
-          setTimeout(() => {
-            if (this.subprocess && !this.subprocess.killed) {
-              console.log(`💀 [HeadlessExecutor] Force killing subprocess`);
-              this.subprocess.kill('SIGKILL');
+      try {
+        subprocessRef.kill('SIGTERM');
+        console.log(`📤 [HeadlessExecutor] Sent SIGTERM to process ${subprocessRef.pid}`);
+        
+        // Wait up to 2 seconds for graceful shutdown
+        setTimeout(() => {
+          if (subprocessRef && !subprocessRef.killed && subprocessRef.pid) {
+            console.log(`💀 [HeadlessExecutor] Process ${subprocessRef.pid} still running, force killing with SIGKILL`);
+            try {
+              subprocessRef.kill('SIGKILL');
+            } catch (error) {
+              console.error(`❌ [HeadlessExecutor] Error force killing:`, error);
             }
-          }, 2000);
-        } catch (error) {
-          console.error(`❌ [HeadlessExecutor] Error killing subprocess:`, error);
+          }
+        }, 2000);
+      } catch (error) {
+        console.error(`❌ [HeadlessExecutor] Error killing subprocess:`, error);
+        // Try force kill as fallback
+        try {
+          if (subprocessRef && subprocessRef.pid) {
+            subprocessRef.kill('SIGKILL');
+          }
+        } catch (killError) {
+          console.error(`❌ [HeadlessExecutor] Error force killing as fallback:`, killError);
         }
       }
       
+      // Clear reference immediately to prevent reuse
+      this.subprocess = null;
+    } else if (this.subprocess) {
+      console.log(`✅ [HeadlessExecutor] Subprocess already killed`);
       this.subprocess = null;
     }
   }
@@ -188,7 +249,23 @@ export class HeadlessExecutor {
    * Check if subprocess is running
    */
   isRunning(): boolean {
-    return this.subprocess !== null && !this.subprocess.killed;
+    if (!this.subprocess) {
+      return false;
+    }
+    
+    // Check if process is actually still running
+    // If killed flag is set, it's definitely not running
+    if (this.subprocess.killed) {
+      return false;
+    }
+    
+    // If process has no PID, it's not running
+    if (!this.subprocess.pid) {
+      return false;
+    }
+    
+    // Process exists and hasn't been killed
+    return true;
   }
 
   /**
@@ -234,9 +311,50 @@ export class HeadlessExecutor {
   }
 
   /**
+   * Start execution timeout timer
+   * Automatically kills subprocess if execution exceeds timeout
+   */
+  private startExecutionTimeout(): void {
+    this.executionTimeoutTimer = setTimeout(() => {
+      console.warn(`⏰ [HeadlessExecutor] Execution timeout (${this.EXECUTION_TIMEOUT_MS}ms), killing subprocess`);
+
+      // Send timeout error to stderr callbacks
+      this.stderrCallbacks.forEach(callback => {
+        try {
+          callback(`ERROR: Execution timeout (${this.EXECUTION_TIMEOUT_MS / 1000}s exceeded)\n`);
+        } catch (error) {
+          console.error('❌ [HeadlessExecutor] Error in stderr callback:', error);
+        }
+      });
+
+      // Kill the subprocess
+      this.kill();
+    }, this.EXECUTION_TIMEOUT_MS);
+  }
+
+  /**
+   * Clear execution timeout timer
+   */
+  private clearExecutionTimeout(): void {
+    if (this.executionTimeoutTimer) {
+      clearTimeout(this.executionTimeoutTimer);
+      this.executionTimeoutTimer = null;
+    }
+  }
+
+  /**
+   * Clear execution timeout (public method for external control)
+   * Used by TerminalManager when completion is detected
+   */
+  clearTimeout(): void {
+    this.clearExecutionTimeout();
+  }
+
+  /**
    * Cleanup all callbacks
    */
   cleanup(): void {
+    this.clearExecutionTimeout();
     this.stdoutCallbacks.clear();
     this.stderrCallbacks.clear();
     this.exitCallbacks.clear();

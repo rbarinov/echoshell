@@ -233,6 +233,21 @@ class APIClient: ObservableObject {
         return response.history
     }
     
+    func cancelCommand(sessionId: String) async throws {
+        let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)/cancel")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(deviceId, forHTTPHeaderField: "X-Device-ID")
+        addAuthHeader(to: &request)
+        
+        let (_, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse,
+              httpResponse.statusCode == 200 else {
+            throw APIError.requestFailed
+        }
+    }
+    
     func executeCommand(sessionId: String, command: String) async throws -> String {
         let url = URL(string: "\(config.apiBaseUrl)/terminal/\(sessionId)/execute")!
         var request = URLRequest(url: url)

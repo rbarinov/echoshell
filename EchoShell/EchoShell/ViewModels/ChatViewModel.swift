@@ -9,23 +9,13 @@
 import Foundation
 import Combine
 
-enum ChatViewMode {
-    case agent // Current execution
-    case history // Full conversation history
-}
-
 @MainActor
 class ChatViewModel: ObservableObject {
     // MARK: - Published State
     
-    /// Full chat history (all messages from session start)
+    /// Full chat history (all messages from session start, continuously accumulated)
+    /// Messages are never cleared - they accumulate throughout the session
     @Published var chatHistory: [ChatMessage] = []
-    
-    /// Messages from current execution only
-    @Published var currentExecutionMessages: [ChatMessage] = []
-    
-    /// Current view mode (Agent or History)
-    @Published var viewMode: ChatViewMode = .agent
     
     // MARK: - Session Info
     
@@ -44,39 +34,26 @@ class ChatViewModel: ObservableObject {
     // MARK: - Public Methods
     
     /// Add a chat message to history
+    /// All messages are added except system messages
+    /// Messages accumulate continuously - never cleared
     func addMessage(_ message: ChatMessage) {
-        // Add to full history
-        chatHistory.append(message)
-        
-        // Add to current execution if it's part of current execution
-        // (We'll track this based on execution state)
-        currentExecutionMessages.append(message)
-    }
-    
-    /// Clear current execution messages (when new command starts)
-    func clearCurrentExecution() {
-        currentExecutionMessages = []
-    }
-    
-    /// Move current execution messages to history (when execution completes)
-    func finalizeCurrentExecution() {
-        // Current execution messages are already in chatHistory
-        // Just clear the current execution list
-        currentExecutionMessages = []
-    }
-    
-    /// Toggle view mode
-    func toggleViewMode() {
-        viewMode = viewMode == .agent ? .history : .agent
-    }
-    
-    /// Get messages for current view mode
-    func getMessagesForCurrentMode() -> [ChatMessage] {
-        switch viewMode {
-        case .agent:
-            return currentExecutionMessages
-        case .history:
-            return chatHistory
+        // Filter out system messages - don't add them to history
+        guard message.type != .system else {
+            print("ℹ️ ChatViewModel: Skipping system message: \(message.content.prefix(50))")
+            return
         }
+        
+        // Add to full history (continuously accumulated, never cleared)
+        chatHistory.append(message)
+        print("✅ ChatViewModel: Added message (type: \(message.type), total: \(chatHistory.count))")
+    }
+    
+    /// Load messages from history (used when restoring from server)
+    func loadMessages(_ messages: [ChatMessage]) {
+        // Filter out system messages, but keep all other types (user, assistant, tool, error, thinking, code, etc.)
+        let filteredMessages = messages.filter { $0.type != .system }
+        chatHistory = filteredMessages
+        
+        print("✅ ChatViewModel: Loaded \(filteredMessages.count) messages (filtered from \(messages.count))")
     }
 }

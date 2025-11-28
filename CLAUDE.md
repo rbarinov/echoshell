@@ -270,8 +270,10 @@ Distributed system for remote terminal management and execution via voice comman
 #### FR-5: Headless Terminal Execution
 - FR-5.1: **Cursor Agent** SHALL execute with mandatory flags: `--output-format stream-json --print`
 - FR-5.2: **Cursor Agent** SHALL use `--resume <session_id>` for subsequent commands to maintain context
-- FR-5.3: **Claude CLI** SHALL execute with `--output-format json-stream` flag
-- FR-5.4: **Claude CLI** SHALL use `--session-id <session_id>` for subsequent commands
+- FR-5.3: **Claude CLI** SHALL execute with `--verbose --print -p "prompt" --output-format stream-json` flags
+  - **Note**: `--verbose` is REQUIRED when using `--print` with `--output-format stream-json`
+- FR-5.4: **Claude CLI** SHALL use `--resume <session_id>` for subsequent commands to maintain context (NOT --session-id)
+- FR-5.5: **Claude CLI** SHALL wait at least 1500ms after process termination before starting new command to release session lock
 - FR-5.5: Laptop SHALL extract `session_id` from JSON output (from `system/init` or any message with `session_id` field)
 - FR-5.6: Laptop SHALL store `session_id` in session state for reuse in next command
 - FR-5.7: Laptop SHALL detect command completion via `result` message type
@@ -466,7 +468,7 @@ Response:
 2. Laptop creates user ChatMessage and adds to chat history
 3. Laptop spawns subprocess directly (no PTY, no shell):
    - `cursor-agent --output-format stream-json --print --resume <session_id> "prompt"`
-   - `claude --verbose --print -p "prompt" --output-format json-stream --session-id <session_id>`
+   - `claude --verbose --print -p "prompt" --output-format stream-json --resume <session_id>`
 4. Output is captured via subprocess stdout stream
 5. JSON lines are parsed by AgentOutputParser to extract:
    - `session_id` (stored in HeadlessExecutor for next command)

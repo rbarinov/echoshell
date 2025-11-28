@@ -20,6 +20,7 @@ export interface ChatMessageMetadata {
   thinking?: string;
   errorCode?: string;
   stackTrace?: string;
+  completion?: boolean; // true if this message indicates command completion
 }
 
 /**

@@ -49,12 +49,43 @@ export function createTerminalRoutes(terminalManager: TerminalManager): Router {
   router.get('/:sessionId/history', (req, res) => {
     try {
       const { sessionId } = req.params;
+      const session = terminalManager.getSession(sessionId);
+
+      if (!session) {
+        console.log(`⚠️ [Express] GET /terminal/${sessionId}/history - Session not found`);
+        return res.status(404).json({ error: 'Session not found' });
+      }
+
+      // For headless terminals, return chat history from in-memory state (already loaded from DB)
+      if (session.terminalType === 'cursor' || session.terminalType === 'claude') {
+        if (!session.chatHistory) {
+          console.log(`⚠️ [Express] GET /terminal/${sessionId}/history - Chat history not initialized`);
+          // Return empty history
+          return res.json({
+            session_id: sessionId,
+            chat_history: [],
+            history: ''
+          });
+        }
+
+        const messageCount = session.chatHistory.messages.length;
+        console.log(`📂 [Express] GET /terminal/${sessionId}/history - Returning ${messageCount} messages from in-memory history`);
+
+        return res.json({
+          session_id: sessionId,
+          chat_history: session.chatHistory.messages, // Return as JSON array
+          history: '' // Legacy format (empty for headless)
+        });
+      }
+
+      // For regular terminals, return text history
       const history = terminalManager.getHistory(sessionId);
       res.json({
         session_id: sessionId,
         history
       });
     } catch (error) {
+      console.error(`❌ [Express] Error getting history for ${req.params.sessionId}:`, error);
       res.status(500).json({ error: 'Failed to get history' });
     }
   });
@@ -73,6 +104,21 @@ export function createTerminalRoutes(terminalManager: TerminalManager): Router {
     } catch (error) {
       console.error(`❌ [Express] Error executing command:`, error);
       res.status(500).json({ error: 'Failed to execute command' });
+    }
+  });
+
+  router.post('/:sessionId/cancel', (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      console.log(`🛑 [Express] POST /terminal/${sessionId}/cancel - Cancelling current command`);
+      terminalManager.cancelCommand(sessionId);
+      res.json({
+        session_id: sessionId,
+        status: 'cancelled'
+      });
+    } catch (error) {
+      console.error(`❌ [Express] Error cancelling command:`, error);
+      res.status(500).json({ error: 'Failed to cancel command' });
     }
   });
 

@@ -930,9 +930,9 @@ struct RecordingView: View {
         guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }) else { return }
         guard session.terminalType == .cursor else { return }
 
-        wsClient.connect(config: config, sessionId: sessionId) { _ in
+        wsClient.connect(config: config, sessionId: sessionId, onMessage: { _ in
             // Intentionally ignore raw output for recording view - clean output is streamed separately
-        }
+        })
     }
     
     // Connect to the backend-provided recording stream that already contains cleaned output

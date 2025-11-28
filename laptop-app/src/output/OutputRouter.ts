@@ -90,6 +90,29 @@ export class OutputRouter {
       return;
     }
 
+    // If this is a complete message (TTS ready), send as tts_ready event
+    if (message.metadata?.isComplete === true) {
+      const ttsPayload = {
+        type: 'tts_ready',
+        session_id: message.sessionId,
+        text: message.metadata?.fullText || message.data,
+        timestamp: Date.now()
+      };
+      
+      // Send tts_ready event via tunnel client
+      this.tunnelClient.sendRecordingOutput(message.sessionId, {
+        ...ttsPayload,
+        text: ttsPayload.text,
+        delta: '',
+        raw: '',
+        timestamp: ttsPayload.timestamp,
+        isComplete: true,
+        isTTSReady: true // Flag to indicate this is a tts_ready event
+      });
+      return;
+    }
+
+    // Legacy format for streaming messages
     const payload = {
       text: message.metadata?.fullText || message.data,
       delta: message.metadata?.delta || message.data,

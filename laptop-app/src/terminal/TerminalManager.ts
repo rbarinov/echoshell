@@ -8,6 +8,7 @@ import { StateManager, type TerminalSessionState } from '../storage/StateManager
 import type { OutputRouter } from '../output/OutputRouter';
 import { HeadlessExecutor } from './HeadlessExecutor';
 import { AgentOutputParser } from '../output/AgentOutputParser';
+import { ChatHistoryDatabase } from '../database/ChatHistoryDatabase';
 import type {
   TerminalType,
   HeadlessTerminalType,
@@ -42,24 +43,32 @@ export class TerminalManager {
   private tunnelClient: TunnelClient | null = null;
   private outputRouter: OutputRouter | null = null;
   private stateManager: StateManager;
+  private chatHistoryDb: ChatHistoryDatabase;
   private globalOutputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private globalInputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private sessionDestroyedListeners = new Set<(sessionId: string) => void>();
   private chatMessageListeners = new Set<(sessionId: string, message: ChatMessage, isComplete: boolean) => void>();
-  
-  constructor(stateManager: StateManager) {
+
+  constructor(stateManager: StateManager, chatHistoryDb?: ChatHistoryDatabase) {
     this.stateManager = stateManager;
+    this.chatHistoryDb = chatHistoryDb || new ChatHistoryDatabase();
   }
   
   async restoreSessions(): Promise<void> {
     console.log('🔄 Attempting to restore terminal sessions...');
+
+    // Cleanup old chat history from previous sessions (on app restart)
+    console.log('🧹 Cleaning up old chat history from previous sessions...');
+    this.chatHistoryDb.cleanupOldSessions();
+    this.chatHistoryDb.vacuum();
+
     const state = await this.stateManager.loadState();
-    
+
     if (!state || !state.sessions || state.sessions.length === 0) {
       console.log('📂 No sessions to restore');
       return;
     }
-    
+
     console.log(`🔄 Found ${state.sessions.length} sessions to restore`);
     console.log('⚠️  Note: PTY sessions cannot be restored after application restart. Creating new sessions instead.');
 
@@ -210,15 +219,21 @@ export class TerminalManager {
       // For headless terminals: create HeadlessExecutor and initialize chat history
       const executor = new HeadlessExecutor(cwd, terminalType);
       session.executor = executor;
-      
+
+      // Create session in database
+      this.chatHistoryDb.createSession(sessionId);
+
+      // Load chat history from database (in case session is being recreated)
+      const loadedHistory = this.chatHistoryDb.getChatHistory(sessionId);
+
       // Initialize chat history
-      session.chatHistory = {
+      session.chatHistory = loadedHistory || {
         sessionId,
         messages: [],
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      
+
       // Initialize current execution state
       session.currentExecution = {
         isRunning: false,
@@ -259,6 +274,73 @@ export class TerminalManager {
     return { sessionId, workingDir: cwd, terminalType, name };
   }
   
+  /**
+   * Cancel current command execution for a session
+   * This is used when user starts a new recording while previous command is still running
+   * Preserves session_id for headless terminals so they can resume with --resume flag
+   */
+  cancelCommand(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    
+    if (!session) {
+      console.warn(`⚠️ [${sessionId}] Cannot cancel: session not found`);
+      return;
+    }
+    
+    console.log(`🛑 [${sessionId}] Cancelling current command execution`);
+    
+    if (this.isHeadlessTerminal(session.terminalType)) {
+      // For headless terminals, kill the subprocess but preserve session_id for resume
+      if (session.executor && session.executor.isRunning()) {
+        console.log(`🛑 [${sessionId}] Killing headless executor subprocess`);
+        
+        // Get session_id before killing (to preserve it)
+        const preservedSessionId = session.executor.getCliSessionId();
+        
+        // Kill the process
+        session.executor.kill();
+        
+        // Mark execution as cancelled (not running)
+        if (session.currentExecution) {
+          session.currentExecution.isRunning = false;
+          // Preserve CLI session_id in currentExecution for next command
+          if (preservedSessionId) {
+            session.currentExecution.cliSessionId = preservedSessionId;
+          }
+        }
+        
+        // Add cancellation message to chat history (system message, will be filtered in UI)
+        if (session.chatHistory) {
+          const cancelMessage: ChatMessage = {
+            id: randomUUID(),
+            timestamp: Date.now(),
+            type: 'system',
+            content: 'Command cancelled by user',
+          };
+          this.addMessageToHistory(session, cancelMessage);
+
+          if (this.outputRouter) {
+            this.outputRouter.sendChatMessage(sessionId, cancelMessage);
+          }
+        }
+        
+        console.log(`✅ [${sessionId}] Command cancelled, session_id preserved: ${preservedSessionId || 'none'}`);
+      } else {
+        console.log(`ℹ️ [${sessionId}] No running command to cancel`);
+      }
+    } else {
+      // For regular terminals, send interrupt signal (Ctrl+C)
+      if (session.pty) {
+        console.log(`🛑 [${sessionId}] Sending interrupt signal to PTY`);
+        try {
+          session.pty.write('\x03'); // Ctrl+C
+        } catch (error) {
+          console.error(`❌ [${sessionId}] Error sending interrupt:`, error);
+        }
+      }
+    }
+  }
+
   executeCommand(sessionId: string, command: string): Promise<string> {
     // Log call stack to see where this is called from
     const stack = new Error().stack;
@@ -308,11 +390,14 @@ export class TerminalManager {
       throw new Error('Headless terminal not properly initialized');
     }
 
-    // Check if already running
+    // If already running, cancel the current command first
+    // This allows user to interrupt and start a new command
     if (session.currentExecution.isRunning) {
-      const errorMsg = `Headless session is busy. Please wait for the current command to finish.`;
-      console.error(`❌ [${session.sessionId}] ${errorMsg}`);
-      throw new Error(errorMsg);
+      console.log(`⚠️ [${session.sessionId}] Command already running, cancelling it first`);
+      this.cancelCommand(session.sessionId);
+      
+      // Wait a bit for cancellation to complete
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     // Get current CLI session ID from executor
@@ -332,8 +417,7 @@ export class TerminalManager {
       type: 'user',
       content: prompt,
     };
-    session.chatHistory.messages.push(userMessage);
-    session.chatHistory.updatedAt = Date.now();
+    this.addMessageToHistory(session, userMessage);
     session.currentExecution.currentMessages.push(userMessage);
 
     // Send user message via OutputRouter
@@ -349,7 +433,7 @@ export class TerminalManager {
       session.currentExecution.isRunning = false;
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error(`❌ [${session.sessionId}] Failed to execute command: ${errorMessage}`);
-      
+
       // Create error message
       const errorMsg: ChatMessage = {
         id: randomUUID(),
@@ -357,8 +441,7 @@ export class TerminalManager {
         type: 'error',
         content: `Failed to execute command: ${errorMessage}`,
       };
-      session.chatHistory.messages.push(errorMsg);
-      session.chatHistory.updatedAt = Date.now();
+      this.addMessageToHistory(session, errorMsg);
       session.currentExecution.currentMessages.push(errorMsg);
       
       if (this.outputRouter) {
@@ -371,8 +454,14 @@ export class TerminalManager {
     // Set timeout for completion (60 seconds)
     const completionTimeout = setTimeout(() => {
       if (session.currentExecution?.isRunning) {
-        console.log(`⏱️ [${session.sessionId}] Command completion timeout - marking as complete`);
+        console.log(`⏱️ [${session.sessionId}] Command completion timeout - marking as complete and killing process`);
         session.currentExecution.isRunning = false;
+        
+        // Force kill the process if it's still running
+        if (session.executor && session.executor.isRunning()) {
+          console.log(`🛑 [${session.sessionId}] Timeout reached, killing process`);
+          session.executor.kill();
+        }
       }
     }, 60000);
 
@@ -475,10 +564,16 @@ export class TerminalManager {
       if (session.executor) {
         session.executor.cleanup();
       }
-      
+
+      // Cleanup chat history from database (for headless terminals)
+      if (this.isHeadlessTerminal(session.terminalType)) {
+        console.log(`🧹 [${sessionId}] Cleaning up chat history from database`);
+        this.chatHistoryDb.deleteSession(sessionId);
+      }
+
       // Kill all processes in the process group (graceful shutdown)
       await this.killSessionProcesses(session);
-      
+
       this.sessions.delete(sessionId);
       this.outputListeners.delete(sessionId);
 
@@ -489,12 +584,12 @@ export class TerminalManager {
            console.error('❌ Session destroyed listener error:', error);
          }
        });
-      
+
       // Update state file
       this.saveSessionsState().catch(err => {
         console.error('Failed to save sessions state:', err);
       });
-      
+
       console.log(`🗑️  Destroyed session: ${sessionId}`);
     }
   }
@@ -541,6 +636,27 @@ export class TerminalManager {
 
   private isHeadlessTerminal(type: TerminalType): type is HeadlessTerminalType {
     return type === 'cursor' || type === 'claude';
+  }
+
+  /**
+   * Add message to chat history and persist to database
+   */
+  private addMessageToHistory(session: TerminalSession, message: ChatMessage): void {
+    if (!session.chatHistory) {
+      console.warn(`⚠️ [${session.sessionId}] No chat history available to add message`);
+      return;
+    }
+
+    // Add to in-memory history
+    session.chatHistory.messages.push(message);
+    session.chatHistory.updatedAt = Date.now();
+
+    // Persist to database (for headless terminals only)
+    if (this.isHeadlessTerminal(session.terminalType)) {
+      this.chatHistoryDb.addMessage(session.sessionId, message);
+    }
+
+    console.log(`✅ [${session.sessionId}] Message added to history: ${message.type}`);
   }
 
   /**
@@ -682,6 +798,34 @@ export class TerminalManager {
           if (session.currentExecution) {
             session.currentExecution.isRunning = false;
           }
+
+          // Clear execution timeout (command completed successfully)
+          if (session.executor) {
+            session.executor.clearTimeout();
+            console.log(`⏰ [${session.sessionId}] Execution timeout cleared on completion`);
+          }
+
+          // Send completion message to clients via WebSocket
+          // This allows mobile app to detect process completion and reset UI state
+          const completionMessage: ChatMessage = {
+            id: randomUUID(),
+            timestamp: Date.now(),
+            type: 'system',
+            content: 'Command completed',
+            metadata: {
+              completion: true
+            }
+          };
+          
+          // Add to chat history (will be filtered in UI, but useful for debugging)
+          if (session.chatHistory) {
+            this.addMessageToHistory(session, completionMessage);
+          }
+          
+          // Send completion message via OutputRouter
+          if (this.outputRouter) {
+            this.outputRouter.sendChatMessage(session.sessionId, completionMessage);
+          }
           
           // Notify chat message listeners about completion (for RecordingStreamManager)
           // Send a completion signal with the last message if available
@@ -695,6 +839,17 @@ export class TerminalManager {
               }
             });
           }
+          
+          // Command completed - terminate the process after a short delay
+          // This ensures all output is processed before killing the process
+          console.log(`✅ [${session.sessionId}] Command completed, terminating process...`);
+          setTimeout(() => {
+            if (session.executor && session.executor.isRunning()) {
+              console.log(`🛑 [${session.sessionId}] Process still running after completion, killing it...`);
+              session.executor.kill();
+            }
+          }, 2000); // Wait 2 seconds for any final output
+          
           continue;
         }
 
@@ -707,8 +862,7 @@ export class TerminalManager {
 
           // Add to chat history
           if (session.chatHistory) {
-            session.chatHistory.messages.push(parsed.message);
-            session.chatHistory.updatedAt = Date.now();
+            this.addMessageToHistory(session, parsed.message);
           }
 
           // Send chat message via OutputRouter
@@ -764,6 +918,11 @@ export class TerminalManager {
         session.currentExecution.isRunning = false;
       }
       console.log(`✅ [${session.sessionId}] Headless executor exited with code: ${code}`);
+      
+      // Ensure execution state is marked as complete
+      if (code !== null && code !== 0) {
+        console.warn(`⚠️ [${session.sessionId}] Process exited with non-zero code: ${code}`);
+      }
     });
   }
 

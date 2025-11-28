@@ -60,12 +60,6 @@ struct UnifiedHeaderView: View {
             
             Spacer()
             
-            // Toggle button for Agent/Terminal mode (only for cursor/claude terminals)
-            if case .terminalDetail(_, _, _, let terminalType) = navigationState,
-               sessionState.supportsAgentMode(terminalType: terminalType) {
-                terminalModeToggle
-            }
-            
             // Right: Connection status
             ConnectionStatusIndicator(state: connectionState)
                 .frame(width: 44, height: 44, alignment: .center)
@@ -157,20 +151,6 @@ struct UnifiedHeaderView: View {
                 .frame(width: 44, height: 44, alignment: .center)
                 .contentShape(Rectangle())
         }
-    }
-    
-    private var terminalModeToggle: some View {
-        Button {
-            // Toggle view mode using SessionStateManager (single source of truth)
-            sessionState.toggleViewMode()
-        } label: {
-            Image(systemName: sessionState.activeViewMode == .agent ? "brain.head.profile" : "terminal.fill")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundColor(.blue)
-                .frame(width: 44, height: 44, alignment: .center)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
     
     @ViewBuilder
