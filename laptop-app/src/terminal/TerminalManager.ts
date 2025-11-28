@@ -57,10 +57,9 @@ export class TerminalManager {
   async restoreSessions(): Promise<void> {
     console.log('🔄 Attempting to restore terminal sessions...');
 
-    // Cleanup old chat history from previous sessions (on app restart)
-    console.log('🧹 Cleaning up old chat history from previous sessions...');
-    this.chatHistoryDb.cleanupOldSessions();
-    this.chatHistoryDb.vacuum();
+    // Note: We do NOT cleanup chat history on app restart
+    // History is persisted in DB and will be loaded when session is recreated
+    // Only cleanup happens when user explicitly deletes a session (destroySession)
 
     const state = await this.stateManager.loadState();
 
@@ -74,6 +73,7 @@ export class TerminalManager {
 
     // PTY connections are lost when application restarts
     // Clear the state and let users create new sessions
+    // Chat history will be loaded from DB when session is recreated with same ID
     await this.stateManager.saveSessionsState([]);
   }
   

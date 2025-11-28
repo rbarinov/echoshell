@@ -166,19 +166,12 @@ struct ChatTerminalView: View {
                 Image(systemName: iconName)
                     .font(.system(size: 60))
                     .foregroundColor(iconColor)
-                    .scaleEffect(audioRecorder.isRecording ? 1.1 : 1.0)
-                    .animation(.easeInOut(duration: 0.3).repeatForever(autoreverses: true), value: audioRecorder.isRecording)
             }
             
             if audioRecorder.isTranscribing {
                 Text("Transcribing...")
                     .font(.caption)
                     .foregroundColor(.secondary)
-            } else if !audioRecorder.recognizedText.isEmpty {
-                Text(audioRecorder.recognizedText)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal)
             }
         }
         .padding()
