@@ -39,7 +39,6 @@ struct ChatTerminalView: View {
     @StateObject private var audioPlayer: AudioPlayer
     @StateObject private var ttsService: TTSService
     @State private var lastTTSedText: String = "" // Track last TTS to prevent duplicates
-    @State private var showTTSPlayer: Bool = false // Show TTS playback card
     @State private var isAgentProcessing: Bool = false // Track if agent is processing
     @State private var ttsState: TTSState = .idle // TTS state machine
     
@@ -60,17 +59,6 @@ struct ChatTerminalView: View {
                 messages: chatViewModel.chatHistory,
                 isAgentMode: true // Always in "agent" mode (showing all messages)
             )
-            
-            // TTS playback card (shown after TTS is generated)
-            if showTTSPlayer && ttsService.lastAudioData != nil {
-                TTSPlayerCard(
-                    ttsService: ttsService,
-                    onDismiss: {
-                        showTTSPlayer = false
-                    }
-                )
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
             
             // Recording button
             recordingButtonView
@@ -127,11 +115,18 @@ struct ChatTerminalView: View {
                 if audioRecorder.isRecording {
                     audioRecorder.stopRecording()
                 } else {
+                    // Stop any current TTS playback before starting new recording
+                    if ttsState.isActive || audioPlayer.isPlaying {
+                        print("🛑 ChatTerminalView: Stopping TTS before new recording")
+                        ttsService.stop()
+                    }
+                    
                     // Cancel current command execution before starting new recording
                     Task {
                         await cancelCurrentCommand()
                         isAgentProcessing = false // Reset processing state
                         ttsState = .idle // Reset TTS state
+                        lastTTSedText = "" // Reset last TTS text to allow new generation
                     }
 
                     audioRecorder.startRecording()
@@ -238,10 +233,12 @@ struct ChatTerminalView: View {
                         return
                     }
 
-                    // Check if TTS is already in progress using state machine
-                    if self.ttsState.isActive {
-                        print("⚠️ ChatTerminalView: TTS already active (state: \(self.ttsState)), skipping")
-                        return
+                    // Stop any previous playback before starting new TTS
+                    // This ensures only one playback at a time
+                    if self.ttsState.isActive || self.audioPlayer.isPlaying {
+                        print("🛑 ChatTerminalView: Stopping previous TTS playback")
+                        self.ttsService.stop()
+                        self.ttsState = .idle
                     }
 
                     // Mark this text as processed BEFORE generating (prevent race conditions)
@@ -261,11 +258,6 @@ struct ChatTerminalView: View {
 
                         // Transition to ready state
                         self.ttsState = .ready
-
-                        // Show TTS player card after successful generation
-                        withAnimation {
-                            self.showTTSPlayer = true
-                        }
 
                         // Reset agent processing state after TTS completes
                         self.isAgentProcessing = false
@@ -299,8 +291,9 @@ struct ChatTerminalView: View {
     
     private func loadChatHistory() async {
         do {
-            print("📂 ChatTerminalView: Loading chat history for session \(session.id)")
+            print("📂📂📂 ChatTerminalView: Loading chat history for session \(session.id)")
             print("   API URL: \(config.apiBaseUrl)/terminal/\(session.id)/history")
+            print("   Current chatHistory count BEFORE load: \(chatViewModel.chatHistory.count)")
             
             // Try to get chat history as JSON (for headless terminals)
             let url = URL(string: "\(config.apiBaseUrl)/terminal/\(session.id)/history")!
@@ -309,8 +302,6 @@ struct ChatTerminalView: View {
             
             // Add auth header
             request.setValue(config.authKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
-            
-            print("   Request headers: X-Device-ID=\(UIDevice.current.identifierForVendor?.uuidString ?? "unknown"), X-Laptop-Auth-Key=\(config.authKey.prefix(10))...")
             
             let (data, response) = try await URLSession.shared.data(for: request)
             
@@ -333,7 +324,7 @@ struct ChatTerminalView: View {
             
             // Log raw response for debugging
             if let responseString = String(data: data, encoding: .utf8) {
-                print("   Raw response: \(responseString.prefix(500))")
+                print("   Raw response (first 1000 chars): \(responseString.prefix(1000))")
             }
             
             struct HistoryResponse: Codable {
@@ -349,29 +340,34 @@ struct ChatTerminalView: View {
             // Load chat history if available (even if empty, to initialize the view)
             if let chatHistory = historyResponse.chat_history {
                 await MainActor.run {
+                    // Log message types for debugging
+                    let typeCounts = Dictionary(grouping: chatHistory, by: { $0.type }).mapValues { $0.count }
+                    print("   Message types in history: \(typeCounts)")
+                    
                     if !chatHistory.isEmpty {
-                        print("✅ ChatTerminalView: Loaded \(chatHistory.count) messages from history")
+                        print("✅✅✅ ChatTerminalView: Loading \(chatHistory.count) messages from history")
                     } else {
                         print("ℹ️ ChatTerminalView: Chat history is empty (no messages yet)")
                     }
                     chatViewModel.loadMessages(chatHistory)
+                    print("   chatHistory count AFTER load: \(chatViewModel.chatHistory.count)")
                 }
             } else {
                 print("⚠️ ChatTerminalView: chat_history field is nil in response")
             }
         } catch {
-            print("❌ ChatTerminalView: Error loading chat history: \(error.localizedDescription)")
+            print("❌❌❌ ChatTerminalView: Error loading chat history: \(error)")
             if let decodingError = error as? DecodingError {
                 print("   Decoding error details: \(decodingError)")
                 switch decodingError {
                 case .typeMismatch(let type, let context):
-                    print("     Type mismatch: expected \(type), at \(context.codingPath)")
+                    print("     Type mismatch: expected \(type), at codingPath: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
                 case .valueNotFound(let type, let context):
-                    print("     Value not found: \(type), at \(context.codingPath)")
+                    print("     Value not found: \(type), at codingPath: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
                 case .keyNotFound(let key, let context):
-                    print("     Key not found: \(key), at \(context.codingPath)")
+                    print("     Key not found: '\(key.stringValue)', at codingPath: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
                 case .dataCorrupted(let context):
-                    print("     Data corrupted: \(context.debugDescription)")
+                    print("     Data corrupted: \(context.debugDescription), at codingPath: \(context.codingPath.map { $0.stringValue }.joined(separator: "."))")
                 @unknown default:
                     print("     Unknown decoding error")
                 }
@@ -418,61 +414,3 @@ struct ChatTerminalView: View {
     }
 }
 
-// MARK: - TTS Player Card
-
-struct TTSPlayerCard: View {
-    @ObservedObject var ttsService: TTSService
-    let onDismiss: () -> Void
-    @State private var isPlaying: Bool = false
-    
-    var body: some View {
-        HStack(spacing: 12) {
-            // Play/Pause button
-            Button(action: {
-                if isPlaying {
-                    ttsService.stop()
-                    isPlaying = false
-                } else {
-                    Task {
-                        await ttsService.replay()
-                        isPlaying = true
-                    }
-                }
-            }) {
-                Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 32))
-                    .foregroundColor(.blue)
-            }
-            
-            // TTS label
-            VStack(alignment: .leading, spacing: 4) {
-                Text("AI Response Audio")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                Text("Tap to replay")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            
-            Spacer()
-            
-            // Dismiss button
-            Button(action: onDismiss) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 24))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(12)
-        .shadow(color: Color.black.opacity(0.1), radius: 4, x: 0, y: -2)
-        .padding(.horizontal)
-        .onReceive(EventBus.shared.ttsPlaybackFinishedPublisher) { _ in
-            isPlaying = false
-        }
-        .onChange(of: ttsService.audioPlayer.isPlaying) { oldValue, newValue in
-            isPlaying = newValue
-        }
-    }
-}
