@@ -170,4 +170,85 @@ export class StreamManager {
   getRecordingWsStreamsMap(): Map<string, Set<StreamConnection>> {
     return this.recordingWsStreams;
   }
+
+  /**
+   * Gracefully shutdown all stream connections
+   * Closes all WebSocket connections and clears all intervals
+   */
+  shutdown(): void {
+    Logger.info('Shutting down StreamManager', {
+      terminalStreams: this.terminalStreams.size,
+      recordingWsStreams: this.recordingWsStreams.size,
+      recordingSseStreams: this.recordingSseStreams.size,
+    });
+
+    // Close terminal streams
+    for (const [streamKey, connections] of this.terminalStreams) {
+      for (const conn of connections) {
+        try {
+          // Clear intervals
+          if (conn.pingInterval) {
+            clearInterval(conn.pingInterval);
+          }
+          if (conn.healthCheckInterval) {
+            clearInterval(conn.healthCheckInterval);
+          }
+          // Close WebSocket
+          if (conn.ws.readyState === 1) { // WebSocket.OPEN
+            conn.ws.close(1001, 'Server shutting down');
+          }
+        } catch (error) {
+          Logger.warn('Error closing terminal stream', {
+            streamKey,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+    }
+
+    // Close recording WebSocket streams
+    for (const [streamKey, connections] of this.recordingWsStreams) {
+      for (const conn of connections) {
+        try {
+          // Clear intervals
+          if (conn.pingInterval) {
+            clearInterval(conn.pingInterval);
+          }
+          if (conn.healthCheckInterval) {
+            clearInterval(conn.healthCheckInterval);
+          }
+          // Close WebSocket
+          if (conn.ws.readyState === 1) { // WebSocket.OPEN
+            conn.ws.close(1001, 'Server shutting down');
+          }
+        } catch (error) {
+          Logger.warn('Error closing recording stream', {
+            streamKey,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+    }
+
+    // End SSE streams
+    for (const [streamKey, responses] of this.recordingSseStreams) {
+      for (const res of responses) {
+        try {
+          res.end();
+        } catch (error) {
+          Logger.warn('Error closing SSE stream', {
+            streamKey,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      }
+    }
+
+    // Clear all maps
+    this.terminalStreams.clear();
+    this.recordingWsStreams.clear();
+    this.recordingSseStreams.clear();
+
+    Logger.info('StreamManager shutdown complete');
+  }
 }

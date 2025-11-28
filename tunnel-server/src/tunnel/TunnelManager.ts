@@ -107,4 +107,33 @@ export class TunnelManager {
       }
     }
   }
+
+  /**
+   * Gracefully shutdown all tunnel connections
+   * Closes all WebSocket connections and clears all intervals
+   */
+  shutdown(): void {
+    Logger.info('Shutting down TunnelManager', { activeTunnels: this.tunnels.size });
+
+    for (const [tunnelId, tunnel] of this.tunnels) {
+      // Clear intervals first
+      this.cleanupIntervals(tunnelId);
+
+      // Close WebSocket connection
+      try {
+        if (tunnel.ws.readyState === 1) { // WebSocket.OPEN
+          tunnel.ws.close(1001, 'Server shutting down');
+        }
+      } catch (error) {
+        Logger.warn('Error closing tunnel WebSocket', {
+          tunnelId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+
+    // Clear all tunnels
+    this.tunnels.clear();
+    Logger.info('TunnelManager shutdown complete');
+  }
 }

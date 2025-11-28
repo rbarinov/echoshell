@@ -96,22 +96,43 @@ async function main(): Promise<void> {
       });
     });
 
-    // Graceful shutdown
-    process.on('SIGTERM', () => {
-      Logger.info('SIGTERM received, shutting down gracefully');
-      server.close(() => {
-        Logger.info('Server closed');
-        process.exit(0);
-      });
-    });
+    // Graceful shutdown handler
+    const SHUTDOWN_TIMEOUT_MS = 5000; // Force exit after 5 seconds
+    let isShuttingDown = false;
 
-    process.on('SIGINT', () => {
-      Logger.info('SIGINT received, shutting down gracefully');
+    const gracefulShutdown = (signal: string) => {
+      if (isShuttingDown) {
+        Logger.warn('Shutdown already in progress, forcing exit');
+        process.exit(1);
+      }
+      isShuttingDown = true;
+
+      Logger.info(`${signal} received, shutting down gracefully`);
+
+      // Set force exit timeout
+      const forceExitTimeout = setTimeout(() => {
+        Logger.error('Graceful shutdown timeout, forcing exit');
+        process.exit(1);
+      }, SHUTDOWN_TIMEOUT_MS);
+
+      // Unref so it doesn't keep the process alive if everything closes properly
+      forceExitTimeout.unref();
+
+      // Close all WebSocket connections first
+      Logger.info('Closing all connections...');
+      tunnelManager.shutdown();
+      streamManager.shutdown();
+
+      // Then close the HTTP server
       server.close(() => {
-        Logger.info('Server closed');
+        Logger.info('HTTP server closed');
+        clearTimeout(forceExitTimeout);
         process.exit(0);
       });
-    });
+    };
+
+    process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+    process.on('SIGINT', () => gracefulShutdown('SIGINT'));
   } catch (error) {
     Logger.error('Failed to start server', {
       error: error instanceof Error ? error.message : 'Unknown error',
