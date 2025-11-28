@@ -555,10 +555,25 @@ export class TerminalManager {
     delete env.ENV;
 
     const shellArgs: string[] = [];
-    if (shell.includes('zsh')) {
-      shellArgs.push('-i');
-    } else if (shell.includes('bash')) {
-      shellArgs.push('-i');
+
+    // For headless terminals, start shell with echo disabled from the beginning
+    // This prevents duplicate character display when using cursor-agent or claude-cli
+    if (terminalType && this.isHeadlessTerminal(terminalType)) {
+      if (shell.includes('zsh')) {
+        // For zsh: use -c to run command that disables echo, then starts interactive shell
+        shellArgs.push('-c', 'stty -echo; exec zsh -i');
+      } else if (shell.includes('bash')) {
+        // For bash: use -c to run command that disables echo, then starts interactive shell
+        shellArgs.push('-c', 'stty -echo; exec bash -i');
+      }
+      console.log(`🔇 Creating headless terminal (${terminalType}) with echo disabled from start`);
+    } else {
+      // For regular terminals, use normal interactive mode with echo
+      if (shell.includes('zsh')) {
+        shellArgs.push('-i');
+      } else if (shell.includes('bash')) {
+        shellArgs.push('-i');
+      }
     }
 
     const pty = spawn(shell, shellArgs, {
@@ -568,22 +583,6 @@ export class TerminalManager {
       cwd,
       env
     });
-
-    // For headless terminals, disable local echo to prevent duplicate characters
-    // Headless terminals (cursor/claude) handle their own output, so we don't want shell echo
-    if (terminalType && this.isHeadlessTerminal(terminalType)) {
-      // Wait for shell to initialize, then disable echo
-      setTimeout(() => {
-        try {
-          // Use stty to disable local echo
-          // This prevents the shell from echoing back typed characters
-          pty.write('stty -echo\r');
-          console.log(`🔇 Disabled local echo for headless terminal (${terminalType})`);
-        } catch (error) {
-          console.warn(`⚠️  Failed to disable echo for headless terminal: ${error}`);
-        }
-      }, 100);
-    }
 
     return pty;
   }
