@@ -208,7 +208,7 @@ Distributed system for remote terminal management and execution via voice comman
   - QR code generation for mobile pairing
   - API key management (master keys storage)
   - Ephemeral key distribution to mobile
-  - Terminal session management (PTY-based)
+  - Terminal session management (PTY-based for regular, subprocess-based for headless)
   - LangChain.js AI agent for command routing
   - Command execution via multiple tools
   - Real-time output capture and streaming
@@ -237,21 +237,22 @@ Distributed system for remote terminal management and execution via voice comman
 - FR-2.2: iPhone SHALL transcribe audio locally using Whisper API with ephemeral key
 - FR-2.3: iPhone SHALL display transcribed text
 - FR-2.4: iPhone SHALL send text command to laptop via tunnel API endpoint
-- FR-2.5: For headless terminals, laptop SHALL execute command via PTY using `cursor-agent` or `claude-cli`
-- FR-2.6: Laptop SHALL parse JSON output stream from CLI tools
+- FR-2.5: For headless terminals, laptop SHALL execute command via direct subprocess (no PTY) using `cursor-agent` or `claude-cli`
+- FR-2.6: Laptop SHALL parse JSON output stream from CLI tools and convert to structured ChatMessage objects
 - FR-2.7: Laptop SHALL extract `session_id` from CLI output and preserve it for subsequent commands
-- FR-2.8: Laptop SHALL stream raw output to terminal display (web/mobile) for debugging
-- FR-2.9: Laptop SHALL filter and stream only assistant messages to recording stream for TTS
+- FR-2.8: Laptop SHALL stream structured chat messages to mobile clients (chat_message format)
+- FR-2.9: Laptop SHALL accumulate assistant messages and send single tts_ready event on completion
 
 #### FR-3: Terminal Management
 - FR-3.1: Laptop SHALL support multiple concurrent terminal sessions (regular and headless)
-- FR-3.2: Headless terminals SHALL use PTY (pseudo-terminal) for command execution
+- FR-3.2: **Regular terminals** SHALL use PTY (pseudo-terminal) for command execution
+- FR-3.2a: **Headless terminals** SHALL use direct subprocess execution (no PTY, no shell)
 - FR-3.3: Headless terminals SHALL support `cursor` (cursor-agent) and `claude` (claude-cli) types
-- FR-3.4: Each session SHALL maintain its own PTY instance with interactive shell
+- FR-3.4: Regular sessions SHALL maintain PTY instance; Headless sessions SHALL use HeadlessExecutor
 - FR-3.5: iPhone SHALL display list of active sessions with terminal type indicators
 - FR-3.6: iPhone SHALL allow switching between sessions
-- FR-3.7: Laptop SHALL capture terminal output in real-time via PTY data events
-- FR-3.8: Output SHALL be streamed via WebSocket to mobile and web clients
+- FR-3.7: Regular terminals SHALL capture output via PTY; Headless terminals SHALL capture via subprocess stdout
+- FR-3.8: Regular terminals SHALL stream raw output; Headless terminals SHALL stream structured chat messages
 - FR-3.9: Headless terminals SHALL preserve CLI `session_id` between commands for context continuity
 
 #### FR-4: Output Processing & TTS
@@ -388,7 +389,9 @@ Response:
 }
 ```
 
-**Note**: For headless terminals (`cursor`, `claude`), the session uses PTY with interactive shell. Commands are executed via CLI tools through the shell.
+**Note**: 
+- For **regular terminals**: Session uses PTY with interactive shell
+- For **headless terminals** (`cursor`, `claude`): Session uses direct subprocess execution (no PTY, no shell). Commands are executed directly via CLI tools.
 
 **POST /terminal/{session_id}/execute**
 ```json
@@ -405,9 +408,11 @@ Response:
 }
 ```
 
-**Note**: For headless terminals, the command is executed via PTY. The actual output is streamed via WebSocket:
-- Raw output (all JSON) → `/terminal/{session_id}/stream` (for terminal display)
-- Filtered output (assistant messages only) → `/recording/{session_id}/stream` (for TTS)
+**Note**: 
+- For **regular terminals**: Command is written to PTY, output streamed as raw text
+- For **headless terminals**: Command is executed via direct subprocess. Output is streamed via WebSocket:
+  - Structured chat messages → `/terminal/{session_id}/stream` (chat_message format for chat interface)
+  - Accumulated assistant text → `/recording/{session_id}/stream` (tts_ready event on completion)
 
 **GET /terminal/list**
 ```json
@@ -423,8 +428,9 @@ Response:
 ```
 
 **WebSocket /terminal/{session_id}/stream**
+
+**For regular terminals** (output format):
 ```json
-Message Format:
 {
   "type": "output",
   "session_id": "dev-session",
@@ -433,26 +439,44 @@ Message Format:
 }
 ```
 
-#### 4.1.3 Headless Terminal Execution
+**For headless terminals** (chat_message format):
+```json
+{
+  "type": "chat_message",
+  "session_id": "dev-session",
+  "message": {
+    "id": "msg-uuid",
+    "timestamp": 1234567890,
+    "type": "assistant",
+    "content": "Here is the result...",
+    "metadata": { ... }
+  },
+  "timestamp": 1234567890
+}
+```
+
+#### 4.1.3 Headless Terminal Execution (Refactored Architecture)
 
 **Headless Terminal Types**:
 - `cursor`: Uses `cursor-agent` CLI tool
 - `claude`: Uses `claude` CLI tool
 
-**Command Execution Flow**:
+**Command Execution Flow** (Headless Terminals):
 1. Mobile app sends command via `POST /terminal/{session_id}/execute`
-2. Laptop builds command line with proper flags:
+2. Laptop creates user ChatMessage and adds to chat history
+3. Laptop spawns subprocess directly (no PTY, no shell):
    - `cursor-agent --output-format stream-json --print --resume <session_id> "prompt"`
-   - `claude -p "prompt" --output-format json-stream --session-id <session_id>`
-3. Command is written to PTY (shell executes it)
-4. Output is captured via `pty.onData` event
-5. JSON lines are parsed to extract:
-   - `session_id` (stored for next command)
-   - Assistant messages (sent to recording stream)
+   - `claude --verbose --print -p "prompt" --output-format json-stream --session-id <session_id>`
+4. Output is captured via subprocess stdout stream
+5. JSON lines are parsed by AgentOutputParser to extract:
+   - `session_id` (stored in HeadlessExecutor for next command)
+   - ChatMessage objects (user, assistant, tool, system, error)
    - Result messages (indicate completion)
-6. Raw output streamed to `/terminal/{session_id}/stream`
-7. Filtered output streamed to `/recording/{session_id}/stream`
-8. Mobile app receives filtered text and triggers TTS
+6. Chat messages streamed to `/terminal/{session_id}/stream` (chat_message format)
+7. Assistant messages accumulated in RecordingStreamManager
+8. On completion, single `tts_ready` event sent to `/recording/{session_id}/stream`
+9. Mobile app receives chat messages and displays in chat interface
+10. Mobile app receives tts_ready and triggers TTS synthesis
 
 ### 4.2 Tunnel Server API
 
@@ -522,18 +546,49 @@ Content-Type: application/json
 ```typescript
 interface TerminalSession {
   sessionId: string;
-  pty: IPty; // node-pty instance
   workingDir: string;
   terminalType: 'regular' | 'cursor' | 'claude';
-  outputBuffer: string[];
   inputBuffer: string[];
-  headless?: {
+  createdAt: number;
+  name?: string;
+
+  // For regular terminals
+  pty?: IPty; // node-pty instance
+  pid?: number;
+  processGroupId?: number;
+  outputBuffer?: string[];
+
+  // For headless terminals (NEW - refactored architecture)
+  executor?: HeadlessExecutor; // Direct subprocess management
+  chatHistory?: ChatHistory; // Structured chat message history
+  currentExecution?: {
     isRunning: boolean;
     cliSessionId?: string; // Session ID from CLI for context preservation
-    completionTimeout?: NodeJS.Timeout;
-    lastResultSeen?: boolean;
+    startedAt: number;
+    currentMessages: ChatMessage[]; // Messages from current execution
   };
+}
+
+interface ChatMessage {
+  id: string; // UUID
+  timestamp: number;
+  type: 'user' | 'assistant' | 'tool' | 'system' | 'error';
+  content: string;
+  metadata?: {
+    toolName?: string;
+    toolInput?: string;
+    toolOutput?: string;
+    thinking?: string;
+    errorCode?: string;
+    stackTrace?: string;
+  };
+}
+
+interface ChatHistory {
+  sessionId: string;
+  messages: ChatMessage[];
   createdAt: number;
+  updatedAt: number;
 }
 ```
 
@@ -572,6 +627,31 @@ struct KeyResponse: Codable {
     struct Keys: Codable {
         let openai: String
         let elevenlabs: String?
+    }
+}
+
+struct ChatMessage: Codable, Identifiable, Equatable {
+    let id: String
+    let timestamp: Int64
+    let type: MessageType
+    let content: String
+    let metadata: Metadata?
+    
+    enum MessageType: String, Codable {
+        case user
+        case assistant
+        case tool
+        case system
+        case error
+    }
+    
+    struct Metadata: Codable, Equatable {
+        let toolName: String?
+        let toolInput: String?
+        let toolOutput: String?
+        let thinking: String?
+        let errorCode: String?
+        let stackTrace: String?
     }
 }
 
@@ -949,10 +1029,10 @@ LOG_LEVEL=INFO  # DEBUG, INFO, WARN, ERROR
 
 ---
 
-**Document Version**: 2.0
-**Last Updated**: 2025-11-27
+**Document Version**: 3.0
+**Last Updated**: 2025-01-27
 **Author**: System Architect
-**Status**: Active - iOS App Refactoring Completed
+**Status**: Active - Headless Terminal Refactoring Completed
 
 ---
 

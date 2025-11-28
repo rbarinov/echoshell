@@ -2,30 +2,38 @@ import { spawn, IPty } from 'node-pty';
 import os from 'os';
 import fs from 'fs/promises';
 import { execSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import type { TunnelClient } from '../tunnel/TunnelClient';
 import { StateManager, type TerminalSessionState } from '../storage/StateManager';
 import type { OutputRouter } from '../output/OutputRouter';
-
-type HeadlessTerminalType = 'cursor' | 'claude';
-type TerminalType = 'regular' | HeadlessTerminalType;
+import { HeadlessExecutor } from './HeadlessExecutor';
+import { AgentOutputParser } from '../output/AgentOutputParser';
+import type {
+  TerminalType,
+  HeadlessTerminalType,
+  ChatHistory,
+  ChatMessage,
+  CurrentExecution,
+} from './types';
 
 interface TerminalSession {
   sessionId: string;
-  pty?: IPty;
-  pid?: number; // Process ID of the PTY process
-  processGroupId?: number; // Process group ID for killing all child processes
   workingDir: string;
   createdAt: number;
-  outputBuffer: string[];
   inputBuffer: string[]; // Store input commands for history
   terminalType: TerminalType;
   name?: string;
-  headless?: {
-    isRunning: boolean;
-    cliSessionId?: string; // Session ID from CLI (cursor/claude) for context preservation
-    completionTimeout?: NodeJS.Timeout; // Timeout for command completion detection
-    lastResultSeen?: boolean; // Track if we've seen a result message
-  };
+
+  // For regular terminals
+  pty?: IPty;
+  pid?: number; // Process ID of the PTY process
+  processGroupId?: number; // Process group ID for killing all child processes
+  outputBuffer?: string[];
+
+  // For headless terminals (NEW)
+  executor?: HeadlessExecutor;
+  chatHistory?: ChatHistory;
+  currentExecution?: CurrentExecution;
 }
 
 export class TerminalManager {
@@ -37,6 +45,7 @@ export class TerminalManager {
   private globalOutputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private globalInputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private sessionDestroyedListeners = new Set<(sessionId: string) => void>();
+  private chatMessageListeners = new Set<(sessionId: string, message: ChatMessage, isComplete: boolean) => void>();
   
   constructor(stateManager: StateManager) {
     this.stateManager = stateManager;
@@ -192,35 +201,55 @@ export class TerminalManager {
       sessionId,
       workingDir: cwd,
       createdAt: Date.now(),
-      outputBuffer: [],
       inputBuffer: [],
       terminalType,
       name,
-      // cursorAgentWorkingDir removed - not needed after unification
-      headless: this.isHeadlessTerminal(terminalType)
-        ? {
-            isRunning: false
-          }
-        : undefined
     };
 
-    // Create PTY for all terminal types (unified logic)
-    const pty = this.createPTY(cwd, terminalType);
-    session.pty = pty;
-    session.pid = pty.pid;
-    
-    // Get process group ID (Unix only)
-    if (os.platform() !== 'win32' && pty.pid) {
-      try {
-        session.processGroupId = this.getProcessGroupId(pty.pid);
-        console.log(`📊 [${sessionId}] Process group ID: ${session.processGroupId}`);
-      } catch (error) {
-        console.warn(`⚠️  [${sessionId}] Failed to get process group ID: ${error}`);
+    if (this.isHeadlessTerminal(terminalType)) {
+      // For headless terminals: create HeadlessExecutor and initialize chat history
+      const executor = new HeadlessExecutor(cwd, terminalType);
+      session.executor = executor;
+      
+      // Initialize chat history
+      session.chatHistory = {
+        sessionId,
+        messages: [],
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+      
+      // Initialize current execution state
+      session.currentExecution = {
+        isRunning: false,
+        startedAt: 0,
+        currentMessages: [],
+      };
+      
+      // Setup output handlers for headless executor
+      this.setupHeadlessOutputHandler(session);
+      
+      console.log(`🤖 [${sessionId}] Created headless terminal with executor`);
+    } else {
+      // For regular terminals: create PTY (existing logic)
+      session.outputBuffer = [];
+      const pty = this.createPTY(cwd, terminalType);
+      session.pty = pty;
+      session.pid = pty.pid;
+      
+      // Get process group ID (Unix only)
+      if (os.platform() !== 'win32' && pty.pid) {
+        try {
+          session.processGroupId = this.getProcessGroupId(pty.pid);
+          console.log(`📊 [${sessionId}] Process group ID: ${session.processGroupId}`);
+        } catch (error) {
+          console.warn(`⚠️  [${sessionId}] Failed to get process group ID: ${error}`);
+        }
       }
+      
+      // Setup output handler for regular terminal
+      this.setupPTYOutputHandler(session);
     }
-    
-    // Unified output handling for all terminal types
-    this.setupPTYOutputHandler(session);
     
     this.sessions.set(sessionId, session);
     await this.saveSessionsState();
@@ -243,22 +272,8 @@ export class TerminalManager {
       throw new Error('Session not found');
     }
     
-    // Log session object reference for debugging (safely, without circular references)
-    if (session.headless) {
-      const headlessState = {
-        isRunning: session.headless.isRunning,
-        cliSessionId: session.headless.cliSessionId,
-        lastResultSeen: session.headless.lastResultSeen,
-        hasCompletionTimeout: !!session.headless.completionTimeout
-      };
-      console.log(`🔍 [${sessionId}] Session headless state: ${JSON.stringify(headlessState)}`);
-    } else {
-      console.log(`🔍 [${sessionId}] Session headless state: null`);
-    }
-
     if (this.isHeadlessTerminal(session.terminalType)) {
-      // For headless terminals, execute command via CLI (cursor-agent or claude-cli)
-      // This is called from Record view (watch/phone) via API
+      // For headless terminals, execute command via subprocess (HeadlessExecutor)
       return this.executeHeadlessCommand(session, command);
     }
     
@@ -289,93 +304,80 @@ export class TerminalManager {
       throw new Error('Command is required for headless sessions');
     }
 
-    if (!session.headless) {
-      session.headless = { isRunning: false };
-      console.log(`🆕 [${session.sessionId}] Initialized headless state`);
+    if (!session.executor || !session.currentExecution || !session.chatHistory) {
+      throw new Error('Headless terminal not properly initialized');
     }
 
-    // Log current session_id state before executing command
-    const beforeSessionId = session.headless.cliSessionId;
-    console.log(`📋 [${session.sessionId}] Before command execution - CLI session_id: ${beforeSessionId || 'none'}`);
-
-    if (session.headless.isRunning) {
+    // Check if already running
+    if (session.currentExecution.isRunning) {
       const errorMsg = `Headless session is busy. Please wait for the current command to finish.`;
       console.error(`❌ [${session.sessionId}] ${errorMsg}`);
       throw new Error(errorMsg);
     }
 
-    // Mark as running IMMEDIATELY to prevent duplicate execution
-    session.headless.isRunning = true;
-    console.log(`🚀 [${session.sessionId}] Starting headless command execution via PTY (isRunning set to true)`);
-    
-    // Build command with proper arguments
-    // Use environment variable if set, otherwise default to 'claude' (not 'claude-cli')
-    const claudeBin = process.env.CLAUDE_HEADLESS_BIN || 'claude';
-    const terminalType = session.terminalType === 'cursor' ? 'cursor-agent' : claudeBin;
-    const currentCliSessionId = session.headless?.cliSessionId;
-    
-    let commandLine: string;
-    
-    if (session.terminalType === 'cursor') {
-      // Cursor Agent format: cursor-agent --output-format stream-json --print [--resume <session_id>] "prompt"
-      commandLine = `cursor-agent --output-format stream-json --print`;
-      if (currentCliSessionId) {
-        commandLine += ` --resume ${currentCliSessionId}`;
-        console.log(`🔄 [${session.sessionId}] Using existing CLI session_id: ${currentCliSessionId}`);
-      } else {
-        console.log(`🆕 [${session.sessionId}] Starting new CLI session (no existing session_id)`);
+    // Get current CLI session ID from executor
+    const currentCliSessionId = session.executor.getCliSessionId();
+    console.log(`📋 [${session.sessionId}] Before command execution - CLI session_id: ${currentCliSessionId || 'none'}`);
+
+    // Mark as running
+    session.currentExecution.isRunning = true;
+    session.currentExecution.startedAt = Date.now();
+    session.currentExecution.currentMessages = []; // Clear previous execution messages
+    console.log(`🚀 [${session.sessionId}] Starting headless command execution via subprocess`);
+
+    // Create user message and add to chat history
+    const userMessage: ChatMessage = {
+      id: randomUUID(),
+      timestamp: Date.now(),
+      type: 'user',
+      content: prompt,
+    };
+    session.chatHistory.messages.push(userMessage);
+    session.chatHistory.updatedAt = Date.now();
+    session.currentExecution.currentMessages.push(userMessage);
+
+    // Send user message via OutputRouter
+    if (this.outputRouter) {
+      this.outputRouter.sendChatMessage(session.sessionId, userMessage);
+    }
+
+    // Execute command via HeadlessExecutor
+    try {
+      await session.executor.execute(prompt);
+      console.log(`✅ [${session.sessionId}] Command execution started`);
+    } catch (error) {
+      session.currentExecution.isRunning = false;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`❌ [${session.sessionId}] Failed to execute command: ${errorMessage}`);
+      
+      // Create error message
+      const errorMsg: ChatMessage = {
+        id: randomUUID(),
+        timestamp: Date.now(),
+        type: 'error',
+        content: `Failed to execute command: ${errorMessage}`,
+      };
+      session.chatHistory.messages.push(errorMsg);
+      session.chatHistory.updatedAt = Date.now();
+      session.currentExecution.currentMessages.push(errorMsg);
+      
+      if (this.outputRouter) {
+        this.outputRouter.sendChatMessage(session.sessionId, errorMsg);
       }
-      // Escape prompt for shell using single quotes (safer for shell escaping)
-      const escapedPrompt = prompt.replace(/'/g, "'\\''");
-      commandLine += ` '${escapedPrompt}'\r`;
-    } else {
-      // Claude CLI format: claude --verbose --print -p "prompt" --output-format stream-json [--session-id <session_id>]
-      // Note: --verbose is required for --output-format to work properly
-      // Note: --print is required for --output-format to work
-      // Note: -p flag must come before --output-format
-      const escapedPrompt = prompt.replace(/'/g, "'\\''");
-      commandLine = `claude --verbose --print -p '${escapedPrompt}' --output-format stream-json`;
-      if (currentCliSessionId) {
-        commandLine += ` --session-id ${currentCliSessionId}`;
-        console.log(`🔄 [${session.sessionId}] Using existing CLI session_id: ${currentCliSessionId}`);
-      } else {
-        console.log(`🆕 [${session.sessionId}] Starting new CLI session (no existing session_id)`);
-      }
-      commandLine += `\r`;
+      
+      throw error;
     }
-    
-    // Write command to PTY - shell will execute it
-    if (session.pty) {
-      session.pty.write(commandLine);
-      console.log(`📝 [${session.sessionId}] Wrote command to PTY: ${commandLine.trim()}`);
-    } else {
-      throw new Error('PTY not available for headless terminal');
-    }
-    
-    this.notifyHeadlessCommand(session, prompt);
-    
-    // Mark command as started - completion will be detected from PTY output
-    // We'll detect completion by looking for result messages or timeout
-    // For now, just mark as started and let pty.onData handle the output
-    
-    // Set a timeout to mark command as complete if no result is detected
-    // Clear any existing timeout first
-    if (session.headless.completionTimeout) {
-      clearTimeout(session.headless.completionTimeout);
-    }
-    
+
+    // Set timeout for completion (60 seconds)
     const completionTimeout = setTimeout(() => {
-      if (session.headless?.isRunning) {
+      if (session.currentExecution?.isRunning) {
         console.log(`⏱️ [${session.sessionId}] Command completion timeout - marking as complete`);
-        session.headless.isRunning = false;
-        session.headless.completionTimeout = undefined;
-        // Completion detection is now handled by RecordingStreamManager via HeadlessOutputProcessor
-        // This timeout just unlocks the session for the next command
+        session.currentExecution.isRunning = false;
       }
-    }, 60000); // 60 second timeout
-    
-    // Store timeout to clear it if command completes earlier
-    session.headless.completionTimeout = completionTimeout;
+    }, 60000);
+
+    // Store timeout reference (we'll clear it on completion)
+    // Note: We don't store it in session anymore, just let it run
 
     return 'Headless command started';
   }
@@ -403,10 +405,13 @@ export class TerminalManager {
    */
   updateHeadlessSessionId(sessionId: string, cliSessionId: string): void {
     const session = this.sessions.get(sessionId);
-    if (session?.headless) {
-      const previousSessionId = session.headless.cliSessionId;
+    if (session?.executor) {
+      const previousSessionId = session.executor.getCliSessionId();
       if (previousSessionId !== cliSessionId) {
-        session.headless.cliSessionId = cliSessionId;
+        session.executor.setCliSessionId(cliSessionId);
+        if (session.currentExecution) {
+          session.currentExecution.cliSessionId = cliSessionId;
+        }
         console.log(`💾 [${sessionId}] Updated CLI session_id: ${cliSessionId}`);
       }
     }
@@ -435,24 +440,21 @@ export class TerminalManager {
     }
   }
   
-  getSession(sessionId: string): TerminalSession | undefined {
-    return this.sessions.get(sessionId);
-  }
-  
   getHistory(sessionId: string): string {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return '';
     }
     
-    // For headless terminals, return combined input/output history
-    if (this.isHeadlessTerminal(session.terminalType)) {
-      // Output buffer already contains commands with prompts, so just join it
-      return session.outputBuffer.join('');
+    // For headless terminals, return chat history as text
+    if (this.isHeadlessTerminal(session.terminalType) && session.chatHistory) {
+      return session.chatHistory.messages
+        .map(msg => `${msg.type}: ${msg.content}`)
+        .join('\n');
     }
     
-    // For regular terminals, join as-is (may contain ANSI codes)
-    return session.outputBuffer.join('');
+    // For regular terminals, join output buffer (may contain ANSI codes)
+    return session.outputBuffer?.join('') || '';
   }
   
   addOutputListener(sessionId: string, listener: (data: string) => void): void {
@@ -469,10 +471,9 @@ export class TerminalManager {
   async destroySession(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (session) {
-      // Clear headless command timeout if exists
-      if (session.headless?.completionTimeout) {
-        clearTimeout(session.headless.completionTimeout);
-        session.headless.completionTimeout = undefined;
+      // For headless terminals, cleanup executor
+      if (session.executor) {
+        session.executor.cleanup();
       }
       
       // Kill all processes in the process group (graceful shutdown)
@@ -502,13 +503,12 @@ export class TerminalManager {
     const cleanupPromises: Promise<void>[] = [];
     
     this.sessions.forEach((session) => {
-      // Clear headless command timeouts
-      if (session.headless?.completionTimeout) {
-        clearTimeout(session.headless.completionTimeout);
-        session.headless.completionTimeout = undefined;
+      // For headless terminals, cleanup executor
+      if (session.executor) {
+        session.executor.cleanup();
       }
       
-      // Kill all processes in the process group
+      // Kill all processes in the process group (for regular terminals)
       cleanupPromises.push(this.killSessionProcesses(session));
     });
     
@@ -529,6 +529,14 @@ export class TerminalManager {
 
   addSessionDestroyedListener(listener: (sessionId: string) => void): void {
     this.sessionDestroyedListeners.add(listener);
+  }
+
+  addChatMessageListener(listener: (sessionId: string, message: ChatMessage, isComplete: boolean) => void): void {
+    this.chatMessageListeners.add(listener);
+  }
+
+  getSession(sessionId: string): TerminalSession | undefined {
+    return this.sessions.get(sessionId);
   }
 
   private isHeadlessTerminal(type: TerminalType): type is HeadlessTerminalType {
@@ -596,6 +604,9 @@ export class TerminalManager {
     }
 
     session.pty.onData((data) => {
+      if (!session.outputBuffer) {
+        session.outputBuffer = [];
+      }
       session.outputBuffer.push(data);
       
       // Keep only last 10000 lines for history
@@ -634,6 +645,128 @@ export class TerminalManager {
     });
   }
   
+  /**
+   * Setup output handler for headless terminals (subprocess-based)
+   */
+  private setupHeadlessOutputHandler(session: TerminalSession): void {
+    if (!session.executor || !this.isHeadlessTerminal(session.terminalType)) {
+      return;
+    }
+
+    const parser = new AgentOutputParser();
+    let buffer = '';
+
+    // Handle stdout (JSON stream)
+    session.executor.onStdout((data: string) => {
+      buffer += data;
+      
+      // Process complete lines
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+
+        const parsed = parser.parseLine(line);
+        
+        // Update session_id if found
+        if (parsed.sessionId && session.executor) {
+          session.executor.setCliSessionId(parsed.sessionId);
+          if (session.currentExecution) {
+            session.currentExecution.cliSessionId = parsed.sessionId;
+          }
+        }
+
+        // Handle completion
+        if (parsed.isComplete) {
+          if (session.currentExecution) {
+            session.currentExecution.isRunning = false;
+          }
+          
+          // Notify chat message listeners about completion (for RecordingStreamManager)
+          // Send a completion signal with the last message if available
+          const lastMessage = session.currentExecution?.currentMessages[session.currentExecution.currentMessages.length - 1];
+          if (lastMessage) {
+            this.chatMessageListeners.forEach(listener => {
+              try {
+                listener(session.sessionId, lastMessage, true);
+              } catch (error) {
+                console.error('❌ Chat message listener error:', error);
+              }
+            });
+          }
+          continue;
+        }
+
+        // Handle chat message
+        if (parsed.message) {
+          // Add to current execution messages
+          if (session.currentExecution) {
+            session.currentExecution.currentMessages.push(parsed.message);
+          }
+
+          // Add to chat history
+          if (session.chatHistory) {
+            session.chatHistory.messages.push(parsed.message);
+            session.chatHistory.updatedAt = Date.now();
+          }
+
+          // Send chat message via OutputRouter
+          if (this.outputRouter) {
+            // OutputRouter will handle chat_message format
+            this.outputRouter.sendChatMessage(session.sessionId, parsed.message);
+          }
+
+          // Notify chat message listeners (for RecordingStreamManager)
+          if (parsed.message) {
+            this.chatMessageListeners.forEach(listener => {
+              try {
+                listener(session.sessionId, parsed.message!, false);
+              } catch (error) {
+                console.error('❌ Chat message listener error:', error);
+              }
+            });
+          }
+        }
+      }
+    });
+
+    // Handle stderr (errors)
+    session.executor.onStderr((data: string) => {
+      console.error(`❌ [${session.sessionId}] Headless executor stderr:`, data);
+      
+      // Create error message
+      const errorMessage: ChatMessage = {
+        id: randomUUID(),
+        timestamp: Date.now(),
+        type: 'error',
+        content: `Error: ${data.trim()}`,
+      };
+
+      // Add to current execution and history
+      if (session.currentExecution) {
+        session.currentExecution.currentMessages.push(errorMessage);
+      }
+      if (session.chatHistory) {
+        session.chatHistory.messages.push(errorMessage);
+        session.chatHistory.updatedAt = Date.now();
+      }
+
+      // Send error message
+      if (this.outputRouter) {
+        this.outputRouter.sendChatMessage(session.sessionId, errorMessage);
+      }
+    });
+
+    // Handle exit
+    session.executor.onExit((code: number | null) => {
+      if (session.currentExecution) {
+        session.currentExecution.isRunning = false;
+      }
+      console.log(`✅ [${session.sessionId}] Headless executor exited with code: ${code}`);
+    });
+  }
+
   /**
    * Get process group ID for a given process ID (Unix only)
    * For shell processes spawned via PTY, the PID is typically the process group leader,

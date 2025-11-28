@@ -39,6 +39,19 @@ export function setupTerminalWebSocket(
     // Add output listener for this WebSocket via OutputRouter
     const outputListener = (data: string) => {
       if (ws.readyState === WebSocket.OPEN) {
+        // Check if data is already a chat_message format (from OutputRouter.sendChatMessage)
+        try {
+          const parsed = JSON.parse(data);
+          if (parsed.type === 'chat_message') {
+            // Already in chat_message format, send as-is
+            ws.send(data);
+            return;
+          }
+        } catch {
+          // Not JSON or not chat_message, continue with output format
+        }
+        
+        // Regular terminal output format
         ws.send(
           JSON.stringify({
             type: 'output',

@@ -1,6 +1,14 @@
 import { describe, it, expect, beforeEach } from '@jest/globals';
 import { HeadlessOutputProcessor } from '../HeadlessOutputProcessor';
 
+/**
+ * Tests for HeadlessOutputProcessor (Legacy)
+ * 
+ * NOTE: This processor is still used in RecordingStreamManager for backward compatibility.
+ * New headless terminals use AgentOutputParser instead, which converts JSON to ChatMessage objects.
+ * 
+ * See: AgentOutputParser for the new parsing approach.
+ */
 describe('HeadlessOutputProcessor', () => {
   let processor: HeadlessOutputProcessor;
 

@@ -202,4 +202,98 @@ struct IntegrationTests {
         let mode2 = await manager.activeViewMode
         #expect(mode2 == .pty)
     }
+    
+    // MARK: - Chat Interface Tests
+    
+    @Test("chat interface: message accumulation in current execution")
+    func testChatInterface_MessageAccumulation_CurrentExecution() async throws {
+        let viewModel = ChatViewModel(sessionId: "test-chat-session")
+        
+        // Add user message
+        let userMessage = ChatMessage(
+            id: "msg-001",
+            timestamp: 1701234567890,
+            type: .user,
+            content: "List files"
+        )
+        viewModel.addMessage(userMessage)
+        
+        // Add assistant message
+        let assistantMessage = ChatMessage(
+            id: "msg-002",
+            timestamp: 1701234567891,
+            type: .assistant,
+            content: "I'll list the files for you."
+        )
+        viewModel.addMessage(assistantMessage)
+        
+        // In agent mode, should show both messages
+        viewModel.viewMode = .agent
+        let agentMessages = viewModel.getMessagesForCurrentMode()
+        #expect(agentMessages.count == 2)
+        #expect(agentMessages.first?.type == .user)
+        #expect(agentMessages.last?.type == .assistant)
+        
+        // History should also contain both
+        #expect(viewModel.chatHistory.count == 2)
+    }
+    
+    @Test("chat interface: view mode toggle between agent and history")
+    func testChatInterface_ViewModeToggle_AgentHistory() async throws {
+        let viewModel = ChatViewModel(sessionId: "test-chat-session")
+        
+        // Add messages to history
+        let message1 = ChatMessage(
+            id: "msg-001",
+            timestamp: 1701234567890,
+            type: .user,
+            content: "First command"
+        )
+        viewModel.addMessage(message1)
+        viewModel.finalizeCurrentExecution()
+        
+        let message2 = ChatMessage(
+            id: "msg-002",
+            timestamp: 1701234567891,
+            type: .user,
+            content: "Second command"
+        )
+        viewModel.addMessage(message2)
+        
+        // Agent mode should show only current execution
+        viewModel.viewMode = .agent
+        let agentMessages = viewModel.getMessagesForCurrentMode()
+        #expect(agentMessages.count == 1)
+        #expect(agentMessages.first?.id == "msg-002")
+        
+        // History mode should show all messages
+        viewModel.viewMode = .history
+        let historyMessages = viewModel.getMessagesForCurrentMode()
+        #expect(historyMessages.count == 2)
+    }
+    
+    @Test("chat interface: tool message with metadata")
+    func testChatInterface_ToolMessage_Metadata() async throws {
+        let viewModel = ChatViewModel(sessionId: "test-chat-session")
+        
+        let toolMessage = ChatMessage(
+            id: "msg-001",
+            timestamp: 1701234567890,
+            type: .tool,
+            content: "Tool: bash",
+            metadata: ChatMessage.Metadata(
+                toolName: "bash",
+                toolInput: "ls -la",
+                toolOutput: "file1.txt\nfile2.py"
+            )
+        )
+        
+        viewModel.addMessage(toolMessage)
+        
+        #expect(viewModel.chatHistory.count == 1)
+        #expect(viewModel.chatHistory.first?.type == .tool)
+        #expect(viewModel.chatHistory.first?.metadata?.toolName == "bash")
+        #expect(viewModel.chatHistory.first?.metadata?.toolInput == "ls -la")
+        #expect(viewModel.chatHistory.first?.metadata?.toolOutput == "file1.txt\nfile2.py")
+    }
 }

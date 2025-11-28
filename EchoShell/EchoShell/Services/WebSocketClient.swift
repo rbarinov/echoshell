@@ -21,6 +21,7 @@ class WebSocketClient: ObservableObject {
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 5
     private var onMessageCallback: ((String) -> Void)?
+    private var onChatMessageCallback: ((ChatMessage) -> Void)?
     
     // Heartbeat configuration
     private let pingInterval: TimeInterval = 20.0 // 20 seconds
@@ -29,10 +30,13 @@ class WebSocketClient: ObservableObject {
     private var pingTimer: Timer?
     private var healthCheckTimer: Timer?
     
-    func connect(config: TunnelConfig, sessionId: String, onMessage: ((String) -> Void)? = nil) {
-        // Always preserve callback for reconnection
+    func connect(config: TunnelConfig, sessionId: String, onMessage: ((String) -> Void)? = nil, onChatMessage: ((ChatMessage) -> Void)? = nil) {
+        // Always preserve callbacks for reconnection
         if let callback = onMessage {
             self.onMessageCallback = callback
+        }
+        if let chatCallback = onChatMessage {
+            self.onChatMessageCallback = chatCallback
         }
         self.config = config
         self.sessionId = sessionId
@@ -163,6 +167,48 @@ class WebSocketClient: ObservableObject {
         
         let type = json["type"] as? String ?? "output"
         let sessionId = json["session_id"] as? String ?? ""
+        
+        // Handle chat_message format (for headless terminals)
+        if type == "chat_message", let messageDict = json["message"] as? [String: Any] {
+            do {
+                let messageData = try JSONSerialization.data(withJSONObject: messageDict)
+                let decoder = JSONDecoder()
+                let chatMessage = try decoder.decode(ChatMessage.self, from: messageData)
+                
+                print("💬 WebSocket chat_message received: \(chatMessage.type.rawValue) - \(chatMessage.content.prefix(100))...")
+                
+                // Call chat message callback
+                DispatchQueue.main.async {
+                    if let callback = self.onChatMessageCallback {
+                        callback(chatMessage)
+                    }
+                }
+                
+                // Also create TerminalMessage for compatibility
+                let message = TerminalMessage(
+                    type: .output,
+                    sessionId: sessionId,
+                    data: chatMessage.content,
+                    timestamp: Date(timeIntervalSince1970: TimeInterval(chatMessage.timestamp) / 1000.0)
+                )
+                
+                Task { @MainActor [weak self] in
+                    guard let self = self else { return }
+                    self.messages.append(message)
+                    
+                    // Keep only last 100 messages
+                    if self.messages.count > 100 {
+                        self.messages.removeFirst(self.messages.count - 100)
+                    }
+                }
+                
+                return
+            } catch {
+                print("❌ Error decoding chat_message: \(error)")
+            }
+        }
+        
+        // Handle regular output format (for regular terminals)
         let messageData = json["data"] as? String ?? ""
         let timestamp = Date()
         
@@ -260,7 +306,7 @@ class WebSocketClient: ObservableObject {
                 return
             }
             
-            self.connect(config: config, sessionId: sessionId)
+            self.connect(config: config, sessionId: sessionId, onMessage: self.onMessageCallback, onChatMessage: self.onChatMessageCallback)
         }
     }
 }

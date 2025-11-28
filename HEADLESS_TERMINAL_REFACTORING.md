@@ -2,9 +2,9 @@
 
 ## Document Info
 - **Created**: 2025-11-28
-- **Status**: Planning
+- **Status**: ✅ COMPLETED (2025-01-27)
 - **Author**: System Architect
-- **Version**: 1.0
+- **Version**: 2.0
 
 ---
 
@@ -660,6 +660,32 @@ function parseAgentOutput(jsonLine: string): ChatMessage | null {
   }
 }
 ```
+
+---
+
+---
+
+## Implementation Status
+
+### ✅ COMPLETED (2025-01-27)
+
+All phases have been successfully implemented:
+
+- ✅ **Phase 1**: Backend refactoring (HeadlessExecutor, AgentOutputParser, TerminalManager)
+- ✅ **Phase 2**: iOS chat interface (ChatHistoryView, ChatTerminalView, ChatViewModel)
+- ✅ **Phase 3**: Testing infrastructure (unit tests, integration tests, manual checklist)
+
+### Key Changes Implemented
+
+1. **Backend**: Headless terminals now use direct subprocess instead of PTY
+2. **Data Model**: Structured ChatMessage objects replace raw output
+3. **WebSocket**: chat_message format for headless terminals
+4. **iOS**: IDE-style chat interface with Agent/History mode toggle
+5. **TTS**: Accumulated assistant messages sent as single tts_ready event
+
+### Files Created/Modified
+
+See `REFACTORING_COMPLETE_SUMMARY.md` for complete list of changes.
 
 ---
 

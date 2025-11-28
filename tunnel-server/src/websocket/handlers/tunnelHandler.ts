@@ -132,6 +132,21 @@ export class TunnelHandler {
       }
 
     const streamKey = `${tunnelId}:${message.sessionId}`;
+    
+    // Check if data is already a chat_message JSON string (from OutputRouter.sendChatMessage)
+    try {
+      const parsedData = JSON.parse(message.data);
+      if (parsedData && typeof parsedData === 'object' && parsedData.type === 'chat_message') {
+        // This is a chat_message, forward it as-is
+        Logger.debug('Forwarding chat_message', { tunnelId, sessionId: message.sessionId });
+        this.streamManager.broadcastToTerminalStream(streamKey, message.data);
+        return;
+      }
+    } catch {
+      // Not JSON or not chat_message, continue with normal formatting
+    }
+    
+    // Regular terminal output format
     const formattedMessage = JSON.stringify({
       type: 'output',
       session_id: message.sessionId,

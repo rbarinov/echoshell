@@ -18,6 +18,14 @@ struct RecordingStreamMessage: Codable {
     let isComplete: Bool?
 }
 
+// TTS Ready event (for new architecture - accumulated assistant messages)
+struct TTSReadyEvent: Codable {
+    let type: String
+    let session_id: String
+    let text: String
+    let timestamp: Int64
+}
+
 class RecordingStreamClient: ObservableObject {
     @Published var isConnected = false
     @Published var connectionError: String?
@@ -27,6 +35,7 @@ class RecordingStreamClient: ObservableObject {
     private var config: TunnelConfig?
     private var sessionId: String?
     private var onMessageCallback: ((RecordingStreamMessage) -> Void)?
+    private var onTTSReadyCallback: ((String) -> Void)? // For tts_ready events
     private var reconnectAttempts = 0
     private let maxReconnectAttempts = 5
     
@@ -37,13 +46,14 @@ class RecordingStreamClient: ObservableObject {
     private var pingTimer: Timer?
     private var healthCheckTimer: Timer?
     
-    func connect(config: TunnelConfig, sessionId: String, onMessage: @escaping (RecordingStreamMessage) -> Void) {
+    func connect(config: TunnelConfig, sessionId: String, onMessage: @escaping (RecordingStreamMessage) -> Void, onTTSReady: ((String) -> Void)? = nil) {
         print("🔌🔌🔌 RecordingStreamClient: connect called for sessionId=\(sessionId)")
         print("🔌🔌🔌 RecordingStreamClient: config.tunnelId=\(config.tunnelId), config.wsUrl=\(config.wsUrl)")
         
         self.config = config
         self.sessionId = sessionId
         self.onMessageCallback = onMessage
+        self.onTTSReadyCallback = onTTSReady
         
         let wsUrlString = "\(config.wsUrl)/api/\(config.tunnelId)/recording/\(sessionId)/stream"
         print("🔌🔌🔌 RecordingStreamClient: WebSocket URL: \(wsUrlString)")
@@ -133,25 +143,44 @@ class RecordingStreamClient: ObservableObject {
             return
         }
         
-        // Try to parse as JSON first to see what we got
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            print("📨📨📨 RecordingStreamClient: Parsed JSON keys: \(json.keys.joined(separator: ", "))")
-            print("📨📨📨 RecordingStreamClient: JSON isComplete value: \(json["isComplete"] ?? "nil"), type: \(type(of: json["isComplete"]))")
+        // Try to parse as JSON first
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            print("❌❌❌ RecordingStreamClient: Failed to parse JSON")
+            return
         }
         
+        let messageType = json["type"] as? String ?? ""
+        
+        // Handle tts_ready event (new architecture)
+        if messageType == "tts_ready" {
+            do {
+                let ttsEvent = try JSONDecoder().decode(TTSReadyEvent.self, from: data)
+                print("🎙️ RecordingStreamClient: tts_ready event received with \(ttsEvent.text.count) chars")
+                
+                DispatchQueue.main.async {
+                    self.onTTSReadyCallback?(ttsEvent.text)
+                }
+                return
+            } catch {
+                print("❌❌❌ RecordingStreamClient: Failed to decode TTSReadyEvent: \(error)")
+            }
+        }
+        
+        // Handle legacy RecordingStreamMessage format
         guard let message = try? JSONDecoder().decode(RecordingStreamMessage.self, from: data) else {
             print("❌❌❌ RecordingStreamClient: Failed to decode RecordingStreamMessage")
-            // Try to get decoding error details
-            do {
-                _ = try JSONDecoder().decode(RecordingStreamMessage.self, from: data)
-            } catch {
-                print("❌❌❌ Decoding error: \(error.localizedDescription)")
-            }
             return
         }
         
         print("📨📨📨 RecordingStreamClient parsed message: type=\(message.type), session_id=\(message.session_id), text=\(message.text.count) chars, delta=\(message.delta?.count ?? 0) chars, isComplete=\(message.isComplete?.description ?? "nil")")
-        print("📨📨📨 RecordingStreamClient: isComplete type: \(type(of: message.isComplete))")
+        
+        // If message is complete and we have tts_ready callback, use it (for backward compatibility)
+        if message.isComplete == true, let ttsCallback = onTTSReadyCallback {
+            print("🎙️ RecordingStreamClient: Legacy isComplete=true, triggering tts_ready callback")
+            DispatchQueue.main.async {
+                ttsCallback(message.text)
+            }
+        }
         
         DispatchQueue.main.async {
             self.onMessageCallback?(message)
@@ -221,7 +250,7 @@ class RecordingStreamClient: ObservableObject {
                 return
             }
             
-            self.connect(config: config, sessionId: sessionId, onMessage: callback)
+            self.connect(config: config, sessionId: sessionId, onMessage: callback, onTTSReady: self.onTTSReadyCallback)
         }
     }
 }

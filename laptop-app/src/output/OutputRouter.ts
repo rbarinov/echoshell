@@ -1,5 +1,6 @@
 import type { TerminalManager } from '../terminal/TerminalManager';
 import type { TunnelClient } from '../tunnel/TunnelClient';
+import type { ChatMessage } from '../terminal/types';
 
 export interface OutputDestination {
   type: 'terminal_display' | 'recording_stream' | 'websocket';
@@ -107,6 +108,34 @@ export class OutputRouter {
     const listeners = this.websocketListeners.get(message.sessionId);
     if (listeners) {
       listeners.forEach(listener => listener(message.data));
+    }
+  }
+
+  /**
+   * Send chat message for headless terminals
+   * Sends structured chat_message format instead of raw output
+   */
+  sendChatMessage(sessionId: string, message: ChatMessage): void {
+    // Format: chat_message event for WebSocket and tunnel
+    const chatEvent = {
+      type: 'chat_message',
+      session_id: sessionId,
+      message: message,
+      timestamp: Date.now(),
+    };
+
+    // Send to tunnel (for mobile)
+    if (this.tunnelClient) {
+      // Tunnel client needs to support chat messages
+      // For now, send as JSON string (will be updated in tunnel client later)
+      this.tunnelClient.sendTerminalOutput(sessionId, JSON.stringify(chatEvent));
+    }
+
+    // Send to WebSocket listeners (for localhost web UI)
+    const listeners = this.websocketListeners.get(sessionId);
+    if (listeners) {
+      const jsonString = JSON.stringify(chatEvent);
+      listeners.forEach(listener => listener(jsonString));
     }
   }
 

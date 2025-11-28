@@ -191,8 +191,15 @@ struct TerminalDetailView: View {
     
     // Agent View (for AI-powered terminals in agent mode)
     private var agentView: some View {
-        TerminalSessionAgentView(session: session, config: config)
-            .environmentObject(settingsManager)
+        // For headless terminals, show chat interface
+        if session.terminalType == .cursor || session.terminalType == .claude {
+            ChatTerminalView(session: session, config: config)
+                .environmentObject(settingsManager)
+        } else {
+            // For regular terminals in agent mode (legacy), show old agent view
+            TerminalSessionAgentView(session: session, config: config)
+                .environmentObject(settingsManager)
+        }
     }
     
     private func loadHistory() async {

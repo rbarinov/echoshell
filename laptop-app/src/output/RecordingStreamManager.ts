@@ -5,6 +5,7 @@ import { TerminalOutputProcessor } from './TerminalOutputProcessor';
 import { RecordingOutputProcessor, RecordingProcessResult } from './RecordingOutputProcessor';
 import { HeadlessOutputProcessor } from './HeadlessOutputProcessor';
 import type { OutputRouter } from './OutputRouter';
+import type { ChatMessage } from '../terminal/types';
 
 interface SessionState {
   emulator: TerminalScreenEmulator;
@@ -14,6 +15,8 @@ interface SessionState {
   pendingInput: string;
   headlessFullText: string;
   lastHeadlessDelta: string;
+  // For new headless architecture (chat messages)
+  assistantMessages: ChatMessage[]; // Accumulated assistant messages for current execution
 }
 
 type TunnelClientResolver = () => TunnelClient | null;
@@ -38,6 +41,11 @@ export class RecordingStreamManager {
     terminalManager.addSessionDestroyedListener((sessionId) => {
       this.sessionStates.delete(sessionId);
     });
+
+    // Listen for chat messages from headless terminals (new architecture)
+    terminalManager.addChatMessageListener((sessionId, message, isComplete) => {
+      this.handleChatMessage(sessionId, message, isComplete);
+    });
   }
 
   private getSessionState(sessionId: string): SessionState {
@@ -50,7 +58,8 @@ export class RecordingStreamManager {
         hasBroadcast: false,
         pendingInput: '',
         headlessFullText: '',
-        lastHeadlessDelta: ''
+        lastHeadlessDelta: '',
+        assistantMessages: []
       };
       this.sessionStates.set(sessionId, state);
     }
@@ -84,6 +93,7 @@ export class RecordingStreamManager {
     state.hasBroadcast = false;
     state.headlessFullText = '';
     state.lastHeadlessDelta = '';
+    state.assistantMessages = []; // Reset assistant messages for new execution
 
     const lastCommand = commands[commands.length - 1];
     state.recordingProcessor.setLastCommand(lastCommand);
@@ -91,15 +101,87 @@ export class RecordingStreamManager {
   }
 
   private handleTerminalOutput(sessionId: string, terminalType: TerminalType, data: string): void {
-    // For headless terminals (cursor, claude), handle JSON output and collect responses for SSE
-    if (terminalType === 'cursor' || terminalType === 'claude') {
-      this.handleHeadlessOutput(sessionId, data, terminalType);
-      return;
-    }
-
+    // For headless terminals with new architecture, chat messages are handled separately
+    // This method is only called for old PTY-based headless terminals (legacy)
+    // New architecture uses chat messages via TerminalManager's chat history
+    
     // For regular terminals, no special processing needed
     // Output is already sent to terminal_display by TerminalManager
     // Recording stream is not used for regular terminals
+  }
+
+  /**
+   * Handle chat message from headless terminal (new architecture)
+   * Called when a chat message is received via OutputRouter
+   */
+  handleChatMessage(sessionId: string, message: ChatMessage, isComplete: boolean): void {
+    const session = this.terminalManager.getSession(sessionId);
+    if (!session || !this.isHeadlessTerminal(session.terminalType)) {
+      return; // Not a headless terminal or session not found
+    }
+
+    const state = this.getSessionState(sessionId);
+
+    // Only accumulate assistant messages for TTS
+    if (message.type === 'assistant') {
+      state.assistantMessages.push(message);
+      console.log(`📝 [${sessionId}] Accumulated assistant message: ${message.content.substring(0, 100)}...`);
+    }
+
+    // If execution is complete, send tts_ready event
+    if (isComplete) {
+      this.sendTTSReady(sessionId, state);
+    }
+  }
+
+  /**
+   * Send tts_ready event with accumulated assistant messages
+   */
+  private sendTTSReady(sessionId: string, state: SessionState): void {
+    // Extract text-only content from assistant messages
+    const assistantTexts = state.assistantMessages
+      .map(msg => {
+        // Extract plain text (remove markdown code blocks, formatting)
+        let text = msg.content;
+        // Remove code blocks (```...```)
+        text = text.replace(/```[\s\S]*?```/g, '');
+        // Remove inline code (`...`)
+        text = text.replace(/`([^`]+)`/g, '$1');
+        // Remove markdown links [text](url)
+        text = text.replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1');
+        // Clean up extra whitespace
+        text = text.replace(/\s+/g, ' ').trim();
+        return text;
+      })
+      .filter(text => text.length > 0);
+
+    const combinedText = assistantTexts.join('\n\n');
+
+    if (combinedText.length === 0) {
+      console.warn(`⚠️ [${sessionId}] No assistant text to send for TTS`);
+      return;
+    }
+
+    console.log(`🎙️ [${sessionId}] Sending tts_ready with ${assistantTexts.length} assistant messages (${combinedText.length} chars)`);
+
+    // Send tts_ready event via OutputRouter
+    this.outputRouter.routeOutput({
+      sessionId,
+      data: combinedText,
+      destination: 'recording_stream',
+      metadata: {
+        fullText: combinedText,
+        delta: '',
+        isComplete: true
+      }
+    });
+
+    // Reset for next execution
+    state.assistantMessages = [];
+  }
+
+  private isHeadlessTerminal(type: TerminalType): boolean {
+    return type === 'cursor' || type === 'claude';
   }
 
   private handleHeadlessOutput(sessionId: string, data: string, terminalType: TerminalType): void {

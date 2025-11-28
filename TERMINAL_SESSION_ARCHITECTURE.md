@@ -1,12 +1,21 @@
-# Terminal Session Architecture (No tmux)
+# Terminal Session Architecture
 
 ## Overview
 
-The terminal sessions now use **direct PTY (pseudo-terminal) connections** instead of tmux. This eliminates:
-- ❌ tmux resize issues
-- ❌ tmux control sequences appearing in output
-- ❌ tmux interference with terminal behavior
-- ✅ Clean, direct terminal access from iPhone
+The system supports two types of terminal sessions:
+
+1. **Regular Terminals**: Use **direct PTY (pseudo-terminal) connections** (no tmux)
+2. **Headless Terminals** (`cursor`, `claude`): Use **direct subprocess execution** (no PTY, no shell)
+
+### Regular Terminals
+- Use direct PTY connections instead of tmux
+- Eliminates: tmux resize issues, control sequences, interference
+- Provides: Clean, direct terminal access from iPhone
+
+### Headless Terminals (Refactored)
+- Use direct subprocess execution (no PTY, no shell emulation)
+- Provides: Structured chat interface, cleaner output, better UX
+- Architecture: HeadlessExecutor → subprocess → AgentOutputParser → ChatMessage
 
 ## Previous Architecture (With tmux)
 
