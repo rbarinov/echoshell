@@ -150,14 +150,12 @@ struct TerminalDetailView: View {
             wsClient.connect(config: config, sessionId: session.id) { text in
                 // Only process non-empty text to avoid feeding empty strings
                 guard !text.isEmpty else { return }
-                
+
                 // Feed raw output directly to SwiftTerm
                 // SwiftTerm handles ANSI sequences, tabs, formatting, and all terminal artifacts correctly
+                // Auto-scroll is now handled inside feed() method based on user's scroll position
                 if let coordinator = self.terminalCoordinator {
                     coordinator.feed(text)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        coordinator.scrollToBottom()
-                    }
                 } else {
                     self.pendingData.append(text)
                 }

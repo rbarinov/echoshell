@@ -130,43 +130,104 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         var onInput: ((String) -> Void)?
         var onResize: ((Int, Int) -> Void)?
         
+        // Track if user is manually scrolling (to avoid auto-scroll interrupting user)
+        private var isUserScrolling = false
+        private var lastScrollCheckTime: Date?
+
         // Feed data directly to terminal - called from parent view
         // Must be called on main thread
         func feed(_ text: String) {
             guard let terminalView = terminalView, !text.isEmpty else { return }
-            
-            // Ensure text is properly formatted for terminal
-            // SwiftTerm handles ANSI sequences, tabs, and all terminal formatting natively
-            // We just need to ensure we're on main thread and feed it directly
-            
+
+            // Check if we should auto-scroll (only if user is at bottom or not manually scrolling)
+            let shouldAutoScroll = shouldScrollToBottom()
+
             // Ensure we're on main thread
             if Thread.isMainThread {
                 // Feed text directly to SwiftTerm - it handles all formatting
                 terminalView.feed(text: text)
-                // Auto-scroll to bottom after feeding data (especially after clear command)
-                scrollToBottom()
+                // Only auto-scroll if user was already at bottom
+                if shouldAutoScroll {
+                    scrollToBottomSmooth()
+                }
             } else {
                 DispatchQueue.main.async {
                     // Feed text directly to SwiftTerm - it handles all formatting
                     terminalView.feed(text: text)
-                    // Auto-scroll to bottom after feeding data
-                    self.scrollToBottom()
+                    // Only auto-scroll if user was already at bottom
+                    if shouldAutoScroll {
+                        self.scrollToBottomSmooth()
+                    }
                 }
             }
         }
-        
-        // Scroll terminal to bottom to show cursor
+
+        // Check if we should auto-scroll to bottom
+        // Returns true if user is already at bottom or hasn't manually scrolled recently
+        private func shouldScrollToBottom() -> Bool {
+            guard let terminalView = terminalView else { return false }
+
+            // If user is manually scrolling, don't auto-scroll
+            if isUserScrolling {
+                return false
+            }
+
+            // Check if user scrolled manually in last 2 seconds
+            if let lastCheck = lastScrollCheckTime,
+               Date().timeIntervalSince(lastCheck) < 2.0 {
+                return false
+            }
+
+            // Check if we're already at bottom (within 50 points threshold)
+            let contentHeight = terminalView.contentSize.height
+            let frameHeight = terminalView.frame.height
+            let currentOffset = terminalView.contentOffset.y
+            let maxOffset = max(0, contentHeight - frameHeight)
+
+            // If we're within 50 points of bottom, consider it "at bottom"
+            return (maxOffset - currentOffset) < 50
+        }
+
+        // Scroll terminal to bottom smoothly (only when needed)
+        private func scrollToBottomSmooth() {
+            guard let terminalView = terminalView else { return }
+
+            // Use CATransaction to batch updates and prevent flickering
+            CATransaction.begin()
+            CATransaction.setDisableActions(true) // Disable implicit animations
+
+            // Force layout update first
+            terminalView.layoutIfNeeded()
+
+            let contentHeight = terminalView.contentSize.height
+            let frameHeight = terminalView.frame.height
+
+            if contentHeight > frameHeight {
+                let bottomOffset = CGPoint(x: 0, y: max(0, contentHeight - frameHeight))
+                terminalView.setContentOffset(bottomOffset, animated: false)
+            } else {
+                // If content fits, scroll to top (0, 0) to show cursor
+                terminalView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
+            }
+
+            CATransaction.commit()
+        }
+
+        // Force scroll to bottom (used for explicit actions like clear, history load)
         func scrollToBottom() {
             guard let terminalView = terminalView else { return }
-            // SwiftTerm's TerminalView is a UIScrollView, so we can scroll it
             // Wait a bit for layout to update, then scroll to bottom
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                // Use CATransaction to prevent flickering
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+
                 // Force layout update first
                 terminalView.layoutIfNeeded()
-                
+
                 let contentHeight = terminalView.contentSize.height
                 let frameHeight = terminalView.frame.height
-                
+
                 if contentHeight > frameHeight {
                     let bottomOffset = CGPoint(x: 0, y: max(0, contentHeight - frameHeight))
                     terminalView.setContentOffset(bottomOffset, animated: false)
@@ -174,6 +235,8 @@ struct SwiftTermTerminalView: UIViewRepresentable {
                     // If content fits, scroll to top (0, 0) to show cursor
                     terminalView.setContentOffset(CGPoint(x: 0, y: 0), animated: false)
                 }
+
+                CATransaction.commit()
             }
         }
         
@@ -232,9 +295,16 @@ struct SwiftTermTerminalView: UIViewRepresentable {
         }
         
         // MARK: - TerminalViewDelegate Implementation
-        
+
         func scrolled(source: SwiftTerm.TerminalView, position: Double) {
-            // Terminal scrolled
+            // Terminal scrolled - track user scrolling to avoid auto-scroll interference
+            isUserScrolling = true
+            lastScrollCheckTime = Date()
+
+            // Reset the flag after 2 seconds of no scrolling
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                self.isUserScrolling = false
+            }
         }
         
         func setTerminalTitle(source: SwiftTerm.TerminalView, title: String) {
