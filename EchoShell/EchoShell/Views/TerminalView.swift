@@ -212,6 +212,11 @@ struct SessionRow: View {
                         .foregroundColor(.green)
                         .frame(width: 32, height: 32)
                 }
+            case .agent:
+                // Global agent terminal
+                Image(systemName: "waveform.circle.fill")
+                    .foregroundColor(.orange)
+                    .frame(width: 32, height: 32)
             }
         }
     }

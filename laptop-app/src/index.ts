@@ -92,6 +92,9 @@ outputRouter.setTtsProvider(ttsProvider);
 // Set OutputRouter in TerminalManager
 terminalManager.setOutputRouter(outputRouter);
 
+// Set AIAgent in TerminalManager for agent terminal type
+terminalManager.setAIAgent(aiAgent);
+
 // Initialize handlers for tunnel requests
 let terminalHandler: TerminalHandler;
 let keyHandler: KeyHandler;

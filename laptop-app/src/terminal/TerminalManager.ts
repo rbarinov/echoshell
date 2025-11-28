@@ -7,8 +7,10 @@ import type { TunnelClient } from '../tunnel/TunnelClient';
 import { StateManager, type TerminalSessionState } from '../storage/StateManager';
 import type { OutputRouter } from '../output/OutputRouter';
 import { HeadlessExecutor } from './HeadlessExecutor';
+import { AgentExecutor } from './AgentExecutor';
 import { AgentOutputParser } from '../output/AgentOutputParser';
 import { ChatHistoryDatabase } from '../database/ChatHistoryDatabase';
+import type { AIAgent } from '../agent/AIAgent';
 import type {
   TerminalType,
   HeadlessTerminalType,
@@ -31,10 +33,13 @@ interface TerminalSession {
   processGroupId?: number; // Process group ID for killing all child processes
   outputBuffer?: string[];
 
-  // For headless terminals (NEW)
+  // For headless terminals (cursor, claude)
   executor?: HeadlessExecutor;
   chatHistory?: ChatHistory;
   currentExecution?: CurrentExecution;
+
+  // For agent terminals (global AI agent)
+  agentExecutor?: AgentExecutor;
 }
 
 export class TerminalManager {
@@ -44,6 +49,7 @@ export class TerminalManager {
   private outputRouter: OutputRouter | null = null;
   private stateManager: StateManager;
   private chatHistoryDb: ChatHistoryDatabase;
+  private aiAgent: AIAgent | null = null;
   private globalOutputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private globalInputListeners = new Set<(session: TerminalSession, data: string) => void>();
   private sessionDestroyedListeners = new Set<(sessionId: string) => void>();
@@ -52,6 +58,10 @@ export class TerminalManager {
   constructor(stateManager: StateManager, chatHistoryDb?: ChatHistoryDatabase) {
     this.stateManager = stateManager;
     this.chatHistoryDb = chatHistoryDb || new ChatHistoryDatabase();
+  }
+
+  setAIAgent(aiAgent: AIAgent): void {
+    this.aiAgent = aiAgent;
   }
   
   async restoreSessions(): Promise<void> {
@@ -216,10 +226,6 @@ export class TerminalManager {
     };
 
     if (this.isHeadlessTerminal(terminalType)) {
-      // For headless terminals: create HeadlessExecutor and initialize chat history
-      const executor = new HeadlessExecutor(cwd, terminalType);
-      session.executor = executor;
-
       // Create session in database
       this.chatHistoryDb.createSession(sessionId);
 
@@ -240,11 +246,29 @@ export class TerminalManager {
         startedAt: 0,
         currentMessages: [],
       };
-      
-      // Setup output handlers for headless executor
-      this.setupHeadlessOutputHandler(session);
-      
-      console.log(`🤖 [${sessionId}] Created headless terminal with executor`);
+
+      if (terminalType === 'agent') {
+        // For agent terminals: create AgentExecutor
+        if (!this.aiAgent) {
+          throw new Error('AIAgent not configured for agent terminals');
+        }
+        const agentExecutor = new AgentExecutor(cwd, this.aiAgent, this);
+        session.agentExecutor = agentExecutor;
+        
+        // Setup output handlers for agent executor
+        this.setupAgentOutputHandler(session);
+        
+        console.log(`🤖 [${sessionId}] Created agent terminal with AgentExecutor`);
+      } else {
+        // For cursor/claude terminals: create HeadlessExecutor
+        const executor = new HeadlessExecutor(cwd, terminalType);
+        session.executor = executor;
+        
+        // Setup output handlers for headless executor
+        this.setupHeadlessOutputHandler(session);
+        
+        console.log(`🤖 [${sessionId}] Created headless terminal with executor`);
+      }
     } else {
       // For regular terminals: create PTY (existing logic)
       session.outputBuffer = [];
@@ -355,7 +379,11 @@ export class TerminalManager {
     }
     
     if (this.isHeadlessTerminal(session.terminalType)) {
-      // For headless terminals, execute command via subprocess (HeadlessExecutor)
+      if (session.terminalType === 'agent') {
+        // For agent terminals, execute via AIAgent (AgentExecutor)
+        return this.executeAgentCommand(session, command);
+      }
+      // For cursor/claude terminals, execute command via subprocess (HeadlessExecutor)
       return this.executeHeadlessCommand(session, command);
     }
     
@@ -469,6 +497,42 @@ export class TerminalManager {
     // Note: We don't store it in session anymore, just let it run
 
     return 'Headless command started';
+  }
+
+  private async executeAgentCommand(session: TerminalSession, command: string): Promise<string> {
+    const prompt = command.trim();
+    if (!prompt) {
+      throw new Error('Command is required for agent sessions');
+    }
+
+    if (!session.agentExecutor || !session.currentExecution || !session.chatHistory) {
+      throw new Error('Agent terminal not properly initialized');
+    }
+
+    // If already running, wait (agent commands are synchronous LLM calls)
+    if (session.currentExecution.isRunning) {
+      console.log(`⚠️ [${session.sessionId}] Agent command already running, skipping`);
+      return 'Command already running';
+    }
+
+    // Mark as running
+    session.currentExecution.isRunning = true;
+    session.currentExecution.startedAt = Date.now();
+    session.currentExecution.currentMessages = [];
+    console.log(`🚀 [${session.sessionId}] Starting agent command execution`);
+
+    // Execute command via AgentExecutor (async)
+    try {
+      await session.agentExecutor.execute(prompt);
+      console.log(`✅ [${session.sessionId}] Agent command execution started`);
+    } catch (error) {
+      session.currentExecution.isRunning = false;
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error(`❌ [${session.sessionId}] Failed to execute agent command: ${errorMessage}`);
+      throw error;
+    }
+
+    return 'Agent command started';
   }
   
   private notifyHeadlessCommand(session: TerminalSession, command: string): void {
@@ -935,6 +999,56 @@ export class TerminalManager {
       // Ensure execution state is marked as complete
       if (code !== null && code !== 0) {
         console.warn(`⚠️ [${session.sessionId}] Process exited with non-zero code: ${code}`);
+      }
+    });
+  }
+
+  /**
+   * Setup output handler for agent terminals (AgentExecutor-based)
+   */
+  private setupAgentOutputHandler(session: TerminalSession): void {
+    if (!session.agentExecutor || session.terminalType !== 'agent') {
+      return;
+    }
+
+    // Handle chat messages from AgentExecutor
+    session.agentExecutor.onOutput((message: ChatMessage) => {
+      console.log(`📝 [${session.sessionId}] Agent message: ${message.type} - ${message.content.substring(0, 50)}...`);
+
+      // Add to current execution messages
+      if (session.currentExecution) {
+        session.currentExecution.currentMessages.push(message);
+      }
+
+      // Add to chat history
+      if (session.chatHistory) {
+        this.addMessageToHistory(session, message);
+      }
+
+      // Send chat message via OutputRouter
+      if (this.outputRouter) {
+        this.outputRouter.sendChatMessage(session.sessionId, message);
+      }
+
+      // Check if this is a completion message
+      const isComplete = message.type === 'system' && message.metadata?.completion === true;
+
+      // Notify chat message listeners (for RecordingStreamManager)
+      this.chatMessageListeners.forEach(listener => {
+        try {
+          listener(session.sessionId, message, isComplete);
+        } catch (error) {
+          console.error('❌ Chat message listener error:', error);
+        }
+      });
+    });
+
+    // Handle completion
+    session.agentExecutor.onComplete((result: string) => {
+      console.log(`✅ [${session.sessionId}] Agent command completed`);
+
+      if (session.currentExecution) {
+        session.currentExecution.isRunning = false;
       }
     });
   }

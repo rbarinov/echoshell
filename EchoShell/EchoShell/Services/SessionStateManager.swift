@@ -150,19 +150,19 @@ class SessionStateManager: ObservableObject {
     /// - Returns: true if agent mode is supported
     func supportsAgentMode(terminalType: TerminalType) -> Bool {
         switch terminalType {
-        case .cursor, .claude:
+        case .cursor, .claude, .agent:
             return true
         case .regular:
             return false
         }
     }
     
-    /// Check if terminal is headless (cursor/claude)
+    /// Check if terminal is headless (cursor/claude/agent)
     /// - Parameter terminalType: Terminal type
     /// - Returns: true if terminal is headless
     func isHeadlessTerminal(terminalType: TerminalType) -> Bool {
         switch terminalType {
-        case .cursor, .claude:
+        case .cursor, .claude, .agent:
             return true
         case .regular:
             return false

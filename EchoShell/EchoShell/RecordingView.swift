@@ -661,6 +661,11 @@ struct RecordingView: View {
                             connectToTerminalStream(config: config, sessionId: sessionId)
                             connectToRecordingStream(config: config, sessionId: sessionId)
                         }
+
+                        // For agent mode, ensure agent session is ready (WebSocket connection)
+                        if settingsManager.commandMode == .agent {
+                            await viewModel.ensureAgentSession()
+                        }
                     }
                 }
             }
@@ -706,13 +711,12 @@ struct RecordingView: View {
                 }
             } else if newValue == .agent {
                 recordingStreamClient.disconnect()
-                // Clear terminal output when switching to agent mode
-                // Ensure updates happen on main thread
+                // Ensure agent WebSocket session is ready
                 Task { @MainActor in
                     // Reset ViewModel state for agent mode
                     self.viewModel.resetStateForNewCommand()
-                    // Don't clear lastTerminalOutput when switching modes - keep history
-                    // settingsManager.lastTerminalOutput is preserved
+                    // Ensure agent session is connected
+                    await self.viewModel.ensureAgentSession()
                 }
             }
         }
@@ -720,9 +724,15 @@ struct RecordingView: View {
             // When transcription completes in Agent mode, execute command via AgentViewModel
             if oldValue == true && newValue == false && !viewModel.recognizedText.isEmpty {
                 if settingsManager.commandMode == .agent {
-                    print("✅ RecordingView: Transcription completed in Agent mode, executing command via AgentViewModel")
+                    print("✅ RecordingView: Transcription completed in Agent mode, executing command via WebSocket")
                     Task {
-                        await viewModel.executeCommand(viewModel.recognizedText, sessionId: nil)
+                        await viewModel.executeCommand(
+                            viewModel.recognizedText,
+                            sessionId: nil,
+                            ttsEnabled: settingsManager.ttsEnabled,
+                            ttsSpeed: settingsManager.ttsSpeed,
+                            language: settingsManager.transcriptionLanguage.whisperCode ?? "en"
+                        )
                     }
                 }
             }

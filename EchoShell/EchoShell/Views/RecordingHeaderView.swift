@@ -119,6 +119,10 @@ struct RecordingHeaderView: View {
                     .foregroundColor(.green)
                     .frame(width: 20, height: 20)
             }
+        case .agent:
+            Image(systemName: "waveform.circle.fill")
+                .foregroundColor(.orange)
+                .frame(width: 20, height: 20)
         }
     }
 }

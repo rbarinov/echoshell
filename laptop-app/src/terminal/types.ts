@@ -2,7 +2,7 @@
  * Types for terminal and chat functionality
  */
 
-export type HeadlessTerminalType = 'cursor' | 'claude';
+export type HeadlessTerminalType = 'cursor' | 'claude' | 'agent';
 export type TerminalType = 'regular' | HeadlessTerminalType;
 
 /**

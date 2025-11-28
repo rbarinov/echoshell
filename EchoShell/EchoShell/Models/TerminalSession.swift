@@ -11,6 +11,7 @@ enum TerminalType: String, Codable {
     case regular = "regular"
     case cursor = "cursor"
     case claude = "claude"
+    case agent = "agent"
 }
 
 struct TerminalSession: Identifiable, Codable, Hashable {
@@ -103,7 +104,7 @@ struct TerminalSession: Identifiable, Codable, Hashable {
 extension TerminalType {
     var isHeadless: Bool {
         switch self {
-        case .cursor, .claude:
+        case .cursor, .claude, .agent:
             return true
         case .regular:
             return false
