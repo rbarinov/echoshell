@@ -615,73 +615,11 @@ struct RecordingView: View {
                     
                     // Audio control buttons (always show if audio is available)
                     if shouldShowAudioControls {
-                        HStack {
-                            Spacer()
-                            
-                            // Stop button (show during playback)
-                            if audioPlayer.isPlaying {
-                                Button(action: {
-                                    audioPlayer.stop()
-                                }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "stop.fill")
-                                            .font(.caption)
-                                        Text("Stop")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                    }
-                                    .foregroundColor(.red)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(Color.red.opacity(0.1))
-                                    .cornerRadius(8)
-                                }
-                                .padding(.horizontal, 20)
-                            }
-                            // Resume button (show when paused)
-                            else if audioPlayer.isPaused {
-                                Button(action: {
-                                    audioPlayer.resume()
-                                }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "play.fill")
-                                            .font(.caption)
-                                        Text("Resume")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                    }
-                                    .foregroundColor(.green)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(Color.green.opacity(0.1))
-                                    .cornerRadius(8)
-                                }
-                                .padding(.horizontal, 20)
-                            }
-                            // Replay button (show when TTS audio is available and not playing)
-                            if ttsService.lastAudioData != nil && !audioPlayer.isPlaying && !audioPlayer.isPaused {
-                                Button(action: {
-                                    Task {
-                                        await ttsService.replay()
-                                    }
-                                }) {
-                                    HStack(spacing: 6) {
-                                        Image(systemName: "speaker.wave.2.fill")
-                                            .font(.caption)
-                                        Text("Replay")
-                                            .font(.caption)
-                                            .fontWeight(.medium)
-                                    }
-                                    .foregroundColor(.blue)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(Color.blue.opacity(0.1))
-                                    .cornerRadius(8)
-                                }
-                                .padding(.horizontal, 20)
-                            }
-                        }
-                        .padding(.top, shouldShowText ? 10 : 0)
+                        AudioControlButtonsView(
+                            audioPlayer: audioPlayer,
+                            ttsService: ttsService,
+                            showTopPadding: shouldShowText
+                        )
                     }
                 }
                 .padding(.top, 10)
@@ -1531,6 +1469,85 @@ struct RecordingView: View {
     // Methods: scheduleAutoTTS, playAccumulatedTTS, processQueueAfterPlayback, generateAndPlayTTS
     // are now in AgentViewModel and should be called via viewModel
     
+}
+
+// MARK: - Audio Control Buttons Component
+/// Separate view component that properly observes AudioPlayer state changes
+/// This ensures buttons update correctly when playback state changes
+struct AudioControlButtonsView: View {
+    @ObservedObject var audioPlayer: AudioPlayer
+    let ttsService: TTSService
+    let showTopPadding: Bool
+
+    var body: some View {
+        HStack {
+            Spacer()
+
+            // Stop button (show during playback)
+            if audioPlayer.isPlaying {
+                Button(action: {
+                    audioPlayer.stop()
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "stop.fill")
+                            .font(.caption)
+                        Text("Stop")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundColor(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.red.opacity(0.1))
+                    .cornerRadius(8)
+                }
+                .padding(.horizontal, 20)
+            }
+            // Resume button (show when paused)
+            else if audioPlayer.isPaused {
+                Button(action: {
+                    audioPlayer.resume()
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "play.fill")
+                            .font(.caption)
+                        Text("Resume")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundColor(.green)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.green.opacity(0.1))
+                    .cornerRadius(8)
+                }
+                .padding(.horizontal, 20)
+            }
+            // Replay button (show when TTS audio is available and not playing)
+            else if ttsService.lastAudioData != nil {
+                Button(action: {
+                    Task {
+                        await ttsService.replay()
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "speaker.wave.2.fill")
+                            .font(.caption)
+                        Text("Replay")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundColor(.blue)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.blue.opacity(0.1))
+                    .cornerRadius(8)
+                }
+                .padding(.horizontal, 20)
+            }
+        }
+        .padding(.top, showTopPadding ? 10 : 0)
+    }
 }
 
 #Preview {
