@@ -144,19 +144,23 @@ struct TerminalDetailView: View {
             }
             
             // Connect WebSocket for streaming
-            wsClient.connect(config: config, sessionId: session.id) { text in
-                // Only process non-empty text to avoid feeding empty strings
-                guard !text.isEmpty else { return }
+            wsClient.connect(
+                config: config,
+                sessionId: session.id,
+                onMessage: { text in
+                    // Only process non-empty text to avoid feeding empty strings
+                    guard !text.isEmpty else { return }
 
-                // Feed raw output directly to SwiftTerm
-                // SwiftTerm handles ANSI sequences, tabs, formatting, and all terminal artifacts correctly
-                // Auto-scroll is now handled inside feed() method based on user's scroll position
-                if let coordinator = self.terminalCoordinator {
-                    coordinator.feed(text)
-                } else {
-                    self.pendingData.append(text)
+                    // Feed raw output directly to SwiftTerm
+                    // SwiftTerm handles ANSI sequences, tabs, formatting, and all terminal artifacts correctly
+                    // Auto-scroll is now handled inside feed() method based on user's scroll position
+                    if let coordinator = self.terminalCoordinator {
+                        coordinator.feed(text)
+                    } else {
+                        self.pendingData.append(text)
+                    }
                 }
-            }
+            )
             
             // Load history after a delay to ensure terminal is ready
             Task {
