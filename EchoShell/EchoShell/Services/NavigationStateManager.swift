@@ -10,7 +10,7 @@ import SwiftUI
 import Combine
 
 class NavigationStateManager: ObservableObject {
-    @Published var currentState: NavigationState = .agent
+    @Published var currentState: NavigationState = .supervisor
     
     func navigateToTerminalDetail(session: TerminalSession) {
         currentState = .terminalDetail(
@@ -25,8 +25,8 @@ class NavigationStateManager: ObservableObject {
         currentState = .terminalsList
     }
     
-    func navigateToAgent() {
-        currentState = .agent
+    func navigateToSupervisor() {
+        currentState = .supervisor
     }
     
     func navigateToSettings() {

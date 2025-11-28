@@ -15,6 +15,8 @@ struct SettingsView: View {
     @State private var scannedConfig: TunnelConfig?
     @State private var hasProcessedScan = false // Prevent processing the same scan multiple times
     @State private var showingDisconnectConfirmation = false
+    @State private var showingMagicLinkInput = false
+    @State private var magicLinkInput = ""
     
     var body: some View {
         Form {
@@ -57,7 +59,13 @@ struct SettingsView: View {
                             Label("Scan QR Code from Laptop", systemImage: "qrcode.viewfinder")
                         }
                         
-                        Text("Open the laptop app and scan the QR code to connect")
+                        Button {
+                            showingMagicLinkInput = true
+                        } label: {
+                            Label("Enter Magic Link", systemImage: "link")
+                        }
+                        
+                        Text("Open the laptop app and scan the QR code or paste the magic link to connect")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -156,6 +164,19 @@ struct SettingsView: View {
         .sheet(isPresented: $showingQRScanner) {
             QRScannerView(scannedConfig: $scannedConfig)
         }
+        .sheet(isPresented: $showingMagicLinkInput) {
+            MagicLinkInputView(
+                magicLink: $magicLinkInput,
+                onConnect: { link in
+                    // Parse magic link and create config
+                    if let config = parseMagicLink(link) {
+                        scannedConfig = config
+                        showingMagicLinkInput = false
+                        magicLinkInput = ""
+                    }
+                }
+            )
+        }
         .task {
             if let config = settingsManager.laptopConfig {
                 laptopHealthChecker.start(config: config)
@@ -219,11 +240,67 @@ struct SettingsView: View {
                     if scannedConfig != nil && !hasProcessedScan {
                         scannedConfig = nil
                         print("📱 QR Scanner closed, cleared unprocessed scan")
-                    }
                 }
             }
         }
     }
+    
+    // Parse magic link: echoshell://connect?tunnelId=...&tunnelUrl=...&keyEndpoint=...&authKey=...
+    private func parseMagicLink(_ link: String) -> TunnelConfig? {
+        guard let url = URL(string: link),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let queryItems = components.queryItems else {
+            print("❌ Invalid magic link format")
+            return nil
+        }
+        
+        var tunnelId: String?
+        var tunnelUrl: String?
+        var wsUrl: String?
+        var keyEndpoint: String?
+        var authKey: String?
+        
+        for item in queryItems {
+            switch item.name {
+            case "tunnelId":
+                tunnelId = item.value
+            case "tunnelUrl":
+                tunnelUrl = item.value
+            case "wsUrl":
+                wsUrl = item.value
+            case "keyEndpoint":
+                keyEndpoint = item.value
+            case "authKey":
+                authKey = item.value
+            default:
+                break
+            }
+        }
+        
+        guard let tid = tunnelId,
+              let turl = tunnelUrl,
+              let wurl = wsUrl,
+              let kep = keyEndpoint,
+              let akey = authKey else {
+            print("❌ Missing required parameters in magic link")
+            return nil
+        }
+        
+        let config = TunnelConfig(
+            tunnelId: tid,
+            tunnelUrl: turl,
+            wsUrl: wurl,
+            keyEndpoint: kep,
+            authKey: akey
+        )
+        
+        print("✅ Parsed magic link successfully")
+        print("   Tunnel ID: \(tid)")
+        print("   Tunnel URL: \(turl)")
+        
+        return config
+    }
+}
 
 #Preview {
     SettingsView()

@@ -10,14 +10,14 @@ import SwiftUI
 
 // Navigation state for unified header
 enum NavigationState: Equatable {
-    case agent
+    case supervisor
     case terminalsList
     case terminalDetail(sessionId: String, sessionName: String?, workingDir: String, terminalType: TerminalType)
     case settings
     
     static func == (lhs: NavigationState, rhs: NavigationState) -> Bool {
         switch (lhs, rhs) {
-        case (.agent, .agent), (.terminalsList, .terminalsList), (.settings, .settings):
+        case (.supervisor, .supervisor), (.terminalsList, .terminalsList), (.settings, .settings):
             return true
         case (.terminalDetail(let id1, let name1, let dir1, let type1), .terminalDetail(let id2, let name2, let dir2, let type2)):
             return id1 == id2 && name1 == name2 && dir1 == dir2 && type1 == type2
@@ -32,16 +32,52 @@ struct UnifiedHeaderView: View {
     @EnvironmentObject var sessionState: SessionStateManager
     @Binding var navigationState: NavigationState
     let connectionState: ConnectionState
+    @Binding var sidebarPresented: Bool
+    
+    @State private var showDeleteConfirmation = false
+    @State private var sessionToDelete: String?
+    
+    init(
+        navigationState: Binding<NavigationState>,
+        connectionState: ConnectionState,
+        sidebarPresented: Binding<Bool> = .constant(false)
+    ) {
+        self._navigationState = navigationState
+        self.connectionState = connectionState
+        self._sidebarPresented = sidebarPresented
+    }
     
     var body: some View {
         // Main header bar
         HStack(spacing: 12) {
-            // Left button (back or create terminal) - only for terminals
-            leftButtonView
+            // Left: Sidebar button (always visible)
+            Button {
+                withAnimation {
+                    sidebarPresented.toggle()
+                }
+            } label: {
+                Image(systemName: "line.3.horizontal")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundColor(.blue)
+                    .frame(width: 44, height: 44, alignment: .center)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
             
-            // Center: Session info for terminal detail (icon + name + path)
-            if case .terminalDetail(_, let sessionName, let workingDir, let terminalType) = navigationState {
-                HStack(spacing: 8) {
+            // Center: Title based on current view
+            HStack(spacing: 8) {
+                if case .supervisor = navigationState {
+                    // Supervisor icon and title
+                    Image(systemName: "person.wave.2.fill")
+                        .foregroundColor(.blue)
+                        .frame(width: 20, height: 20)
+                    
+                    Text("Supervisor")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                
+                // Session info for terminal detail (icon + name + path)
+                if case .terminalDetail(_, let sessionName, let workingDir, let terminalType) = navigationState {
                     // Terminal type icon
                     terminalTypeIcon(for: terminalType)
                     
@@ -62,14 +98,29 @@ struct UnifiedHeaderView: View {
             
             // Right: Reset Context button (agent mode only) and Connection status
             HStack(spacing: 8) {
-                // Reset Context button (only in agent mode)
-                if case .agent = navigationState {
+                // Reset Context button (only in supervisor mode)
+                if case .supervisor = navigationState {
                     Button {
                         EventBus.shared.resetContextPublisher.send()
                     } label: {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 16, weight: .medium))
                             .foregroundColor(.blue)
+                            .frame(width: 36, height: 36, alignment: .center)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                // Delete Terminal button (only in terminal detail mode)
+                if case .terminalDetail(let sessionId, _, _, _) = navigationState {
+                    Button {
+                        sessionToDelete = sessionId
+                        showDeleteConfirmation = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.red)
                             .frame(width: 36, height: 36, alignment: .center)
                             .contentShape(Rectangle())
                     }
@@ -85,13 +136,25 @@ struct UnifiedHeaderView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .background(Color(.systemBackground))
+        .alert("Delete Terminal", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {
+                sessionToDelete = nil
+            }
+            Button("Delete", role: .destructive) {
+                if let sessionId = sessionToDelete {
+                    deleteTerminal(sessionId: sessionId)
+                }
+            }
+        } message: {
+            Text("Are you sure you want to delete this terminal session?")
+        }
     }
     
     @ViewBuilder
     private var leftButtonView: some View {
         switch navigationState {
-        case .agent, .settings:
-            // No buttons for agent or settings - only status indicator
+        case .supervisor, .settings, .terminalDetail:
+            // No back button - only sidebar button (already in header)
             // Use fixed frame to maintain consistent spacing
             Color.clear
                 .frame(width: 44, height: 44)
@@ -103,8 +166,6 @@ struct UnifiedHeaderView: View {
                 Color.clear
                     .frame(width: 44, height: 44)
             }
-        case .terminalDetail:
-            backButton
         }
     }
     
@@ -210,6 +271,29 @@ struct UnifiedHeaderView: View {
             Image(systemName: "waveform.circle.fill")
                 .foregroundColor(.orange)
                 .frame(width: 20, height: 20)
+        }
+    }
+    
+    private func deleteTerminal(sessionId: String) {
+        guard let config = settingsManager.laptopConfig else { return }
+        
+        Task {
+            // Delete terminal via API
+            let apiClient = APIClient(config: config)
+            do {
+                try await apiClient.deleteSession(sessionId: sessionId)
+                print("✅ Terminal \(sessionId) deleted successfully")
+                
+                // Notify ContentView to refresh terminal list
+                await MainActor.run {
+                    EventBus.shared.terminalDeletedPublisher.send(sessionId)
+                    navigationState = .supervisor
+                    sessionToDelete = nil
+                }
+            } catch {
+                print("❌ Failed to delete terminal: \(error)")
+                sessionToDelete = nil
+            }
         }
     }
 }

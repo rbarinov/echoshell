@@ -133,7 +133,7 @@ export class AIAgent {
         break;
       
       default:
-        output = `I understand you want to: ${command}\n\nHowever, I'm not sure how to execute this. Can you rephrase?`;
+        output = `I'm not sure how to help with that. Please try rephrasing your request.`;
     }
     
     return {
@@ -282,13 +282,12 @@ User command: {command}
   private async handleComplexTask(command: string, sessionId: string, terminalManager: TerminalManager): Promise<string> {
     // For complex tasks, break down into steps
     const prompt = `
-You are a helpful AI assistant. The user wants to: ${command}
+Break this task into terminal commands as a JSON array.
 
-Break this down into specific terminal commands that can be executed step by step.
-Provide the commands as a JSON array.
+Task: ${command}
 
-Example:
-["git clone https://github.com/user/repo", "cd repo", "npm install"]
+Respond ONLY with the JSON array of commands, nothing else.
+Example: ["git clone https://github.com/user/repo", "cd repo", "npm install"]
 `;
     
     try {
@@ -442,9 +441,13 @@ PRIMARY ROLE: Help with terminal management, workspace organization, repository 
 LANGUAGE: Always respond in the same language the user is using. If the user asks in Russian, respond in Russian. If the user asks in English, respond in English. Match the language automatically based on the user's input.
 
 RESPONSE STYLE:
+- NEVER repeat or echo the user's question in your response
+- NEVER start with phrases like "You asked about...", "Your question was...", "Regarding your request..."
+- Jump straight to the answer
 - Always respond as briefly as possible without losing essential information
 - Use concise, action-oriented language
 - Format responses for voice output (short sentences, clear structure)
+- Maximum 1-2 sentences for simple questions
 
 SCOPE:
 You can help with:
@@ -465,9 +468,9 @@ If asked about something outside your scope, respond briefly in the same languag
 - English: "I can only help with terminal management, workspace organization, and git worktrees."
 - Russian: "Я могу помочь только с управлением терминалами, организацией workspace и git worktrees."
 
-The user asked: "${command}"
+User: "${command}"
 
-Detect the user's language and respond in the same language. Provide a brief, helpful answer if it's within your scope. If it's outside your scope, reject it using the appropriate language format above.
+Respond directly and briefly WITHOUT echoing the user's question. Start with the answer, not with acknowledgment of the question.
 `;
     
     try {

@@ -196,7 +196,7 @@ class SettingsManager: ObservableObject {
            let mode = CommandMode(rawValue: modeRaw) {
             self.commandMode = mode
         } else {
-            self.commandMode = .agent // Default to agent mode
+            self.commandMode = .supervisor // Default to supervisor mode
         }
         
         // Load selected session
@@ -239,15 +239,15 @@ class SettingsManager: ObservableObject {
 }
 
 enum CommandMode: String, CaseIterable, Identifiable {
-    case agent = "agent"
+    case supervisor = "supervisor"
     case direct = "direct"
     
     var id: String { rawValue }
     
     var displayName: String {
         switch self {
-        case .agent:
-            return "AI Agent"
+        case .supervisor:
+            return "Supervisor"
         case .direct:
             return "Direct Terminal"
         }
@@ -255,8 +255,8 @@ enum CommandMode: String, CaseIterable, Identifiable {
     
     var description: String {
         switch self {
-        case .agent:
-            return "AI Agent: answers questions, manages terminals (create/delete/navigate)"
+        case .supervisor:
+            return "Supervisor: AI assistant that answers questions and manages terminals"
         case .direct:
             return "Direct Terminal: commands are executed directly in the terminal"
         }
@@ -264,8 +264,8 @@ enum CommandMode: String, CaseIterable, Identifiable {
     
     var icon: String {
         switch self {
-        case .agent:
-            return "brain.head.profile"
+        case .supervisor:
+            return "person.wave.2.fill"
         case .direct:
             return "terminal"
         }

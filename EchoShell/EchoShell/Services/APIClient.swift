@@ -308,6 +308,11 @@ class APIClient: ObservableObject {
         }
     }
     
+    func deleteTerminal(sessionId: String, config: TunnelConfig) async throws {
+        // Alias for deleteSession for compatibility
+        try await deleteSession(sessionId: sessionId)
+    }
+    
     func executeAgentCommand(sessionId: String?, command: String) async throws -> String {
         let url = URL(string: "\(config.apiBaseUrl)/agent/execute")!
         var request = URLRequest(url: url)

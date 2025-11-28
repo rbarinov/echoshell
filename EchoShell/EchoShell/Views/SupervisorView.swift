@@ -1,22 +1,22 @@
 //
-//  AgentView.swift
+//  SupervisorView.swift
 //  EchoShell
 //
 //  Created for Voice-Controlled Terminal Management System
-//  Agent mode view wrapper
+//  Supervisor mode view wrapper - main voice command interface
 //
 
 import SwiftUI
 
-struct AgentView: View {
+struct SupervisorView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     
     var body: some View {
         RecordingView()
             .environmentObject(settingsManager)
             .onAppear {
-                // Set to agent mode when this view appears
-                settingsManager.commandMode = .agent
+                // Set to supervisor mode when this view appears
+                settingsManager.commandMode = .supervisor
             }
     }
 }

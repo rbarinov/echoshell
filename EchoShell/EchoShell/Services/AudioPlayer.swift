@@ -46,11 +46,10 @@ class AudioPlayer: NSObject, ObservableObject {
             // This is critical for proper transition from recording to playback
             try await Task.sleep(nanoseconds: 200_000_000) // 0.2 seconds
             
-            // Set category for playback with speaker output
-            // Use .playAndRecord with .defaultToSpeaker to ensure audio plays through speaker
-            // This is necessary because .defaultToSpeaker option only works with .playAndRecord category
-            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
-            print("🔊 AudioPlayer: Set audio category to .playAndRecord with .defaultToSpeaker")
+            // Set category for playback - use .playback for maximum volume
+            // .playAndRecord has lower volume, so we use .playback for TTS responses
+            try audioSession.setCategory(.playback, mode: .spokenAudio, options: [])
+            print("🔊 AudioPlayer: Set audio category to .playback with .spokenAudio mode")
             
             // Activate audio session for playback
             // Don't use .notifyOthersOnDeactivation here - we want to take control
@@ -156,7 +155,7 @@ class AudioPlayer: NSObject, ObservableObject {
                 // Try to reactivate audio session and retry
                 do {
                     try audioSession.setActive(false)
-                    try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothHFP])
+                    try audioSession.setCategory(.playback, mode: .spokenAudio, options: [])
                     try audioSession.setActive(true)
                     let retrySuccess = audioPlayer.play()
                     print("🔊 AudioPlayer: Retry play() returned: \(retrySuccess)")

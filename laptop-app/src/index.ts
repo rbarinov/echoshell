@@ -226,6 +226,13 @@ async function initializeTunnel(isRetry = false): Promise<void> {
     console.log(qrCodeText);
     console.log('\n');
     
+    // Generate magic link for emulator debugging
+    const baseWsUrl = tunnelConfig.wsUrl.replace('/tunnel/' + tunnelConfig.tunnelId, '');
+    const magicLink = `echoshell://connect?tunnelId=${encodeURIComponent(tunnelConfig.tunnelId)}&tunnelUrl=${encodeURIComponent(tunnelConfig.publicUrl.replace('/api/' + tunnelConfig.tunnelId, ''))}&wsUrl=${encodeURIComponent(baseWsUrl)}&keyEndpoint=${encodeURIComponent(`${tunnelConfig.publicUrl}/keys/request`)}&authKey=${encodeURIComponent(laptopAuthKey)}`;
+    console.log('🔗 Or use this Magic Link (for emulator debugging):');
+    console.log('\n' + magicLink + '\n');
+    console.log('📋 Copy and paste this link in the iPhone app Settings > Enter Magic Link\n');
+    
     // Connect to tunnel
     tunnelClient = new TunnelClient(tunnelConfig, handleTunnelRequest, process.env.LAPTOP_AUTH_KEY);
     await tunnelClient.connect();

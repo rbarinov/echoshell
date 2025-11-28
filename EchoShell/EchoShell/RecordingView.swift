@@ -50,7 +50,7 @@ struct RecordingView: View {
     // Flag to indicate if this is the active tab (prevents duplicate event handling)
     let isActiveTab: Bool
 
-    @StateObject private var viewModel: AgentViewModel
+    @StateObject private var viewModel: SupervisorViewModel
     @StateObject private var terminalViewModel = TerminalViewModel()
     @StateObject private var wsClient = WebSocketClient()
     @StateObject private var laptopHealthChecker = LaptopHealthChecker()
@@ -70,8 +70,8 @@ struct RecordingView: View {
         let placeholderConfig = TunnelConfig(tunnelId: "", tunnelUrl: "", wsUrl: "", keyEndpoint: "", authKey: "")
         let apiClient = APIClient(config: placeholderConfig)
 
-        // Create AgentViewModel with dependencies
-        _viewModel = StateObject(wrappedValue: AgentViewModel(
+        // Create SupervisorViewModel with dependencies
+        _viewModel = StateObject(wrappedValue: SupervisorViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
@@ -81,7 +81,7 @@ struct RecordingView: View {
     
     // Get worst connection state
     // Priority: laptop health check > WebSocket (for direct mode)
-    // In agent mode: only laptop health check matters
+    // In supervisor mode: only laptop health check matters
     // In direct mode: laptop health check + WebSocket states
     private func getWorstConnectionState() -> ConnectionState {
         // No laptop config means no connection to backend
@@ -92,8 +92,8 @@ struct RecordingView: View {
         // Get laptop health check state (real connection status)
         let laptopState = laptopHealthChecker.connectionState
         
-        // In agent mode, only laptop health check matters (no WebSocket needed)
-        if settingsManager.commandMode == .agent {
+        // In supervisor mode, only laptop health check matters (no WebSocket needed)
+        if settingsManager.commandMode == .supervisor {
             return laptopState
         }
         
@@ -212,38 +212,28 @@ struct RecordingView: View {
         return terminalViewModel.sessions.filter { $0.terminalType.isHeadless }
     }
     
-    private func toggleRecording() {
-        if viewModel.isRecording {
-            viewModel.stopRecording()
-        } else {
-            // Cancel any ongoing operations when starting new recording
-            viewModel.cancelCurrentOperation()
-
-            // Clear previous output when starting new recording
-            viewModel.resetStateForNewCommand()
-
-            viewModel.startRecording()
-        }
-    }
-    
     var body: some View {
         viewModifiers
     }
     
     private var mainContentView: some View {
-        ScrollView {
-            VStack(spacing: 20) {
+        VStack(spacing: 0) {
+            // In supervisor mode, show chat interface directly (no status, no session selector)
+            if settingsManager.commandMode == .supervisor {
+                resultDisplayView
+            } else {
+                // Direct mode: show session selector and status
                 if settingsManager.laptopConfig != nil {
                     if settingsManager.commandMode == .direct {
                         // In direct mode, only show cursor_agent terminals
                         if !availableSessionsForDirectMode.isEmpty {
-                    sessionSelectorView
+                            sessionSelectorView
                         } else {
                             // No cursor_agent terminals, show create button
                             createHeadlessTerminalView
                         }
                     } else {
-                        // In agent mode, show all terminals
+                        // In supervisor mode, show all terminals
                         sessionSelectorView
                     }
                 }
@@ -251,9 +241,7 @@ struct RecordingView: View {
                 Spacer()
                     .frame(height: 20)
                 
-                recordButtonView
-                
-                // Status indicator with progress (immediately below button)
+                // Status indicator (only for direct mode)
                 statusIndicatorView
                 
                 Spacer()
@@ -289,8 +277,8 @@ struct RecordingView: View {
             }
             
             // Check if we have TTS audio that was generated while we were away
-            // If so, play it automatically when user returns to Agent page
-            if isActiveTab && settingsManager.commandMode == .agent {
+            // If so, play it automatically when user returns to Supervisor page
+            if isActiveTab && settingsManager.commandMode == .supervisor {
                 Task { @MainActor in
                     // Small delay to ensure view is fully loaded
                     try? await Task.sleep(nanoseconds: 300_000_000) // 0.3 seconds
@@ -302,7 +290,7 @@ struct RecordingView: View {
                     if let audioData = ttsService.lastAudioData,
                        !audioPlayer.isPlaying,
                        !audioPlayer.isPaused,
-                       !self.viewModel.agentResponseText.isEmpty {
+                       !self.viewModel.supervisorResponseText.isEmpty {
                         print("📱 RecordingView: Found TTS audio from background - playing now")
                         do {
                             try await audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
@@ -331,8 +319,8 @@ struct RecordingView: View {
     private var sessionSelectorView: some View {
         // Terminal Session Selector (simplified)
         HStack {
-            // Hide session picker in agent mode - agent works without terminal context
-            if settingsManager.commandMode == .agent {
+            // Hide session picker in supervisor mode - supervisor works without terminal context
+            if settingsManager.commandMode == .supervisor {
                 // Empty space - no label needed, toggle in header shows the mode
                 EmptyView()
             } else if terminalViewModel.isLoading {
@@ -466,49 +454,6 @@ struct RecordingView: View {
         }
     }
     
-    private var recordButtonView: some View {
-        // Main Record Button
-        Button(action: {
-            toggleRecording()
-        }) {
-            ZStack {
-                        // Outer circle with gradient
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    gradient: Gradient(colors: viewModel.isRecording
-                                        ? [Color.red, Color.pink]
-                                        : [Color.blue, Color.cyan]),
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 160, height: 160)
-                            .shadow(color: viewModel.isRecording
-                                ? Color.red.opacity(0.6)
-                                : Color.blue.opacity(0.5),
-                                radius: 20, x: 0, y: 10)
-
-                        // Inner circle
-                        Circle()
-                            .fill(Color.white.opacity(0.2))
-                            .frame(width: 140, height: 140)
-
-                        // Icon
-                        Image(systemName: viewModel.isRecording ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 55, weight: .medium))
-                .foregroundColor(.white)
-                .symbolEffect(.pulse, isActive: viewModel.isRecording)
-            }
-        }
-        .buttonStyle(.plain)
-        .disabled(settingsManager.laptopConfig == nil ||
-                 (settingsManager.commandMode == .direct && !isHeadlessTerminal))
-        .scaleEffect(viewModel.isRecording ? 1.05 : 1.0)
-        .animation(.spring(response: 0.3, dampingFraction: 0.6), value: viewModel.isRecording)
-        .padding(.horizontal, 30)
-    }
-    
     // Status indicator with animated dot
     private var statusIndicatorView: some View {
         Group {
@@ -571,29 +516,14 @@ struct RecordingView: View {
     }
     
     private var resultDisplayView: some View {
-        // Display chat interface for agent mode, or terminal output for direct mode
+        // Display chat interface for supervisor mode, or terminal output for direct mode
         Group {
-            if settingsManager.commandMode == .agent {
-                // Agent mode: Show chat interface
-                VStack(spacing: 0) {
-                    ChatHistoryView(
-                        messages: viewModel.chatHistory,
-                        isAgentMode: true
-                    )
-                    
-                    // Audio control buttons if available
-                    let ttsService = viewModel.ttsService
-                    let audioPlayer = ttsService.audioPlayer
-                    if ttsService.lastAudioData != nil || audioPlayer.isPlaying || audioPlayer.isPaused {
-                        AudioControlButtonsView(
-                            audioPlayer: audioPlayer,
-                            ttsService: ttsService,
-                            showTopPadding: false
-                        )
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 10)
-                    }
-                }
+            if settingsManager.commandMode == .supervisor {
+                // Supervisor mode: Show chat interface (fills all available space)
+                GenericChatView(
+                    viewModel: viewModel,
+                    isAgentMode: true
+                )
             } else {
                 // Direct mode: Show terminal output (legacy behavior)
                 let shouldShowText = isHeadlessTerminal
@@ -645,7 +575,7 @@ struct RecordingView: View {
                 viewModel.loadState()
 
                 // Configure AudioRecorder with settingsManager
-                // This will disable autoSendCommand in Agent mode so commands are sent via AgentViewModel.executeCommand()
+                // This will disable autoSendCommand in Supervisor mode so commands are sent via SupervisorViewModel.executeCommand()
                 viewModel.configure(with: settingsManager)
 
                 // Update ViewModel config when laptop config is available
@@ -667,9 +597,9 @@ struct RecordingView: View {
                             connectToTerminalStream(config: config, sessionId: sessionId)
                         }
 
-                        // For agent mode, ensure agent session is ready (WebSocket connection)
-                        if settingsManager.commandMode == .agent {
-                            await viewModel.ensureAgentSession()
+                        // For supervisor mode, ensure supervisor session is ready (WebSocket connection)
+                        if settingsManager.commandMode == .supervisor {
+                            await viewModel.ensureSupervisorSession()
                         }
                     }
                 }
@@ -710,22 +640,22 @@ struct RecordingView: View {
                 if terminalViewModel.sessions.first(where: { $0.id == sessionId })?.terminalType == .cursor {
                 connectToTerminalStream(config: config, sessionId: sessionId)
                 }
-            } else if newValue == .agent {
-                // Ensure agent WebSocket session is ready
+            } else if newValue == .supervisor {
+                // Ensure supervisor WebSocket session is ready
                 Task { @MainActor in
-                    // Reset ViewModel state for agent mode
+                    // Reset ViewModel state for supervisor mode
                     self.viewModel.resetStateForNewCommand()
-                    // Ensure agent session is connected
-                    await self.viewModel.ensureAgentSession()
+                    // Ensure supervisor session is connected
+                    await self.viewModel.ensureSupervisorSession()
                 }
             }
         }
         .onChange(of: viewModel.isTranscribing) { oldValue, newValue in
-            // When transcription completes in Agent mode, execute command via AgentViewModel
+            // When transcription completes in Supervisor mode, execute command via SupervisorViewModel
             // Only execute if there's no error and recognizedText contains actual transcription
             if oldValue == true && newValue == false && !viewModel.recognizedText.isEmpty && viewModel.errorMessage == nil {
-                if settingsManager.commandMode == .agent {
-                    print("✅ RecordingView: Transcription completed in Agent mode, executing command via WebSocket")
+                if settingsManager.commandMode == .supervisor {
+                    print("✅ RecordingView: Transcription completed in Supervisor mode, executing command via WebSocket")
                     Task {
                         await viewModel.executeCommand(
                             viewModel.recognizedText,
@@ -818,24 +748,24 @@ struct RecordingView: View {
             }
         }
         .onReceive(EventBus.shared.ttsPlaybackFinishedPublisher) { _ in
-            // When TTS playback finishes, clear recognized text in agent mode
+            // When TTS playback finishes, clear recognized text in supervisor mode
             print("🔊 TTS playback finished")
             Task { @MainActor in
                 // Clear recognized text after playback to return to idle state
-                if settingsManager.commandMode == .agent {
+                if settingsManager.commandMode == .supervisor {
                     self.viewModel.recognizedText = ""
                 }
             }
         }
         .onReceive(EventBus.shared.$ttsGenerating) { isGenerating in
             guard isGenerating else { return }
-            // TTS generation started - only process in agent mode
+            // TTS generation started - only process in supervisor mode
             // Note: TTSService tracks isGenerating internally
             print("🔊 Agent response TTS generation started")
         }
         .onReceive(EventBus.shared.ttsFailedPublisher) { error in
             // TTS generation failed - show error notification
-            guard settingsManager.commandMode == .agent else { return }
+            guard settingsManager.commandMode == .supervisor else { return }
             Task { @MainActor in
                 let errorMessage: String
                 switch error {
@@ -859,8 +789,8 @@ struct RecordingView: View {
         }
         .onReceive(EventBus.shared.ttsReadyPublisher) { event in
             // Process TTS even if not active tab - store it for playback when user returns
-            guard settingsManager.commandMode == .agent else {
-                print("⚠️ AgentResponseTTSReady: Ignoring in non-agent mode (current: \(settingsManager.commandMode))")
+            guard settingsManager.commandMode == .supervisor else {
+                print("⚠️ SupervisorResponseTTSReady: Ignoring in non-supervisor mode (current: \(settingsManager.commandMode))")
                 return
             }
 
@@ -885,9 +815,9 @@ struct RecordingView: View {
                     // Check if audio is already playing (from ttsService.synthesizeAndPlay())
                     // If not playing, start playback (fallback in case synthesizeAndPlay didn't play)
                     if !audioPlayer.isPlaying {
-                        // Double-check that we're still in agent mode
-                        guard settingsManager.commandMode == .agent else {
-                            print("⚠️ AgentResponseTTSReady: Skipping playback - not in agent mode")
+                        // Double-check that we're still in supervisor mode
+                        guard settingsManager.commandMode == .supervisor else {
+                            print("⚠️ SupervisorResponseTTSReady: Skipping playback - not in supervisor mode")
                             return
                         }
 
@@ -907,8 +837,8 @@ struct RecordingView: View {
             }
         }
         .onReceive(EventBus.shared.resetContextPublisher) { _ in
-            // Reset agent context when button is pressed
-            guard settingsManager.commandMode == .agent else { return }
+            // Reset supervisor context when button is pressed
+            guard settingsManager.commandMode == .supervisor else { return }
             Task { @MainActor in
                 await viewModel.resetContext()
             }
@@ -1490,9 +1420,9 @@ struct RecordingView: View {
     }
     
     // MARK: - TTS Methods (moved to ViewModel)
-    // All TTS scheduling and playback logic has been moved to AgentViewModel
+    // All TTS scheduling and playback logic has been moved to SupervisorViewModel
     // Methods: scheduleAutoTTS, playAccumulatedTTS, processQueueAfterPlayback, generateAndPlayTTS
-    // are now in AgentViewModel and should be called via viewModel
+    // are now in SupervisorViewModel and should be called via viewModel
     
 }
 

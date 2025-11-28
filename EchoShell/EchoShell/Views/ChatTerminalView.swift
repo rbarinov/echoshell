@@ -31,7 +31,8 @@ struct ChatTerminalView: View {
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var sessionState: SessionStateManager
 
-    @StateObject private var chatViewModel: ChatViewModel
+    @StateObject private var baseChatViewModel: ChatViewModel
+    @StateObject private var chatViewModel: TerminalChatViewModel
     @StateObject private var wsClient = WebSocketClient()
     @StateObject private var audioRecorder = AudioRecorder()
     @State private var isAgentProcessing: Bool = false // Track if agent is processing
@@ -42,21 +43,34 @@ struct ChatTerminalView: View {
     init(session: TerminalSession, config: TunnelConfig) {
         self.session = session
         self.config = config
-        _chatViewModel = StateObject(wrappedValue: ChatViewModel(sessionId: session.id))
+        let baseViewModel = ChatViewModel(sessionId: session.id)
+        _baseChatViewModel = StateObject(wrappedValue: baseViewModel)
+        _chatViewModel = StateObject(wrappedValue: TerminalChatViewModel(baseViewModel: baseViewModel))
     }
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Chat interface - always show full history (no mode switching)
-            ChatHistoryView(
-                messages: chatViewModel.chatHistory,
-                isAgentMode: true // Always in "agent" mode (showing all messages)
-            )
-            
-            // Recording button
-            recordingButtonView
-        }
+        GenericChatView(
+            viewModel: chatViewModel,
+            isAgentMode: true // Always in "agent" mode (showing all messages)
+        )
         .onAppear {
+            // Setup callbacks for TerminalChatViewModel
+            chatViewModel.onSendTextCommand = { command in
+                await sendTextCommand(command)
+            }
+            chatViewModel.onStartRecording = {
+                audioRecorder.startRecording()
+            }
+            chatViewModel.onStopRecording = {
+                audioRecorder.stopRecording()
+            }
+            chatViewModel.isRecordingCallback = {
+                audioRecorder.isRecording
+            }
+            
+            // Sync isProcessing state
+            chatViewModel.isProcessing = isAgentProcessing
+            
             // Load chat history from server
             Task {
                 await loadChatHistory()
@@ -103,6 +117,9 @@ struct ChatTerminalView: View {
                     Task {
                         await cancelCurrentCommand()
                         isAgentProcessing = false // Reset processing state
+                        Task { @MainActor in
+                            self.chatViewModel.isProcessing = false
+                        }
                         ttsState = .idle // Reset TTS state
                     }
 
@@ -203,6 +220,36 @@ struct ChatTerminalView: View {
         print("📤 ChatTerminalView: Sent audio command via WebSocket")
     }
     
+    /// Send text command via WebSocket
+    @MainActor
+    private func sendTextCommand(_ command: String) async {
+        guard !command.isEmpty else { return }
+        
+        print("📤 ChatTerminalView: Sending text command: \(command)")
+        
+        guard wsClient.isConnected else {
+            print("❌ ChatTerminalView: WebSocket not connected, cannot send command")
+            return
+        }
+        
+        // Mark as processing
+        isAgentProcessing = true
+        Task { @MainActor in
+            chatViewModel.isProcessing = true
+        }
+        
+        // Send text command via WebSocket
+        let language = settingsManager.transcriptionLanguage.whisperCode ?? "en"
+        wsClient.executeCommand(
+            command,
+            ttsEnabled: settingsManager.ttsEnabled,
+            ttsSpeed: settingsManager.ttsSpeed,
+            language: language
+        )
+        
+        print("✅ ChatTerminalView: Sent text command via WebSocket")
+    }
+    
     private func setupWebSocket() {
         wsClient.connect(
             config: config,
@@ -210,7 +257,7 @@ struct ChatTerminalView: View {
             onMessage: nil, // Not needed for chat interface
             onChatMessage: { message in
                 Task { @MainActor in
-                    self.chatViewModel.addMessage(message)
+                    self.baseChatViewModel.addMessage(message)
                     
                     // Check if this is a completion message (system message with completion metadata)
                     if message.type == .system, 
@@ -219,6 +266,9 @@ struct ChatTerminalView: View {
                         // Process completed - reset processing state
                         // TTS audio will arrive via onTTSAudio callback
                         self.isAgentProcessing = false
+                        Task { @MainActor in
+                            self.chatViewModel.isProcessing = false
+                        }
                         print("✅ ChatTerminalView: Completion message received, resetting isAgentProcessing")
                         return
                     }
@@ -227,6 +277,9 @@ struct ChatTerminalView: View {
                     if message.type == .error {
                         // Error indicates completion (even if failed)
                         self.isAgentProcessing = false
+                        Task { @MainActor in
+                            self.chatViewModel.isProcessing = false
+                        }
                         print("✅ ChatTerminalView: Error message received, resetting isAgentProcessing")
                     }
                 }
@@ -268,10 +321,13 @@ struct ChatTerminalView: View {
             // Create delegate wrapper and store it to keep it alive
             let delegate = AudioPlayerDelegateWrapper {
                 Task { @MainActor in
-                    self.ttsState = .idle
-                    self.isAgentProcessing = false
-                    self.audioPlayerDelegate = nil
-                    self.avAudioPlayer = nil
+                    ttsState = .idle
+                    isAgentProcessing = false
+                    Task { @MainActor in
+                        chatViewModel.isProcessing = false
+                    }
+                    audioPlayerDelegate = nil
+                    avAudioPlayer = nil
                     print("🔇 ChatTerminalView: Server TTS playback finished")
                 }
             }
@@ -288,6 +344,9 @@ struct ChatTerminalView: View {
             print("❌ ChatTerminalView: Error playing server TTS audio: \(error)")
             ttsState = .error(error.localizedDescription)
             isAgentProcessing = false
+            Task { @MainActor in
+                self.chatViewModel.isProcessing = false
+            }
             
             // Auto-reset error state after 3 seconds
             Task {
@@ -367,7 +426,7 @@ struct ChatTerminalView: View {
                     } else {
                         print("ℹ️ ChatTerminalView: Chat history is empty (no messages yet)")
                     }
-                    chatViewModel.loadMessages(chatHistory)
+                    baseChatViewModel.loadMessages(chatHistory)
                     print("   chatHistory count AFTER load: \(chatViewModel.chatHistory.count)")
                 }
             } else {

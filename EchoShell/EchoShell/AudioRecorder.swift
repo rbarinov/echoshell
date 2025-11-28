@@ -241,6 +241,15 @@ class AudioRecorder: NSObject, ObservableObject {
             self.isRecording = false
         }
         
+        // CRITICAL: Deactivate audio session after recording to release .playAndRecord mode
+        // This allows AudioPlayer to reconfigure with .playback for full volume
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            print("📱 iOS AudioRecorder: Audio session deactivated after recording")
+        } catch {
+            print("⚠️ iOS AudioRecorder: Failed to deactivate audio session: \(error)")
+        }
+        
         // Don't clear recordingURL immediately - it's needed for transcription
         // Will clear it after successful transcription
         print("📱 iOS AudioRecorder: Recording stopped, waiting for delegate callback")
@@ -383,8 +392,8 @@ extension AudioRecorder {
                 
                 // Execute based on selected mode
                 switch settings.commandMode {
-                case .agent:
-                    // Agent mode: execute command via AI agent without requiring terminal session
+                case .supervisor:
+                    // Supervisor mode: execute command via AI supervisor without requiring terminal session
                     // Session will be auto-created if needed for terminal commands
                     print("   Agent mode: executing without terminal session requirement")
                     result = try await client.executeAgentCommand(sessionId: nil, command: text)

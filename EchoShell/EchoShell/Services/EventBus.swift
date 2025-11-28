@@ -86,6 +86,7 @@ class EventBus: ObservableObject {
     
     var navigateBackPublisher = PassthroughSubject<Void, Never>()
     var createTerminalPublisher = PassthroughSubject<TerminalType, Never>()
+    var terminalDeletedPublisher = PassthroughSubject<String, Never>()
     
     // MARK: - Terminal View Mode Events
     

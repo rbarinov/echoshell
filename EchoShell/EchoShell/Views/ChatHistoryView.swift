@@ -11,9 +11,17 @@ import SwiftUI
 struct ChatHistoryView: View {
     let messages: [ChatMessage]
     let isAgentMode: Bool // true = current execution, false = full history
+    var onPlayAudio: ((ChatMessage) -> Void)? = nil // Callback to play audio message
+    var onPauseAudio: (() -> Void)? = nil // Callback to pause audio
+    var onStopAudio: (() -> Void)? = nil // Callback to stop audio
     
     @State private var expandedToolMessages: Set<String> = []
     @State private var copiedMessageId: String? = nil
+    @State private var playingMessageId: String? = nil
+    @State private var pausedMessageId: String? = nil
+    
+    // Subscribe to playback finished events to reset playing state
+    private let playbackFinishedPublisher = EventBus.shared.ttsPlaybackFinishedPublisher
     
     // Group messages by conversation turn (user + assistant responses)
     // Filter out system messages before grouping
@@ -57,11 +65,7 @@ struct ChatHistoryView: View {
                 LazyVStack(alignment: .leading, spacing: 16) {
                     ForEach(Array(groupedMessages.enumerated()), id: \.offset) { groupIndex, group in
                         VStack(alignment: .leading, spacing: 8) {
-                            // Show separator between conversation turns (except first)
-                            if groupIndex > 0 {
-                                Divider()
-                                    .padding(.vertical, 8)
-                            }
+                            // No dividers - cleaner look
                             
                             // If group has multiple messages of same type, merge them
                             if group.count > 1 && group.allSatisfy({ $0.type == group.first?.type }) {
@@ -80,6 +84,8 @@ struct ChatHistoryView: View {
                                     message: mergedMessage,
                                     isExpanded: expandedToolMessages.contains(firstMessage.id),
                                     isCopied: copiedMessageId == firstMessage.id,
+                                    isPlaying: playingMessageId == firstMessage.id,
+                                    isPaused: pausedMessageId == firstMessage.id,
                                     onToggleExpand: {
                                         if expandedToolMessages.contains(firstMessage.id) {
                                             expandedToolMessages.remove(firstMessage.id)
@@ -95,6 +101,22 @@ struct ChatHistoryView: View {
                                                 copiedMessageId = nil
                                             }
                                         }
+                                    },
+                                    onPlayAudio: { msg in
+                                        // Stop previous and start new
+                                        pausedMessageId = nil
+                                        playingMessageId = msg.id
+                                        onPlayAudio?(msg)
+                                    },
+                                    onPauseAudio: {
+                                        pausedMessageId = playingMessageId
+                                        playingMessageId = nil
+                                        onPauseAudio?()
+                                    },
+                                    onStopAudio: {
+                                        playingMessageId = nil
+                                        pausedMessageId = nil
+                                        onStopAudio?()
                                     }
                                 )
                                 .id(firstMessage.id)
@@ -105,6 +127,8 @@ struct ChatHistoryView: View {
                                         message: message,
                                         isExpanded: expandedToolMessages.contains(message.id),
                                         isCopied: copiedMessageId == message.id,
+                                        isPlaying: playingMessageId == message.id,
+                                        isPaused: pausedMessageId == message.id,
                                         onToggleExpand: {
                                             if expandedToolMessages.contains(message.id) {
                                                 expandedToolMessages.remove(message.id)
@@ -120,6 +144,22 @@ struct ChatHistoryView: View {
                                                     copiedMessageId = nil
                                                 }
                                             }
+                                        },
+                                        onPlayAudio: { msg in
+                                            // Stop previous and start new
+                                            pausedMessageId = nil
+                                            playingMessageId = msg.id
+                                            onPlayAudio?(msg)
+                                        },
+                                        onPauseAudio: {
+                                            pausedMessageId = playingMessageId
+                                            playingMessageId = nil
+                                            onPauseAudio?()
+                                        },
+                                        onStopAudio: {
+                                            playingMessageId = nil
+                                            pausedMessageId = nil
+                                            onStopAudio?()
                                         }
                                     )
                                     .id(message.id)
@@ -144,6 +184,11 @@ struct ChatHistoryView: View {
                     proxy.scrollTo(lastMessage.id, anchor: .bottom)
                 }
             }
+            .onReceive(playbackFinishedPublisher) { _ in
+                // Reset playing/paused state when playback finishes
+                playingMessageId = nil
+                pausedMessageId = nil
+            }
         }
     }
 }
@@ -153,19 +198,39 @@ struct ChatBubbleView: View {
     let message: ChatMessage
     let isExpanded: Bool
     let isCopied: Bool
+    var isPlaying: Bool = false
+    var isPaused: Bool = false
     let onToggleExpand: () -> Void
     let onCopy: () -> Void
+    var onPlayAudio: ((ChatMessage) -> Void)? = nil
+    var onPauseAudio: (() -> Void)? = nil
+    var onStopAudio: (() -> Void)? = nil
+    
+    /// Check if this is a user-side message (right-aligned)
+    /// User type OR user's voice recording (tts_audio with user_ file)
+    private var isUserSideMessage: Bool {
+        if message.type == .user {
+            return true
+        }
+        if message.type == .tts_audio {
+            // User's voice recording has "user_" in filename
+            if let path = message.metadata?.audioFilePath, path.contains("user_") {
+                return true
+            }
+        }
+        return false
+    }
     
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            if message.type == .user {
+            if isUserSideMessage {
                 Spacer()
             }
             
-            VStack(alignment: message.type == .user ? .trailing : .leading, spacing: 6) {
+            VStack(alignment: isUserSideMessage ? .trailing : .leading, spacing: 6) {
                 // Message header with timestamp
                 HStack(spacing: 6) {
-                    if message.type != .user {
+                    if !isUserSideMessage {
                         messageIcon
                     }
                     Text(messageHeader)
@@ -177,7 +242,7 @@ struct ChatBubbleView: View {
                         .font(.caption2)
                         .foregroundColor(.secondary.opacity(0.7))
                     
-                    if message.type == .user {
+                    if isUserSideMessage {
                         messageIcon
                     }
                     
@@ -199,9 +264,10 @@ struct ChatBubbleView: View {
             .background(bubbleBackground)
             .cornerRadius(12)
             .shadow(color: Color.black.opacity(0.05), radius: 2, x: 0, y: 1)
-            .frame(maxWidth: UIScreen.main.bounds.width * 0.80, alignment: message.type == .user ? .trailing : .leading)
+            // Voice messages: fit content. Text messages: max 80% width
+            .frame(maxWidth: message.type == .tts_audio ? nil : UIScreen.main.bounds.width * 0.80, alignment: isUserSideMessage ? .trailing : .leading)
             
-            if message.type != .user {
+            if !isUserSideMessage {
                 Spacer()
             }
         }
@@ -226,8 +292,14 @@ struct ChatBubbleView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
             case .tts_audio:
-                Image(systemName: "waveform.circle.fill")
-                    .font(.caption)
+                // User's voice or assistant's TTS
+                if isUserSideMessage {
+                    Image(systemName: "mic.fill")
+                        .font(.caption)
+                } else {
+                    Image(systemName: "waveform.circle.fill")
+                        .font(.caption)
+                }
             }
         }
         .foregroundColor(messageIconColor)
@@ -246,7 +318,7 @@ struct ChatBubbleView: View {
         case .error:
             return "Error"
         case .tts_audio:
-            return "Voice Response"
+            return isUserSideMessage ? "You" : "Voice Response"
         }
     }
     
@@ -263,7 +335,7 @@ struct ChatBubbleView: View {
         case .error:
             return .red
         case .tts_audio:
-            return .purple
+            return isUserSideMessage ? .blue : .purple
         }
     }
     
@@ -280,7 +352,7 @@ struct ChatBubbleView: View {
         case .error:
             return Color.red.opacity(0.1)
         case .tts_audio:
-            return Color.purple.opacity(0.1)
+            return isUserSideMessage ? Color.blue.opacity(0.1) : Color.purple.opacity(0.1)
         }
     }
     
@@ -297,7 +369,12 @@ struct ChatBubbleView: View {
             VoiceMessageView(
                 message: message,
                 isExpanded: isExpanded,
-                onToggleExpand: onToggleExpand
+                isPlaying: isPlaying,
+                isPaused: isPaused,
+                onToggleExpand: onToggleExpand,
+                onPlay: { onPlayAudio?(message) },
+                onPause: { onPauseAudio?() },
+                onStop: { onStopAudio?() }
             )
         default:
             // Try to detect and render code blocks
@@ -510,53 +587,84 @@ struct ToolMessageView: View {
 struct VoiceMessageView: View {
     let message: ChatMessage
     let isExpanded: Bool
+    var isPlaying: Bool = false
+    var isPaused: Bool = false
     let onToggleExpand: () -> Void
+    var onPlay: (() -> Void)? = nil
+    var onPause: (() -> Void)? = nil
+    var onStop: (() -> Void)? = nil
+    
+    private var hasAudio: Bool {
+        message.metadata?.audioFilePath != nil
+    }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // Waveform visualization
-            HStack(spacing: 4) {
-                // Play button (visual only - actual playback handled elsewhere)
-                Image(systemName: "play.circle.fill")
-                    .font(.system(size: 28))
-                    .foregroundColor(.purple)
+        VStack(alignment: .leading, spacing: 6) {
+            // Compact player controls
+            HStack(spacing: 8) {
+                // Play/Pause/Stop buttons
+                if isPlaying {
+                    // Pause button
+                    Button(action: { onPause?() }) {
+                        Image(systemName: "pause.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.purple)
+                    }
+                    // Stop button
+                    Button(action: { onStop?() }) {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.purple.opacity(0.7))
+                    }
+                } else if isPaused {
+                    // Resume button
+                    Button(action: { onPlay?() }) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.purple)
+                    }
+                    // Stop button
+                    Button(action: { onStop?() }) {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(.purple.opacity(0.7))
+                    }
+                } else {
+                    // Play button
+                    Button(action: { onPlay?() }) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.system(size: 24))
+                            .foregroundColor(hasAudio ? .purple : .gray)
+                    }
+                    .disabled(!hasAudio)
+                }
                 
-                // Waveform bars (decorative)
+                // Waveform bars
                 HStack(spacing: 2) {
-                    ForEach(0..<20, id: \.self) { index in
+                    ForEach(0..<10, id: \.self) { index in
                         RoundedRectangle(cornerRadius: 1)
-                            .fill(Color.purple.opacity(0.6))
-                            .frame(width: 3, height: CGFloat.random(in: 8...24))
+                            .fill(Color.purple.opacity(isPlaying ? 0.8 : 0.4))
+                            .frame(width: 2, height: CGFloat(6 + (index % 4) * 3))
                     }
                 }
-                .frame(height: 28)
+                .frame(width: 40, height: 20)
                 
-                Spacer()
-                
-                // Expand button
-                Button(action: onToggleExpand) {
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                // Expand button for text
+                if message.metadata?.ttsText != nil {
+                    Button(action: onToggleExpand) {
+                        Image(systemName: isExpanded ? "chevron.up" : "text.bubble")
+                            .font(.system(size: 12))
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
             
             // Show TTS text when expanded
             if isExpanded, let ttsText = message.metadata?.ttsText {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Synthesized text:")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
-                    Text(ttsText)
-                        .font(.system(.caption, design: .default))
-                        .foregroundColor(.primary.opacity(0.8))
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .background(Color.purple.opacity(0.05))
-                        .cornerRadius(6)
-                }
-                .padding(.top, 4)
+                Text(ttsText)
+                    .font(.caption2)
+                    .foregroundColor(.primary.opacity(0.7))
+                    .lineLimit(3)
             }
         }
     }

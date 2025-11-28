@@ -10,12 +10,15 @@ import Foundation
 import Combine
 
 @MainActor
-class ChatViewModel: ObservableObject {
+class ChatViewModel: ObservableObject, ChatViewModelProtocol {
     // MARK: - Published State
     
     /// Full chat history (all messages from session start, continuously accumulated)
     /// Messages are never cleared - they accumulate throughout the session
     @Published var chatHistory: [ChatMessage] = []
+    
+    /// Whether the chat is currently processing a request
+    @Published var isProcessing: Bool = false
     
     // MARK: - Session Info
     
@@ -24,6 +27,7 @@ class ChatViewModel: ObservableObject {
     // MARK: - Private State
     
     private var cancellables = Set<AnyCancellable>()
+    private var currentlyPlayingMessageId: String? // Track which message is currently playing
     
     // MARK: - Initialization
     
@@ -55,5 +59,61 @@ class ChatViewModel: ObservableObject {
         chatHistory = filteredMessages
         
         print("✅ ChatViewModel: Loaded \(filteredMessages.count) messages (filtered from \(messages.count))")
+    }
+    
+    // MARK: - ChatViewModelProtocol (Audio Playback)
+    // Note: ChatViewModel doesn't handle audio playback directly
+    // Audio playback is handled by ChatTerminalView's own audio player
+    // These methods are stubs that can be overridden by views that need audio
+    
+    func playAudioMessage(_ message: ChatMessage) {
+        // Stub implementation - actual playback handled by view
+        currentlyPlayingMessageId = message.id
+        print("ℹ️ ChatViewModel: playAudioMessage called (stub - handled by view)")
+    }
+    
+    func pauseAudio() {
+        print("ℹ️ ChatViewModel: pauseAudio called (stub - handled by view)")
+    }
+    
+    func stopAudio() {
+        currentlyPlayingMessageId = nil
+        print("ℹ️ ChatViewModel: stopAudio called (stub - handled by view)")
+    }
+    
+    func isMessagePlaying(_ messageId: String) -> Bool {
+        return currentlyPlayingMessageId == messageId
+    }
+    
+    func isMessagePaused(_ messageId: String) -> Bool {
+        return false // ChatViewModel doesn't track pause state
+    }
+    
+    var audioPlaybackState: AudioPlaybackState {
+        if let messageId = currentlyPlayingMessageId {
+            return AudioPlaybackState(messageId: messageId, status: .stopped)
+        }
+        return .idle
+    }
+    
+    // MARK: - ChatViewModelProtocol (Text Input & Recording)
+    // Note: ChatViewModel doesn't handle text commands or recording directly
+    // These are handled by the view (ChatTerminalView) which has access to WebSocket
+    
+    var isRecording: Bool {
+        return false // ChatViewModel doesn't track recording state
+    }
+    
+    func sendTextCommand(_ command: String) async {
+        // Stub implementation - actual sending handled by view
+        print("ℹ️ ChatViewModel: sendTextCommand called (stub - handled by view)")
+    }
+    
+    func startRecording() {
+        print("ℹ️ ChatViewModel: startRecording called (stub - handled by view)")
+    }
+    
+    func stopRecording() {
+        print("ℹ️ ChatViewModel: stopRecording called (stub - handled by view)")
     }
 }
