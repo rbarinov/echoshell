@@ -15,6 +15,7 @@ export class StreamManager {
   private terminalStreams = new Map<string, Set<StreamConnection>>();
   private recordingWsStreams = new Map<string, Set<StreamConnection>>();
   private recordingSseStreams = new Map<string, Set<Response>>();
+  private agentStreams = new Map<string, Set<StreamConnection>>();
 
   /**
    * Register terminal stream connection
@@ -58,6 +59,56 @@ export class StreamManager {
       this.recordingWsStreams.delete(streamKey);
     }
     Logger.info('Recording WebSocket stream unregistered', { streamKey });
+  }
+
+  /**
+   * Register agent stream connection
+   */
+  registerAgentStream(streamKey: string, connection: StreamConnection): void {
+    if (!this.agentStreams.has(streamKey)) {
+      this.agentStreams.set(streamKey, new Set());
+    }
+    this.agentStreams.get(streamKey)!.add(connection);
+    Logger.info('Agent stream registered', { streamKey });
+  }
+
+  /**
+   * Unregister agent stream connection
+   */
+  unregisterAgentStream(streamKey: string, connection: StreamConnection): void {
+    this.agentStreams.get(streamKey)?.delete(connection);
+    if (this.agentStreams.get(streamKey)?.size === 0) {
+      this.agentStreams.delete(streamKey);
+    }
+    Logger.info('Agent stream unregistered', { streamKey });
+  }
+
+  /**
+   * Broadcast message to agent stream
+   */
+  broadcastToAgentStream(streamKey: string, message: string): void {
+    const clients = this.agentStreams.get(streamKey);
+    if (!clients || clients.size === 0) {
+      Logger.debug('No agent stream clients for broadcast', { streamKey });
+      return;
+    }
+
+    let sentCount = 0;
+    clients.forEach((conn) => {
+      if (conn.ws.readyState === WebSocket.OPEN) {
+        conn.ws.send(message);
+        sentCount++;
+      }
+    });
+
+    Logger.debug('Agent stream message broadcast', { streamKey, sentCount, totalClients: clients.size });
+  }
+
+  /**
+   * Get agent streams map (for heartbeat)
+   */
+  getAgentStreamsMap(): Map<string, Set<StreamConnection>> {
+    return this.agentStreams;
   }
 
   /**

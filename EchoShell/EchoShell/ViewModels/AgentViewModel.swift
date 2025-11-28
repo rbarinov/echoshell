@@ -4,7 +4,7 @@
 //
 //  Created for Voice-Controlled Terminal Management System
 //  ViewModel for agent-based voice command execution
-//  Uses WebSocket for unified communication (commands + TTS audio)
+//  Uses WebSocket /agent/ws - supports streaming responses and TTS
 //
 
 import Foundation
@@ -13,69 +13,44 @@ import SwiftUI
 import AVFoundation
 
 /// ViewModel for agent-based voice command interface
-/// Separates business logic from UI (RecordingView)
-/// Now uses WebSocket for all communication (unified protocol)
+/// WebSocket-based: audio/text → streaming chunks → TTS audio
 @MainActor
 class AgentViewModel: ObservableObject {
 
     // MARK: - Published State
 
-    /// Text recognized from voice input
     @Published var recognizedText: String = ""
-
-    /// Agent's response text
     @Published var agentResponseText: String = ""
-
-    /// Whether voice recording is in progress
     @Published var isRecording: Bool = false
-
-    /// Whether transcription is in progress
-    @Published var isTranscribing: Bool = false
-
-    /// Whether command is being processed by agent
     @Published var isProcessing: Bool = false
-
-    /// Current operation ID for cancellation tracking
     @Published var currentOperationId: UUID?
-
-    /// Accumulated output for TTS
-    @Published var accumulatedForTTS: String = ""
-
-    /// Last text that was spoken via TTS
-    @Published var lastTTSOutput: String = ""
-
-    /// Queue of TTS messages
-    @Published var ttsQueue: [String] = []
-
-    /// Pulse animation state for visual feedback
     @Published var pulseAnimation: Bool = false
-
-    /// WebSocket connection state
-    @Published var isWebSocketConnected: Bool = false
+    @Published var errorMessage: String?
+    @Published var chatHistory: [ChatMessage] = []
+    @Published var lastTTSOutput: String = ""
+    @Published var isConnected: Bool = false
 
     // MARK: - Dependencies
 
     private let audioRecorder: AudioRecorder
-    let ttsService: TTSService // Public for UI access (e.g., replay button, audio controls)
+    let ttsService: TTSService
     private var apiClient: APIClient
     private var config: TunnelConfig
 
     // MARK: - WebSocket
 
-    private let wsClient = WebSocketClient()
-    private var agentSessionId: String?
+    private var webSocketTask: URLSessionWebSocketTask?
+    private var isReceivingMessages = false
 
-    // MARK: - Audio Playback (Server-side TTS)
+    // MARK: - Audio Playback
 
     private var avAudioPlayer: AVAudioPlayer?
     private var audioPlayerDelegate: AudioPlayerDelegateWrapper?
 
     // MARK: - Private State
 
-    private var currentOperationTask: Task<Void, Never>?
-    private var ttsTimer: Timer?
-    private var lastOutputSnapshot: String = ""
     private var cancellables = Set<AnyCancellable>()
+    private var settingsManagerRef: SettingsManager?
 
     // MARK: - Initialization
 
@@ -83,7 +58,6 @@ class AgentViewModel: ObservableObject {
         audioRecorder: AudioRecorder,
         ttsService: TTSService,
         apiClient: APIClient,
-        recordingStreamClient: RecordingStreamClient, // Kept for backward compatibility but not used
         config: TunnelConfig
     ) {
         self.audioRecorder = audioRecorder
@@ -92,49 +66,231 @@ class AgentViewModel: ObservableObject {
         self.config = config
 
         setupBindings()
-        setupWebSocketBindings()
     }
 
-    // MARK: - Public Methods
+    // MARK: - Configuration
 
-    /// Configure audio recorder with settings manager
     func configure(with settingsManager: SettingsManager) {
+        self.settingsManagerRef = settingsManager
         audioRecorder.configure(with: settingsManager)
-        // In Agent mode, disable autoSendCommand so commands are sent via executeCommand()
         audioRecorder.autoSendCommand = false
         
-        // Enable WebSocket transcription mode
-        audioRecorder.useWebSocketTranscription = true
-        
-        // Set callback for when audio file is ready
         audioRecorder.onAudioFileReady = { [weak self] audioURL in
             Task { @MainActor in
                 await self?.handleAudioFileReady(audioURL, settingsManager: settingsManager)
             }
         }
         
-        print("✅ AgentViewModel: AudioRecorder configured (WebSocket mode enabled)")
+        print("✅ AgentViewModel: Configured (WebSocket /agent/ws mode)")
     }
-    
-    /// Handle audio file ready for WebSocket transmission
-    private func handleAudioFileReady(_ audioURL: URL, settingsManager: SettingsManager) async {
-        print("🎤 AgentViewModel: Audio file ready: \(audioURL.path)")
-        
-        // Load audio data
-        guard let audioData = try? Data(contentsOf: audioURL) else {
-            print("❌ AgentViewModel: Failed to load audio file")
-            isTranscribing = false
-            recognizedText = "Error loading audio file"
+
+    func updateConfig(_ newConfig: TunnelConfig) {
+        self.config = newConfig
+        self.apiClient = APIClient(config: newConfig)
+        // Reconnect WebSocket with new config
+        disconnectWebSocket()
+        print("✅ AgentViewModel: Config updated")
+    }
+
+    // MARK: - WebSocket Connection
+
+    func ensureAgentSession() async {
+        guard !config.tunnelId.isEmpty else {
+            print("⚠️ AgentViewModel: No tunnel config")
             return
         }
         
-        print("🎤 AgentViewModel: Loaded audio data: \(audioData.count) bytes")
+        if isConnected {
+            print("✅ AgentViewModel: Already connected")
+            return
+        }
         
-        // Check command mode - Direct mode uses a different flow
+        connectWebSocket()
+        
+        // Wait for connection
+        let maxWait: TimeInterval = 3.0
+        let start = Date()
+        while !isConnected && Date().timeIntervalSince(start) < maxWait {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        
+        print(isConnected ? "✅ AgentViewModel: WebSocket connected" : "⚠️ AgentViewModel: Connection timeout")
+    }
+
+    private func connectWebSocket() {
+        guard !config.tunnelId.isEmpty else { return }
+        
+        // Build WebSocket URL through tunnel: wss://server/api/{tunnelId}/agent/ws
+        let wsUrl = config.wsUrl.isEmpty ? config.apiBaseUrl.replacingOccurrences(of: "http", with: "ws") : config.wsUrl
+        let urlString = "\(wsUrl)/api/\(config.tunnelId)/agent/ws"
+        
+        guard let url = URL(string: urlString) else {
+            print("❌ AgentViewModel: Invalid WebSocket URL: \(urlString)")
+            return
+        }
+        
+        print("📡 AgentViewModel: Connecting to \(urlString)")
+        
+        var request = URLRequest(url: url)
+        request.setValue(config.authKey, forHTTPHeaderField: "X-Laptop-Auth-Key")
+        
+        webSocketTask = URLSession.shared.webSocketTask(with: request)
+        webSocketTask?.resume()
+        
+        // Start receiving messages
+        isReceivingMessages = true
+        receiveMessage()
+        
+        // Send ping to confirm connection
+        webSocketTask?.sendPing { [weak self] error in
+            Task { @MainActor in
+                if error == nil {
+                    self?.isConnected = true
+                    print("✅ AgentViewModel: WebSocket connected (ping OK)")
+                } else {
+                    print("⚠️ AgentViewModel: Ping failed: \(error?.localizedDescription ?? "")")
+                }
+            }
+        }
+    }
+
+    private func disconnectWebSocket() {
+        isReceivingMessages = false
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
+        webSocketTask = nil
+        isConnected = false
+    }
+
+    func disconnect() {
+        disconnectWebSocket()
+        print("🔌 AgentViewModel: Disconnected")
+    }
+
+    // MARK: - Receive Messages
+
+    private func receiveMessage() {
+        guard isReceivingMessages else { return }
+        
+        webSocketTask?.receive { [weak self] result in
+            guard let self = self else { return }
+            
+            Task { @MainActor in
+                switch result {
+                case .success(let message):
+                    self.isConnected = true
+                    
+                    switch message {
+                    case .string(let text):
+                        self.handleMessage(text)
+                    case .data(let data):
+                        if let text = String(data: data, encoding: .utf8) {
+                            self.handleMessage(text)
+                        }
+                    @unknown default:
+                        break
+                    }
+                    
+                    // Continue receiving
+                    self.receiveMessage()
+                    
+                case .failure(let error):
+                    print("❌ AgentViewModel: WebSocket error: \(error.localizedDescription)")
+                    self.isConnected = false
+                    // Try to reconnect after delay
+                    Task {
+                        try? await Task.sleep(nanoseconds: 2_000_000_000)
+                        if self.isReceivingMessages {
+                            self.connectWebSocket()
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleMessage(_ text: String) {
+        guard let data = text.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let type = json["type"] as? String else {
+            return
+        }
+
+        switch type {
+        case "transcription":
+            if let transcribedText = json["text"] as? String {
+                recognizedText = transcribedText
+                print("🎤 AgentViewModel: Transcription: \(transcribedText)")
+                
+                // Add user message to chat
+                let userMessage = ChatMessage(
+                    id: UUID().uuidString,
+                    timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                    type: .user,
+                    content: transcribedText,
+                    metadata: nil
+                )
+                chatHistory.append(userMessage)
+            }
+
+        case "chunk":
+            if let chunkText = json["text"] as? String {
+                agentResponseText = chunkText
+                print("📝 AgentViewModel: Chunk: \(chunkText.prefix(50))...")
+            }
+
+        case "complete":
+            if let finalText = json["text"] as? String {
+                agentResponseText = finalText
+                
+                // Add assistant message to chat
+                let assistantMessage = ChatMessage(
+                    id: UUID().uuidString,
+                    timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                    type: .assistant,
+                    content: finalText,
+                    metadata: nil
+                )
+                chatHistory.append(assistantMessage)
+                
+                print("✅ AgentViewModel: Complete: \(finalText.prefix(50))...")
+            }
+            
+            // Play audio if present
+            if let audioBase64 = json["audio"] as? String,
+               let audioData = Data(base64Encoded: audioBase64) {
+                print("🔊 AgentViewModel: Playing TTS audio (\(audioData.count) bytes)")
+                playAudio(audioData, text: agentResponseText)
+            } else {
+                isProcessing = false
+                IdleTimerManager.shared.endOperation("agent_processing")
+            }
+
+        case "error":
+            let errorText = json["error"] as? String ?? "Unknown error"
+            print("❌ AgentViewModel: Error: \(errorText)")
+            errorMessage = errorText
+            isProcessing = false
+            IdleTimerManager.shared.endOperation("agent_processing")
+
+        case "context_reset":
+            print("🔄 AgentViewModel: Context reset confirmed")
+            chatHistory = []
+
+        default:
+            print("⚠️ AgentViewModel: Unknown message type: \(type)")
+        }
+    }
+
+    // MARK: - Execute
+
+    private func handleAudioFileReady(_ audioURL: URL, settingsManager: SettingsManager) async {
+        guard let audioData = try? Data(contentsOf: audioURL) else {
+            errorMessage = "Error loading audio file"
+            return
+        }
+        
+        // Direct mode uses different flow
         if settingsManager.commandMode == .direct {
-            // Direct mode: Post audio data for the RecordingView to handle via its terminal WebSocket
-            print("🎤 AgentViewModel: Direct mode - posting audio ready event")
-            isTranscribing = false // Direct mode handles its own state
             EventBus.shared.audioReadyForTransmissionPublisher.send(
                 EventBus.AudioReadyEvent(
                     audioData: audioData,
@@ -147,402 +303,127 @@ class AgentViewModel: ObservableObject {
             return
         }
         
-        // Agent mode: use AgentViewModel's WebSocket
-        
-        // Ensure WebSocket is connected
-        await ensureAgentSession()
-        
-        guard wsClient.isConnected else {
-            print("❌ AgentViewModel: WebSocket not connected, cannot send audio")
-            isTranscribing = false
-            recognizedText = "Not connected. Please try again."
+        // Agent mode: send via WebSocket
+        guard !config.tunnelId.isEmpty else {
+            errorMessage = "Not connected. Please scan QR code."
             return
         }
         
-        // Prevent screen sleep during processing
-        IdleTimerManager.shared.beginOperation("agent_processing")
+        await ensureAgentSession()
+        
+        guard isConnected else {
+            errorMessage = "Connection failed. Is laptop app running?"
+            return
+        }
+        
+        // Send execute_audio message with audio data
+        let message: [String: Any] = [
+            "type": "execute_audio",
+            "audio": audioData.base64EncodedString(),
+            "audio_format": "audio/m4a",
+            "language": settingsManager.transcriptionLanguage.whisperCode ?? "en",
+            "tts_enabled": settingsManager.ttsEnabled,
+            "tts_speed": settingsManager.ttsSpeed
+        ]
+        
+        sendMessage(message)
         isProcessing = true
+        IdleTimerManager.shared.beginOperation("agent_processing")
         
-        // Send audio via WebSocket
-        let language = settingsManager.transcriptionLanguage.whisperCode ?? "en"
-        wsClient.executeAudioCommand(
-            audioData,
-            audioFormat: "audio/m4a",
-            ttsEnabled: settingsManager.ttsEnabled,
-            ttsSpeed: settingsManager.ttsSpeed,
-            language: language
-        )
-        
-        // Transcription will come back via onTranscription callback
-        // TTS audio will come back via onTTSAudio callback
-        
-        // Clean up audio file
         try? FileManager.default.removeItem(at: audioURL)
     }
 
-    /// Update configuration (for example, when laptop config changes)
-    func updateConfig(_ newConfig: TunnelConfig) {
-        self.config = newConfig
-        self.apiClient = APIClient(config: newConfig)
-        
-        // Reconnect WebSocket with new config
-        Task {
-            await ensureAgentSession()
-        }
-    }
-
-    /// Ensure agent session exists and WebSocket is connected
-    func ensureAgentSession() async {
-        guard !config.tunnelId.isEmpty else {
-            print("⚠️ AgentViewModel: No tunnel config, cannot create agent session")
-            return
-        }
-
-        // If we already have a session and WebSocket is connected, do nothing
-        if let sessionId = agentSessionId, wsClient.isConnected {
-            print("✅ AgentViewModel: Agent session already active: \(sessionId)")
-            return
-        }
-
-        // Create or get existing agent session
-        do {
-            let session = try await apiClient.createSession(terminalType: .agent)
-            agentSessionId = session.id
-            print("✅ AgentViewModel: Created/got agent session: \(session.id)")
-
-            // Connect WebSocket
-            connectWebSocket()
-        } catch {
-            print("❌ AgentViewModel: Failed to create agent session: \(error)")
-        }
-    }
-
-    /// Start voice recording
-    func startRecording() {
-        guard !isRecording else {
-            print("⚠️ AgentViewModel: Already recording")
-            return
-        }
-
-        // Cancel any ongoing operation
-        cancelCurrentOperation()
-
-        // Reset state for new command
-        resetStateForNewCommand()
-
-        // Prevent screen sleep during recording
-        IdleTimerManager.shared.beginOperation("recording")
-
-        // Start recording
-        audioRecorder.startRecording()
-        startPulseAnimation()
-
-        print("🎤 AgentViewModel: Started recording")
-    }
-
-    /// Stop voice recording
-    func stopRecording() {
-        guard isRecording else {
-            print("⚠️ AgentViewModel: Not recording")
-            return
-        }
-
-        // Allow screen sleep after recording stops
-        IdleTimerManager.shared.endOperation("recording")
-
-        // Stop recording
-        audioRecorder.stopRecording()
-        stopPulseAnimation()
-
-        print("🛑 AgentViewModel: Stopped recording")
-    }
-
-    /// Toggle recording on/off
-    func toggleRecording() {
-        if isRecording {
-            stopRecording()
-        } else {
-            startRecording()
-        }
-    }
-
-    /// Execute a text command via WebSocket
-    /// - Parameters:
-    ///   - command: The command text to execute
-    ///   - sessionId: Optional terminal session ID (nil for global agent)
-    ///   - ttsEnabled: Whether to generate TTS audio on server
-    ///   - ttsSpeed: TTS playback speed
     func executeCommand(_ command: String, sessionId: String?, ttsEnabled: Bool = true, ttsSpeed: Double = 1.0, language: String = "en") async {
-        guard !command.isEmpty else {
-            print("⚠️ AgentViewModel: Empty command, skipping execution")
-            return
-        }
+        guard !command.isEmpty else { return }
 
-        // Ensure WebSocket is connected
         await ensureAgentSession()
 
-        guard agentSessionId != nil, wsClient.isConnected else {
-            print("❌ AgentViewModel: WebSocket not connected, cannot execute command")
-            // Fallback to HTTP API
-            await executeCommandViaHTTP(command, sessionId: sessionId)
+        guard isConnected else {
+            errorMessage = "Connection failed"
             return
         }
 
-        // Prevent screen sleep during command processing
-        IdleTimerManager.shared.beginOperation("agent_processing")
-
-        isProcessing = true
-        let operationId = UUID()
-        currentOperationId = operationId
-
-        print("📤 AgentViewModel: Executing command via WebSocket: \(command)")
-
-        // Send command via WebSocket
-        wsClient.executeCommand(command, ttsEnabled: ttsEnabled, ttsSpeed: ttsSpeed, language: language)
-
-        // Response will come via WebSocket callbacks (onChatMessage, onTTSAudio)
-    }
-
-    /// Replay last TTS audio
-    func replayLastTTS() {
-        Task {
-            await ttsService.replay()
-        }
-    }
-
-    /// Stop all TTS and clear output
-    func stopAllTTSAndClearOutput() {
-        print("🛑 AgentViewModel: Stopping all TTS and clearing output")
-
-        ttsService.stop()
-        stopAudioPlayback()
-        ttsTimer?.invalidate()
-        ttsTimer = nil
-        ttsQueue = []
-        accumulatedForTTS = ""
-        lastTTSOutput = ""
-        lastOutputSnapshot = ""
-
-        print("🛑 AgentViewModel: All TTS stopped and output cleared")
-    }
-
-    /// Cancel current operation
-    func cancelCurrentOperation() {
-        currentOperationTask?.cancel()
-        currentOperationTask = nil
-        currentOperationId = nil
-
-        if isRecording {
-            IdleTimerManager.shared.endOperation("recording")
-            audioRecorder.stopRecording()
-        }
-
-        IdleTimerManager.shared.endOperation("agent_processing")
-        IdleTimerManager.shared.endOperation("tts_playback")
-
-        stopAudioPlayback()
-        stopPulseAnimation()
-
-        print("🛑 AgentViewModel: Cancelled current operation")
-    }
-
-    /// Reset state for new command
-    func resetStateForNewCommand() {
-        recognizedText = ""
-        agentResponseText = ""
-        accumulatedForTTS = ""
-        lastTTSOutput = ""
-        ttsQueue = []
-        lastOutputSnapshot = ""
-        ttsService.reset()
-
-        print("🔄 AgentViewModel: State reset for new command")
-    }
-
-    /// Get current recording state
-    func getCurrentState() -> RecordingState {
-        if isRecording {
-            return .recording
-        } else if isTranscribing {
-            return .transcribing
-        } else if avAudioPlayer?.isPlaying == true || ttsService.audioPlayer.isPlaying {
-            return .playingTTS
-        } else if ttsService.isGenerating {
-            return .generatingTTS
-        } else if isProcessing {
-            return .waitingForAgent
-        } else if !recognizedText.isEmpty && agentResponseText.isEmpty {
-            return .waitingForAgent
-        } else if !agentResponseText.isEmpty {
-            if ttsService.lastAudioData != nil {
-                return .idle
-            } else if ttsService.isGenerating {
-                return .generatingTTS
-            } else {
-                return .waitingForAgent
-            }
-        } else {
-            return .idle
-        }
-    }
-
-    /// Disconnect WebSocket on cleanup
-    func disconnect() {
-        wsClient.disconnect()
-        agentSessionId = nil
-        print("🔌 AgentViewModel: Disconnected WebSocket")
-    }
-
-    // MARK: - Private Methods
-
-    private func setupBindings() {
-        audioRecorder.$isRecording
-            .assign(to: &$isRecording)
-
-        // Note: In WebSocket mode, transcription comes from server via onTranscription callback
-        // We still bind isTranscribing to show loading state
-        audioRecorder.$isTranscribing
-            .assign(to: &$isTranscribing)
-
-        // Don't bind recognizedText - it comes from WebSocket transcription callback now
-        // audioRecorder.$recognizedText
-        //     .assign(to: &$recognizedText)
-    }
-
-    private func setupWebSocketBindings() {
-        // Observe WebSocket connection state
-        wsClient.$isConnected
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$isWebSocketConnected)
-    }
-
-    private func connectWebSocket() {
-        guard let sessionId = agentSessionId else {
-            print("⚠️ AgentViewModel: No agent session ID for WebSocket")
-            return
-        }
-
-        wsClient.connect(
-            config: config,
-            sessionId: sessionId,
-            onMessage: nil,
-            onChatMessage: { [weak self] message in
-                Task { @MainActor in
-                    self?.handleChatMessage(message)
-                }
-            },
-            onTTSAudio: { [weak self] event in
-                Task { @MainActor in
-                    self?.handleTTSAudio(event)
-                }
-            },
-            onTranscription: { [weak self] text in
-                Task { @MainActor in
-                    guard let self = self else { return }
-                    print("🎤 AgentViewModel: Received server transcription: \(text)")
-                    self.recognizedText = text
-                    self.isTranscribing = false // Transcription complete
-                }
-            }
+        recognizedText = command
+        
+        // Add user message
+        let userMessage = ChatMessage(
+            id: UUID().uuidString,
+            timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+            type: .user,
+            content: command,
+            metadata: nil
         )
-
-        print("🔌 AgentViewModel: WebSocket connecting to session \(sessionId)")
+        chatHistory.append(userMessage)
+        
+        // Send execute message with text
+        let message: [String: Any] = [
+            "type": "execute",
+            "command": command,
+            "language": language,
+            "tts_enabled": ttsEnabled,
+            "tts_speed": ttsSpeed
+        ]
+        
+        sendMessage(message)
+        isProcessing = true
+        IdleTimerManager.shared.beginOperation("agent_processing")
     }
 
-    private func handleChatMessage(_ message: ChatMessage) {
-        print("💬 AgentViewModel: Chat message: \(message.type.rawValue) - \(message.content.prefix(50))...")
+    private func sendMessage(_ message: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: message),
+              let text = String(data: data, encoding: .utf8) else {
+            return
+        }
 
-        switch message.type {
-        case .user:
-            // User message - already shown from recognizedText
-            break
-
-        case .assistant:
-            // Assistant response
-            agentResponseText = message.content
-
-        case .system:
-            // Check for completion
-            if message.metadata?.completion == true {
-                isProcessing = false
-                IdleTimerManager.shared.endOperation("agent_processing")
-                print("✅ AgentViewModel: Command completed")
+        webSocketTask?.send(.string(text)) { error in
+            if let error = error {
+                print("❌ AgentViewModel: Send error: \(error.localizedDescription)")
             }
-
-        case .error:
-            // Error message
-            agentResponseText = message.content
-            isProcessing = false
-            IdleTimerManager.shared.endOperation("agent_processing")
-            print("❌ AgentViewModel: Error: \(message.content)")
-
-        case .tool, .tts_audio:
-            // Tool calls or TTS audio handled separately
-            break
         }
     }
 
-    private func handleTTSAudio(_ event: TTSAudioEvent) {
-        print("🔊 AgentViewModel: Received TTS audio: \(event.audio.count) bytes")
+    // MARK: - Audio Playback
 
-        // Stop any previous playback
-        stopAudioPlayback()
-
-        // Play the received audio
-        playServerTTSAudio(event.audio, text: event.text)
-    }
-
-    private func playServerTTSAudio(_ audioData: Data, text: String) {
+    private func playAudio(_ audioData: Data, text: String) {
         do {
-            // Configure audio session for playback
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
             try AVAudioSession.sharedInstance().setActive(true)
 
-            // Create delegate wrapper
             let delegate = AudioPlayerDelegateWrapper { [weak self] in
                 Task { @MainActor in
-                    self?.isProcessing = false
                     self?.audioPlayerDelegate = nil
                     self?.avAudioPlayer = nil
+                    self?.isProcessing = false
+                    IdleTimerManager.shared.endOperation("agent_processing")
                     IdleTimerManager.shared.endOperation("tts_playback")
-                    print("🔇 AgentViewModel: TTS playback finished")
-                    
-                    // Send TTS finished event
                     EventBus.shared.ttsPlaybackFinishedPublisher.send()
                 }
             }
             audioPlayerDelegate = delegate
 
-            // Prevent screen sleep during playback
             IdleTimerManager.shared.beginOperation("tts_playback")
 
-            // Create and play audio
             let player = try AVAudioPlayer(data: audioData)
             player.delegate = delegate
             player.play()
             avAudioPlayer = player
 
-            // Store audio data for replay
             ttsService.lastAudioData = audioData
             lastTTSOutput = text
 
-            print("▶️ AgentViewModel: Started playing server TTS audio")
-
-            // Send TTS ready event
-            let operationId = currentOperationId?.uuidString ?? UUID().uuidString
             EventBus.shared.ttsReadyPublisher.send(
                 EventBus.TTSReadyEvent(
                     audioData: audioData,
                     text: text,
-                    operationId: operationId,
+                    operationId: currentOperationId?.uuidString ?? UUID().uuidString,
                     sessionId: nil
                 )
             )
 
         } catch {
-            print("❌ AgentViewModel: Error playing TTS audio: \(error)")
+            print("❌ AgentViewModel: Playback error: \(error)")
             isProcessing = false
-            IdleTimerManager.shared.endOperation("tts_playback")
+            IdleTimerManager.shared.endOperation("agent_processing")
         }
     }
 
@@ -552,76 +433,77 @@ class AgentViewModel: ObservableObject {
         audioPlayerDelegate = nil
     }
 
-    /// Fallback: Execute command via HTTP API (when WebSocket not available)
-    private func executeCommandViaHTTP(_ command: String, sessionId: String?) async {
-        print("📤 AgentViewModel: Fallback - executing command via HTTP API")
+    // MARK: - Recording
 
-        do {
-            let result = try await apiClient.executeAgentCommand(
-                sessionId: sessionId,
-                command: command
-            )
-
-            print("✅ AgentViewModel: HTTP command executed successfully")
-
-            agentResponseText = result
-            isProcessing = false
-            IdleTimerManager.shared.endOperation("agent_processing")
-
-            // Generate and play TTS locally (fallback)
-            Task {
-                await generateAndPlayTTSLocally(text: result)
-            }
-
-        } catch {
-            print("❌ AgentViewModel: HTTP command execution failed: \(error)")
-            agentResponseText = "Error: \(error.localizedDescription)"
-            isProcessing = false
-            IdleTimerManager.shared.endOperation("agent_processing")
-        }
+    func startRecording() {
+        guard !isRecording else { return }
+        cancelCurrentOperation()
+        resetStateForNewCommand()
+        IdleTimerManager.shared.beginOperation("recording")
+        audioRecorder.startRecording()
+        startPulseAnimation()
     }
 
-    /// Fallback: Generate TTS locally
-    private func generateAndPlayTTSLocally(text: String) async {
-        guard !text.isEmpty else { return }
+    func stopRecording() {
+        guard isRecording else { return }
+        IdleTimerManager.shared.endOperation("recording")
+        audioRecorder.stopRecording()
+        stopPulseAnimation()
+    }
 
-        if lastTTSOutput == text.trimmingCharacters(in: .whitespacesAndNewlines) {
-            print("⚠️ AgentViewModel: Already spoke this text, skipping")
-            return
+    func toggleRecording() {
+        isRecording ? stopRecording() : startRecording()
+    }
+
+    // MARK: - Other Methods
+
+    func replayLastTTS() {
+        Task { await ttsService.replay() }
+    }
+
+    func stopAllTTSAndClearOutput() {
+        ttsService.stop()
+        stopAudioPlayback()
+    }
+
+    func cancelCurrentOperation() {
+        currentOperationId = nil
+        if isRecording {
+            IdleTimerManager.shared.endOperation("recording")
+            audioRecorder.stopRecording()
         }
+        IdleTimerManager.shared.endOperation("agent_processing")
+        IdleTimerManager.shared.endOperation("tts_playback")
+        stopAudioPlayback()
+        stopPulseAnimation()
+    }
 
-        IdleTimerManager.shared.beginOperation("tts_playback")
+    func resetStateForNewCommand() {
+        recognizedText = ""
+        agentResponseText = ""
+        lastTTSOutput = ""
+        errorMessage = nil
+        ttsService.reset()
+    }
 
-        defer {
-            IdleTimerManager.shared.endOperation("tts_playback")
-        }
+    func getCurrentState() -> RecordingState {
+        if isRecording { return .recording }
+        if isProcessing { return .waitingForAgent }
+        if avAudioPlayer?.isPlaying == true || ttsService.audioPlayer.isPlaying { return .playingTTS }
+        return .idle
+    }
 
-        do {
-            let audioData = try await ttsService.synthesizeAndPlay(
-                text: text,
-                config: config,
-                speed: 1.0,
-                language: "en"
-            )
+    func resetContext() async {
+        sendMessage(["type": "reset_context"])
+        chatHistory = []
+        recognizedText = ""
+        agentResponseText = ""
+    }
 
-            lastTTSOutput = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    // MARK: - Bindings & Animation
 
-            let operationId = currentOperationId?.uuidString ?? UUID().uuidString
-            EventBus.shared.ttsReadyPublisher.send(
-                EventBus.TTSReadyEvent(
-                    audioData: audioData,
-                    text: text,
-                    operationId: operationId,
-                    sessionId: nil
-                )
-            )
-
-            print("✅ AgentViewModel: Local TTS completed")
-
-        } catch {
-            print("❌ AgentViewModel: Local TTS failed: \(error)")
-            EventBus.shared.ttsFailedPublisher.send(.synthesisFailed(message: error.localizedDescription))
-        }
+    private func setupBindings() {
+        audioRecorder.$isRecording.assign(to: &$isRecording)
     }
 
     private func startPulseAnimation() {
@@ -634,73 +516,37 @@ class AgentViewModel: ObservableObject {
     private func stopPulseAnimation() {
         pulseAnimation = false
     }
-    
-    // MARK: - Direct Mode TTS Scheduling (for compatibility with RecordingView)
-    
-    func scheduleAutoTTS(
-        lastTerminalOutput: String,
-        isHeadlessTerminal: Bool,
-        ttsSpeed: Double,
-        language: String
-    ) {
-        // This method is kept for compatibility but now TTS comes via WebSocket
-        // For headless terminals, TTS is handled via WebSocket tts_audio events
-        print("🔊 AgentViewModel: scheduleAutoTTS called (TTS now comes via WebSocket)")
-    }
 
     // MARK: - State Persistence
 
     func loadState() {
-        let key = "global_agent_state"
-        guard let data = UserDefaults.standard.data(forKey: key),
-              let state = try? JSONDecoder().decode(RecordingStateData.self, from: data) else {
-            return
-        }
-
+        guard let data = UserDefaults.standard.data(forKey: "global_agent_state"),
+              let state = try? JSONDecoder().decode(RecordingStateData.self, from: data) else { return }
         recognizedText = state.recognizedText
         agentResponseText = state.agentResponseText
         lastTTSOutput = state.lastTTSOutput
-
-        print("📂 AgentViewModel: State loaded")
     }
 
     func saveState() {
-        let key = "global_agent_state"
-        let state = RecordingStateData(
-            recognizedText: recognizedText,
-            agentResponseText: agentResponseText,
-            lastTTSOutput: lastTTSOutput
-        )
-
+        let state = RecordingStateData(recognizedText: recognizedText, agentResponseText: agentResponseText, lastTTSOutput: lastTTSOutput)
         if let data = try? JSONEncoder().encode(state) {
-            UserDefaults.standard.set(data, forKey: key)
-            print("💾 AgentViewModel: State saved")
+            UserDefaults.standard.set(data, forKey: "global_agent_state")
         }
     }
 
-    /// Connect to recording stream (kept for backward compatibility)
-    func connectToRecordingStream(sessionId: String?) {
-        // Now uses WebSocket instead
-        print("ℹ️ AgentViewModel: connectToRecordingStream called - now using WebSocket")
-    }
-
-    // MARK: - Cleanup
+    // Backward compatibility
+    func connectToRecordingStream(sessionId: String?) {}
+    func scheduleAutoTTS(lastTerminalOutput: String, isHeadlessTerminal: Bool, ttsSpeed: Double, language: String) {}
+    var isTranscribing: Bool { isProcessing }
 
     deinit {
-        currentOperationTask?.cancel()
-        currentOperationTask = nil
-        ttsTimer?.invalidate()
-        ttsTimer = nil
-
-        Task { @MainActor in
-            IdleTimerManager.shared.endAllOperations()
-        }
-
-        print("🧹 AgentViewModel: Deinitialized")
+        // Note: Can't call MainActor methods from deinit
+        // WebSocket will be automatically closed when task is deallocated
+        webSocketTask?.cancel(with: .goingAway, reason: nil)
     }
 }
 
-// MARK: - State Persistence Data
+// MARK: - Supporting Types
 
 private struct RecordingStateData: Codable {
     let recognizedText: String
@@ -708,22 +554,9 @@ private struct RecordingStateData: Codable {
     let lastTTSOutput: String
 }
 
-// MARK: - Audio Player Delegate Wrapper
-
 private class AudioPlayerDelegateWrapper: NSObject, AVAudioPlayerDelegate {
     private let onFinish: () -> Void
-
-    init(onFinish: @escaping () -> Void) {
-        self.onFinish = onFinish
-        super.init()
-    }
-
-    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
-        onFinish()
-    }
-
-    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        print("❌ AVAudioPlayer decode error: \(error?.localizedDescription ?? "unknown")")
-        onFinish()
-    }
+    init(onFinish: @escaping () -> Void) { self.onFinish = onFinish; super.init() }
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) { onFinish() }
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) { onFinish() }
 }

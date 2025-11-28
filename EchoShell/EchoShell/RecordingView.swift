@@ -53,13 +53,11 @@ struct RecordingView: View {
     @StateObject private var viewModel: AgentViewModel
     @StateObject private var terminalViewModel = TerminalViewModel()
     @StateObject private var wsClient = WebSocketClient()
-    @StateObject private var recordingStreamClient = RecordingStreamClient()
     @StateObject private var laptopHealthChecker = LaptopHealthChecker()
     @EnvironmentObject var settingsManager: SettingsManager
     @Environment(\.colorScheme) var colorScheme
     @State private var showSessionPicker = false
     @State private var lastSentCommand: String = "" // Track last sent command to filter it from output
-    @State private var recordingStreamSessionId: String?
 
     // Default initializer for backward compatibility
     init(isActiveTab: Bool = true) {
@@ -71,22 +69,20 @@ struct RecordingView: View {
         let audioRecorder = AudioRecorder()
         let placeholderConfig = TunnelConfig(tunnelId: "", tunnelUrl: "", wsUrl: "", keyEndpoint: "", authKey: "")
         let apiClient = APIClient(config: placeholderConfig)
-        let recordingStreamClient = RecordingStreamClient()
 
         // Create AgentViewModel with dependencies
         _viewModel = StateObject(wrappedValue: AgentViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient,
             config: placeholderConfig
         ))
     }
     
     // Get worst connection state
-    // Priority: laptop health check > WebSocket/RecordingStream (for direct mode)
+    // Priority: laptop health check > WebSocket (for direct mode)
     // In agent mode: only laptop health check matters
-    // In direct mode: laptop health check + WebSocket/RecordingStream states
+    // In direct mode: laptop health check + WebSocket states
     private func getWorstConnectionState() -> ConnectionState {
         // No laptop config means no connection to backend
         guard settingsManager.laptopConfig != nil else {
@@ -101,13 +97,12 @@ struct RecordingView: View {
             return laptopState
         }
         
-        // In direct mode, check both laptop health AND WebSocket/RecordingStream states
+        // In direct mode, check both laptop health AND WebSocket states
         let wsState = wsClient.connectionState
-        let recordingState = recordingStreamClient.connectionState
         
         // Priority: dead > disconnected > reconnecting > connecting > connected
-        // Combine laptop state with WebSocket states
-        let states = [laptopState, wsState, recordingState]
+        // Combine laptop state with WebSocket state
+        let states = [laptopState, wsState]
         
         if states.contains(.dead) {
             return .dead
@@ -268,9 +263,6 @@ struct RecordingView: View {
             }
         }
         .onChange(of: wsClient.connectionState) { _, _ in
-            // View will automatically update via .id modifier
-        }
-        .onChange(of: recordingStreamClient.connectionState) { _, _ in
             // View will automatically update via .id modifier
         }
         .onChange(of: settingsManager.commandMode) { _, _ in
@@ -523,7 +515,14 @@ struct RecordingView: View {
             let state = viewModel.getCurrentState()
 
             // Show error messages outside the status component
-            if state == .idle {
+            if let errorMessage = viewModel.errorMessage {
+                // Show error message from ViewModel
+                Text(errorMessage)
+                    .font(.subheadline)
+                    .foregroundColor(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 20)
+            } else if state == .idle {
                 if settingsManager.laptopConfig == nil {
                     Text("Please connect to laptop in Settings")
                         .font(.subheadline)
@@ -572,60 +571,67 @@ struct RecordingView: View {
     }
     
     private var resultDisplayView: some View {
-        // Display last transcription/terminal output
-        // In direct mode: show when cursor_agent terminal is selected
-        // In agent mode: show when there's recognized text OR lastTerminalOutput (agent response)
-        // Also show audio controls if TTS audio is available, even if no text to display
+        // Display chat interface for agent mode, or terminal output for direct mode
         Group {
-            let shouldShowText = settingsManager.commandMode == .direct
-                ? isHeadlessTerminal
-                : (!viewModel.recognizedText.isEmpty || !viewModel.agentResponseText.isEmpty)
-
-            let ttsService = viewModel.ttsService // Access through viewModel
-            let audioPlayer = ttsService.audioPlayer
-            let shouldShowAudioControls = ttsService.lastAudioData != nil || audioPlayer.isPlaying || audioPlayer.isPaused
-
-            if (shouldShowText || shouldShowAudioControls) && !viewModel.isTranscribing {
-                VStack(alignment: .leading, spacing: 16) {
-                    // Display text based on mode (only if there's text to show)
-                    if shouldShowText {
-                        let displayText = settingsManager.commandMode == .direct
-                            ? (settingsManager.lastTerminalOutput.isEmpty ? "Waiting for command output..." : settingsManager.lastTerminalOutput)
-                            : (viewModel.recognizedText.isEmpty ? viewModel.agentResponseText : viewModel.recognizedText)
-
-                        Text(displayText)
-                            .onAppear {
-                                print("📱 resultDisplayView: Displaying text (length: \(displayText.count), mode: \(settingsManager.commandMode))")
-                            }
-                            .onChange(of: viewModel.agentResponseText) { oldValue, newValue in
-                                print("📱 resultDisplayView: agentResponseText changed (old: \(oldValue.count), new: \(newValue.count))")
-                            }
-                            .onChange(of: viewModel.recognizedText) { oldValue, newValue in
-                                print("📱 resultDisplayView: recognizedText changed (old: \(oldValue.count), new: \(newValue.count), mode: \(settingsManager.commandMode))")
-                            }
-                            .font(.body)
-                            .foregroundColor(.primary)
-                            .lineLimit(nil)
-                            .padding(12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.secondary.opacity(0.1))
-                            .cornerRadius(12)
-                            .padding(.horizontal, 20)
-                    }
+            if settingsManager.commandMode == .agent {
+                // Agent mode: Show chat interface
+                VStack(spacing: 0) {
+                    ChatHistoryView(
+                        messages: viewModel.chatHistory,
+                        isAgentMode: true
+                    )
                     
-                    // Audio control buttons (always show if audio is available)
-                    if shouldShowAudioControls {
+                    // Audio control buttons if available
+                    let ttsService = viewModel.ttsService
+                    let audioPlayer = ttsService.audioPlayer
+                    if ttsService.lastAudioData != nil || audioPlayer.isPlaying || audioPlayer.isPaused {
                         AudioControlButtonsView(
                             audioPlayer: audioPlayer,
                             ttsService: ttsService,
-                            showTopPadding: shouldShowText
+                            showTopPadding: false
                         )
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 10)
                     }
                 }
-                .padding(.top, 10)
-                
-                Spacer()
-                    .frame(height: 30)
+            } else {
+                // Direct mode: Show terminal output (legacy behavior)
+                let shouldShowText = isHeadlessTerminal
+                let ttsService = viewModel.ttsService
+                let audioPlayer = ttsService.audioPlayer
+                let shouldShowAudioControls = ttsService.lastAudioData != nil || audioPlayer.isPlaying || audioPlayer.isPaused
+
+                if (shouldShowText || shouldShowAudioControls) && !viewModel.isTranscribing {
+                    VStack(alignment: .leading, spacing: 16) {
+                        // Display text based on mode (only if there's text to show)
+                        if shouldShowText {
+                            let displayText = settingsManager.lastTerminalOutput.isEmpty ? "Waiting for command output..." : settingsManager.lastTerminalOutput
+
+                            Text(displayText)
+                                .font(.body)
+                                .foregroundColor(.primary)
+                                .lineLimit(nil)
+                                .padding(12)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(Color.secondary.opacity(0.1))
+                                .cornerRadius(12)
+                                .padding(.horizontal, 20)
+                        }
+                        
+                        // Audio control buttons (always show if audio is available)
+                        if shouldShowAudioControls {
+                            AudioControlButtonsView(
+                                audioPlayer: audioPlayer,
+                                ttsService: ttsService,
+                                showTopPadding: shouldShowText
+                            )
+                        }
+                    }
+                    .padding(.top, 10)
+                    
+                    Spacer()
+                        .frame(height: 30)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -659,7 +665,6 @@ struct RecordingView: View {
                         // Connect WebSocket for terminal output tracking in direct mode
                         if let sessionId = settingsManager.selectedSessionId {
                             connectToTerminalStream(config: config, sessionId: sessionId)
-                            connectToRecordingStream(config: config, sessionId: sessionId)
                         }
 
                         // For agent mode, ensure agent session is ready (WebSocket connection)
@@ -686,19 +691,16 @@ struct RecordingView: View {
                     // Reconnect WebSocket if session selected
                     if let sessionId = settingsManager.selectedSessionId {
                         connectToTerminalStream(config: config, sessionId: sessionId)
-                        connectToRecordingStream(config: config, sessionId: sessionId)
                     }
                 }
             } else {
                 wsClient.disconnect()
-                recordingStreamClient.disconnect()
             }
         }
         .onChange(of: settingsManager.selectedSessionId) { oldValue, newValue in
             // Reconnect WebSocket when session changes
             if let config = settingsManager.laptopConfig, let sessionId = newValue {
                 connectToTerminalStream(config: config, sessionId: sessionId)
-                connectToRecordingStream(config: config, sessionId: sessionId)
             }
         }
         .onChange(of: settingsManager.commandMode) { oldValue, newValue in
@@ -707,10 +709,8 @@ struct RecordingView: View {
                 // Only connect if selected session is cursor_agent
                 if terminalViewModel.sessions.first(where: { $0.id == sessionId })?.terminalType == .cursor {
                 connectToTerminalStream(config: config, sessionId: sessionId)
-                    connectToRecordingStream(config: config, sessionId: sessionId)
                 }
             } else if newValue == .agent {
-                recordingStreamClient.disconnect()
                 // Ensure agent WebSocket session is ready
                 Task { @MainActor in
                     // Reset ViewModel state for agent mode
@@ -722,7 +722,8 @@ struct RecordingView: View {
         }
         .onChange(of: viewModel.isTranscribing) { oldValue, newValue in
             // When transcription completes in Agent mode, execute command via AgentViewModel
-            if oldValue == true && newValue == false && !viewModel.recognizedText.isEmpty {
+            // Only execute if there's no error and recognizedText contains actual transcription
+            if oldValue == true && newValue == false && !viewModel.recognizedText.isEmpty && viewModel.errorMessage == nil {
                 if settingsManager.commandMode == .agent {
                     print("✅ RecordingView: Transcription completed in Agent mode, executing command via WebSocket")
                     Task {
@@ -905,6 +906,13 @@ struct RecordingView: View {
                 }
             }
         }
+        .onReceive(EventBus.shared.resetContextPublisher) { _ in
+            // Reset agent context when button is pressed
+            guard settingsManager.commandMode == .agent else { return }
+            Task { @MainActor in
+                await viewModel.resetContext()
+            }
+        }
         .onReceive(EventBus.shared.audioReadyForTransmissionPublisher) { event in
             // Direct mode: send audio via terminal WebSocket
             guard settingsManager.commandMode == .direct else {
@@ -960,8 +968,6 @@ struct RecordingView: View {
             // Allow background tasks to complete - they will continue in background
             print("📱 RecordingView: onDisappear - keeping TTS and audio running in background")
 
-            // DON'T disconnect recording stream - keep it connected for background events
-            // recordingStreamClient.disconnect() - REMOVED
 
             // DON'T stop audio playback - let it continue
             // This allows TTS to finish playing even if user navigates away
@@ -993,47 +999,6 @@ struct RecordingView: View {
         wsClient.connect(config: config, sessionId: sessionId, onMessage: { _ in
             // Intentionally ignore raw output for recording view - clean output is streamed separately
         })
-    }
-    
-    // Connect to the backend-provided recording stream that already contains cleaned output
-    private func connectToRecordingStream(config: TunnelConfig, sessionId: String) {
-        guard settingsManager.commandMode == .direct else {
-            recordingStreamClient.disconnect()
-            recordingStreamSessionId = nil
-                                return
-                            }
-        
-        guard let session = terminalViewModel.sessions.first(where: { $0.id == sessionId }),
-              (session.terminalType == .cursor || session.terminalType.isHeadless) else {
-            recordingStreamClient.disconnect()
-            recordingStreamSessionId = nil
-                        return
-                    }
-                    
-        if recordingStreamSessionId == sessionId && recordingStreamClient.isConnected {
-                        return
-                    }
-        recordingStreamSessionId = sessionId
-        
-        recordingStreamClient.connect(config: config, sessionId: sessionId) { message in
-            Task { @MainActor in
-                // Always update lastTerminalOutput even if not active tab - it will be displayed when user returns
-                settingsManager.lastTerminalOutput = message.text
-                
-                // Only schedule TTS if active tab, otherwise it will be generated when user returns
-                if isActiveTab {
-                    // Use ViewModel method for TTS scheduling
-                    viewModel.scheduleAutoTTS(
-                        lastTerminalOutput: settingsManager.lastTerminalOutput,
-                        isHeadlessTerminal: isHeadlessTerminal,
-                        ttsSpeed: settingsManager.ttsSpeed,
-                        language: settingsManager.transcriptionLanguage.rawValue
-                    )
-                } else {
-                    print("📱 RecordingView: Recording stream message received but not active tab - stored for later")
-                }
-            }
-        }
     }
     
     // Format command for terminal: handle multiline commands

@@ -12,16 +12,17 @@ import Testing
 struct ChatViewModelTests {
     
     @Test func testChatViewModelInitialization() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-session")
+        let viewModel = await ChatViewModel(sessionId: "test-session")
         
-        #expect(viewModel.sessionId == "test-session")
-        #expect(viewModel.chatHistory.isEmpty)
-        #expect(viewModel.currentExecutionMessages.isEmpty)
-        #expect(viewModel.viewMode == .agent)
+        let sessionId = await viewModel.sessionId
+        let chatHistory = await viewModel.chatHistory
+        
+        #expect(sessionId == "test-session")
+        #expect(chatHistory.isEmpty)
     }
     
     @Test func testAddMessage() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-session")
+        let viewModel = await ChatViewModel(sessionId: "test-session")
         
         let message = ChatMessage(
             id: "msg-001",
@@ -30,89 +31,69 @@ struct ChatViewModelTests {
             content: "Test message"
         )
         
-        viewModel.addMessage(message)
+        await viewModel.addMessage(message)
         
-        #expect(viewModel.chatHistory.count == 1)
-        #expect(viewModel.currentExecutionMessages.count == 1)
-        #expect(viewModel.chatHistory.first?.id == "msg-001")
+        let chatHistory = await viewModel.chatHistory
+        #expect(chatHistory.count == 1)
+        #expect(chatHistory.first?.id == "msg-001")
     }
     
-    @Test func testClearCurrentExecution() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-session")
+    @Test func testAddMultipleMessages() async throws {
+        let viewModel = await ChatViewModel(sessionId: "test-session")
         
-        let message = ChatMessage(
+        let message1 = ChatMessage(
             id: "msg-001",
             timestamp: 1701234567890,
             type: .user,
-            content: "Test message"
+            content: "User message"
         )
         
-        viewModel.addMessage(message)
-        viewModel.clearCurrentExecution()
-        
-        #expect(viewModel.chatHistory.count == 1) // History preserved
-        #expect(viewModel.currentExecutionMessages.isEmpty) // Current cleared
-    }
-    
-    @Test func testFinalizeCurrentExecution() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-session")
-        
-        let message = ChatMessage(
-            id: "msg-001",
-            timestamp: 1701234567890,
-            type: .assistant,
-            content: "Response"
-        )
-        
-        viewModel.addMessage(message)
-        viewModel.finalizeCurrentExecution()
-        
-        #expect(viewModel.chatHistory.count == 1) // History preserved
-        #expect(viewModel.currentExecutionMessages.isEmpty) // Current cleared
-    }
-    
-    @Test func testToggleViewMode() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-session")
-        
-        #expect(viewModel.viewMode == .agent)
-        
-        viewModel.toggleViewMode()
-        #expect(viewModel.viewMode == .history)
-        
-        viewModel.toggleViewMode()
-        #expect(viewModel.viewMode == .agent)
-    }
-    
-    @Test func testGetMessagesForCurrentMode() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-session")
-        
-        let historyMessage = ChatMessage(
-            id: "msg-001",
-            timestamp: 1701234567890,
-            type: .user,
-            content: "History message"
-        )
-        
-        let currentMessage = ChatMessage(
+        let message2 = ChatMessage(
             id: "msg-002",
             timestamp: 1701234567891,
             type: .assistant,
-            content: "Current message"
+            content: "Assistant response"
         )
         
-        viewModel.addMessage(historyMessage)
-        viewModel.finalizeCurrentExecution()
-        viewModel.addMessage(currentMessage)
+        await viewModel.addMessage(message1)
+        await viewModel.addMessage(message2)
         
-        // In agent mode, should show current execution
-        viewModel.viewMode = .agent
-        let agentMessages = viewModel.getMessagesForCurrentMode()
-        #expect(agentMessages.count == 1)
-        #expect(agentMessages.first?.id == "msg-002")
+        let chatHistory = await viewModel.chatHistory
+        #expect(chatHistory.count == 2)
+        #expect(chatHistory[0].type == .user)
+        #expect(chatHistory[1].type == .assistant)
+    }
+    
+    @Test func testSystemMessagesAreFiltered() async throws {
+        let viewModel = await ChatViewModel(sessionId: "test-session")
         
-        // In history mode, should show full history
-        viewModel.viewMode = .history
-        let historyMessages = viewModel.getMessagesForCurrentMode()
-        #expect(historyMessages.count == 2)
+        let systemMessage = ChatMessage(
+            id: "msg-001",
+            timestamp: 1701234567890,
+            type: .system,
+            content: "System message"
+        )
+        
+        await viewModel.addMessage(systemMessage)
+        
+        let chatHistory = await viewModel.chatHistory
+        #expect(chatHistory.isEmpty) // System messages should be filtered out
+    }
+    
+    @Test func testLoadMessages() async throws {
+        let viewModel = await ChatViewModel(sessionId: "test-session")
+        
+        let messages = [
+            ChatMessage(id: "msg-001", timestamp: 1701234567890, type: .user, content: "First"),
+            ChatMessage(id: "msg-002", timestamp: 1701234567891, type: .system, content: "System"),
+            ChatMessage(id: "msg-003", timestamp: 1701234567892, type: .assistant, content: "Response")
+        ]
+        
+        await viewModel.loadMessages(messages)
+        
+        let chatHistory = await viewModel.chatHistory
+        #expect(chatHistory.count == 2) // System message filtered
+        #expect(chatHistory[0].id == "msg-001")
+        #expect(chatHistory[1].id == "msg-003")
     }
 }

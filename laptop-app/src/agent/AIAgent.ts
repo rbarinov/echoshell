@@ -43,6 +43,16 @@ export class AIAgent {
     this.worktreeManager = worktreeManager;
   }
   
+  /**
+   * Clear any stored context (for now, this is a no-op as AIAgent doesn't maintain state)
+   * In the future, this could clear conversation history if we implement that
+   */
+  clearContext(): void {
+    console.log('🔄 AIAgent: Context cleared');
+    // Currently AIAgent doesn't maintain conversation state
+    // Future: clear conversation history here
+  }
+  
   async execute(command: string, sessionId?: string, terminalManager?: TerminalManager): Promise<{ output: string; sessionId?: string }> {
     console.log(`🤖 AI Agent analyzing command: ${command}${sessionId ? ` (session: ${sessionId})` : ' (no session)'}`);
     

@@ -32,13 +32,11 @@ struct IntegrationTests {
         let audioPlayer = AudioPlayer()
         let ttsService = await TTSService(audioPlayer: audioPlayer)
         let apiClient = APIClient(config: config)
-        let recordingStreamClient = RecordingStreamClient()
         
         let viewModel = await AgentViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient,
             config: config
         )
         
@@ -63,13 +61,11 @@ struct IntegrationTests {
         let audioPlayer = AudioPlayer()
         let ttsService = await TTSService(audioPlayer: audioPlayer)
         let apiClient = APIClient(config: config)
-        let recordingStreamClient = RecordingStreamClient()
         
         let viewModel = await AgentViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient,
             config: config
         )
         
@@ -87,74 +83,6 @@ struct IntegrationTests {
         // Verify state is valid
         let state = await viewModel.getCurrentState()
         #expect(state != nil)
-    }
-    
-    // MARK: - Terminal Agent Flow Tests
-    
-    @Test("terminal agent flow: multiple terminals have isolated state")
-    func testTerminalAgentFlow_MultipleTerminals_IsolatedState() async throws {
-        let config = createTestConfig()
-        let audioRecorder1 = AudioRecorder()
-        let audioRecorder2 = AudioRecorder()
-        let audioPlayer = AudioPlayer()
-        let ttsService1 = await TTSService(audioPlayer: audioPlayer)
-        let ttsService2 = await TTSService(audioPlayer: audioPlayer)
-        let apiClient = APIClient(config: config)
-        let recordingStreamClient1 = RecordingStreamClient()
-        let recordingStreamClient2 = RecordingStreamClient()
-        
-        let sessionId1 = "test-terminal-1"
-        let sessionId2 = "test-terminal-2"
-        
-        // Clear state for both terminals
-        UserDefaults.standard.removeObject(forKey: "terminal_state_\(sessionId1)")
-        UserDefaults.standard.removeObject(forKey: "terminal_state_\(sessionId2)")
-        UserDefaults.standard.synchronize()
-        
-        let viewModel1 = await TerminalAgentViewModel(
-            sessionId: sessionId1,
-            sessionName: "Terminal 1",
-            config: config,
-            audioRecorder: audioRecorder1,
-            ttsService: ttsService1,
-            apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient1
-        )
-        
-        let viewModel2 = await TerminalAgentViewModel(
-            sessionId: sessionId2,
-            sessionName: "Terminal 2",
-            config: config,
-            audioRecorder: audioRecorder2,
-            ttsService: ttsService2,
-            apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient2
-        )
-        
-        // Set different state for each terminal
-        await MainActor.run {
-            viewModel1.agentResponseText = "Terminal 1 response"
-            viewModel2.agentResponseText = "Terminal 2 response"
-        }
-        
-        await viewModel1.saveState()
-        await viewModel2.saveState()
-
-        // Clear and reload
-        await MainActor.run {
-            viewModel1.agentResponseText = ""
-            viewModel2.agentResponseText = ""
-        }
-
-        await viewModel1.loadState()
-        await viewModel2.loadState()
-        
-        // States should be isolated
-        let response1 = await viewModel1.agentResponseText
-        let response2 = await viewModel2.agentResponseText
-        
-        #expect(response1 == "Terminal 1 response")
-        #expect(response2 == "Terminal 2 response")
     }
     
     // MARK: - View Mode Switching Tests
@@ -205,9 +133,9 @@ struct IntegrationTests {
     
     // MARK: - Chat Interface Tests
     
-    @Test("chat interface: message accumulation in current execution")
-    func testChatInterface_MessageAccumulation_CurrentExecution() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-chat-session")
+    @Test("chat interface: message accumulation")
+    func testChatInterface_MessageAccumulation() async throws {
+        let viewModel = await ChatViewModel(sessionId: "test-chat-session")
         
         // Add user message
         let userMessage = ChatMessage(
@@ -216,7 +144,7 @@ struct IntegrationTests {
             type: .user,
             content: "List files"
         )
-        viewModel.addMessage(userMessage)
+        await viewModel.addMessage(userMessage)
         
         // Add assistant message
         let assistantMessage = ChatMessage(
@@ -225,56 +153,56 @@ struct IntegrationTests {
             type: .assistant,
             content: "I'll list the files for you."
         )
-        viewModel.addMessage(assistantMessage)
+        await viewModel.addMessage(assistantMessage)
         
-        // In agent mode, should show both messages
-        viewModel.viewMode = .agent
-        let agentMessages = viewModel.getMessagesForCurrentMode()
-        #expect(agentMessages.count == 2)
-        #expect(agentMessages.first?.type == .user)
-        #expect(agentMessages.last?.type == .assistant)
-        
-        // History should also contain both
-        #expect(viewModel.chatHistory.count == 2)
+        // History should contain both messages
+        let chatHistory = await viewModel.chatHistory
+        #expect(chatHistory.count == 2)
+        #expect(chatHistory.first?.type == .user)
+        #expect(chatHistory.last?.type == .assistant)
     }
     
-    @Test("chat interface: view mode toggle between agent and history")
-    func testChatInterface_ViewModeToggle_AgentHistory() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-chat-session")
+    @Test("chat interface: system messages are filtered")
+    func testChatInterface_SystemMessagesFiltered() async throws {
+        let viewModel = await ChatViewModel(sessionId: "test-chat-session")
         
-        // Add messages to history
-        let message1 = ChatMessage(
+        // Add user message
+        let userMessage = ChatMessage(
             id: "msg-001",
             timestamp: 1701234567890,
             type: .user,
             content: "First command"
         )
-        viewModel.addMessage(message1)
-        viewModel.finalizeCurrentExecution()
+        await viewModel.addMessage(userMessage)
         
-        let message2 = ChatMessage(
+        // Add system message (should be filtered)
+        let systemMessage = ChatMessage(
             id: "msg-002",
             timestamp: 1701234567891,
-            type: .user,
-            content: "Second command"
+            type: .system,
+            content: "System notification"
         )
-        viewModel.addMessage(message2)
+        await viewModel.addMessage(systemMessage)
         
-        // Agent mode should show only current execution
-        viewModel.viewMode = .agent
-        let agentMessages = viewModel.getMessagesForCurrentMode()
-        #expect(agentMessages.count == 1)
-        #expect(agentMessages.first?.id == "msg-002")
+        // Add assistant message
+        let assistantMessage = ChatMessage(
+            id: "msg-003",
+            timestamp: 1701234567892,
+            type: .assistant,
+            content: "Response"
+        )
+        await viewModel.addMessage(assistantMessage)
         
-        // History mode should show all messages
-        viewModel.viewMode = .history
-        let historyMessages = viewModel.getMessagesForCurrentMode()
-        #expect(historyMessages.count == 2)
+        // Should have only user and assistant messages (system filtered)
+        let chatHistory = await viewModel.chatHistory
+        #expect(chatHistory.count == 2)
+        #expect(chatHistory[0].id == "msg-001")
+        #expect(chatHistory[1].id == "msg-003")
     }
     
     @Test("chat interface: tool message with metadata")
     func testChatInterface_ToolMessage_Metadata() async throws {
-        let viewModel = ChatViewModel(sessionId: "test-chat-session")
+        let viewModel = await ChatViewModel(sessionId: "test-chat-session")
         
         let toolMessage = ChatMessage(
             id: "msg-001",
@@ -288,12 +216,13 @@ struct IntegrationTests {
             )
         )
         
-        viewModel.addMessage(toolMessage)
+        await viewModel.addMessage(toolMessage)
         
-        #expect(viewModel.chatHistory.count == 1)
-        #expect(viewModel.chatHistory.first?.type == .tool)
-        #expect(viewModel.chatHistory.first?.metadata?.toolName == "bash")
-        #expect(viewModel.chatHistory.first?.metadata?.toolInput == "ls -la")
-        #expect(viewModel.chatHistory.first?.metadata?.toolOutput == "file1.txt\nfile2.py")
+        let chatHistory = await viewModel.chatHistory
+        #expect(chatHistory.count == 1)
+        #expect(chatHistory.first?.type == .tool)
+        #expect(chatHistory.first?.metadata?.toolName == "bash")
+        #expect(chatHistory.first?.metadata?.toolInput == "ls -la")
+        #expect(chatHistory.first?.metadata?.toolOutput == "file1.txt\nfile2.py")
     }
 }

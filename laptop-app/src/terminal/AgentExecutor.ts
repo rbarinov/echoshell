@@ -1,6 +1,7 @@
 import type { AIAgent } from '../agent/AIAgent';
 import type { TerminalManager } from './TerminalManager';
 import type { ChatMessage } from './types';
+import type { ChatHistoryDatabase } from '../database/ChatHistoryDatabase';
 import { v4 as uuidv4 } from 'uuid';
 
 /**
@@ -12,11 +13,15 @@ export type AgentCompleteCallback = (result: string) => void;
 /**
  * Executes AI Agent commands (global agent mode)
  * Unlike HeadlessExecutor which uses CLI tools, this uses AIAgent directly
+ * Maintains conversation history for context-aware responses
  */
 export class AgentExecutor {
   private aiAgent: AIAgent;
   private terminalManager: TerminalManager;
   private workingDir: string;
+  private sessionId: string;
+  private chatHistoryDb: ChatHistoryDatabase;
+  private conversationHistory: ChatMessage[] = [];
   private outputCallbacks: Set<AgentOutputCallback> = new Set();
   private completeCallbacks: Set<AgentCompleteCallback> = new Set();
   private isRunning: boolean = false;
@@ -24,11 +29,38 @@ export class AgentExecutor {
   constructor(
     workingDir: string,
     aiAgent: AIAgent,
-    terminalManager: TerminalManager
+    terminalManager: TerminalManager,
+    sessionId: string,
+    chatHistoryDb: ChatHistoryDatabase
   ) {
     this.workingDir = workingDir;
     this.aiAgent = aiAgent;
     this.terminalManager = terminalManager;
+    this.sessionId = sessionId;
+    this.chatHistoryDb = chatHistoryDb;
+    
+    // Load conversation history from database
+    this.loadHistory();
+  }
+  
+  /**
+   * Load conversation history from database
+   */
+  private loadHistory(): void {
+    const history = this.chatHistoryDb.getChatHistory(this.sessionId);
+    if (history && history.messages.length > 0) {
+      this.conversationHistory = history.messages;
+      console.log(`📚 [AgentExecutor] Loaded ${this.conversationHistory.length} messages from history`);
+    }
+  }
+  
+  /**
+   * Reset conversation context (clear history)
+   */
+  async resetContext(): Promise<void> {
+    this.conversationHistory = [];
+    this.chatHistoryDb.clearHistory(this.sessionId);
+    console.log(`🔄 [AgentExecutor] Context reset for session ${this.sessionId}`);
   }
 
   /**
@@ -44,28 +76,45 @@ export class AgentExecutor {
     this.isRunning = true;
     console.log(`🤖 [AgentExecutor] Executing AI Agent command: ${prompt.substring(0, 100)}${prompt.length > 100 ? '...' : ''}`);
 
-    // Send user message
+    // Create and save user message
     const userMessage: ChatMessage = {
       id: uuidv4(),
       timestamp: Date.now(),
       type: 'user',
       content: prompt,
     };
+    
+    // Add to conversation history
+    this.conversationHistory.push(userMessage);
+    
+    // Persist to database
+    this.chatHistoryDb.addMessage(this.sessionId, userMessage);
+    
+    // Notify output
     this.notifyOutput(userMessage);
 
     try {
-      // Execute via AI Agent (no terminal session - global agent)
+      // Execute via AI Agent with context
+      // For now, use execute() - will be enhanced with executeWithContext() later
       const result = await this.aiAgent.execute(prompt, undefined, this.terminalManager);
 
       console.log(`✅ [AgentExecutor] AI Agent response: ${result.output.substring(0, 100)}${result.output.length > 100 ? '...' : ''}`);
 
-      // Send assistant response
+      // Create and save assistant message
       const assistantMessage: ChatMessage = {
         id: uuidv4(),
         timestamp: Date.now(),
         type: 'assistant',
         content: result.output,
       };
+      
+      // Add to conversation history
+      this.conversationHistory.push(assistantMessage);
+      
+      // Persist to database
+      this.chatHistoryDb.addMessage(this.sessionId, assistantMessage);
+      
+      // Notify output
       this.notifyOutput(assistantMessage);
 
       // Send completion message
@@ -85,7 +134,7 @@ export class AgentExecutor {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error(`❌ [AgentExecutor] Error executing command:`, error);
 
-      // Send error message
+      // Create and save error message
       const errMsg: ChatMessage = {
         id: uuidv4(),
         timestamp: Date.now(),
@@ -93,6 +142,14 @@ export class AgentExecutor {
         content: `Error: ${errorMessage}`,
         metadata: { errorCode: 'AGENT_ERROR' },
       };
+      
+      // Add to conversation history
+      this.conversationHistory.push(errMsg);
+      
+      // Persist to database
+      this.chatHistoryDb.addMessage(this.sessionId, errMsg);
+      
+      // Notify output
       this.notifyOutput(errMsg);
 
       // Notify completion (even on error)

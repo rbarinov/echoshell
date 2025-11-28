@@ -83,14 +83,16 @@ class TTSService: ObservableObject {
         return true
     }
 
-    /// Synthesize TTS and play audio
+    /// Play TTS audio (server-side synthesis only)
+    /// TTS audio is now synthesized on the server and received via WebSocket
+    /// This method is kept for backward compatibility but should not be used for new code
     /// - Parameters:
-    ///   - text: Text to synthesize
-    ///   - config: Laptop tunnel configuration
-    ///   - speed: TTS playback speed (0.7-1.2)
-    ///   - language: Language code (ru, en, ka, etc.)
-    ///   - cleaningFunction: Optional function to clean text before synthesis
-    /// - Returns: Audio data on success
+    ///   - text: Text that was synthesized (for logging)
+    ///   - config: Laptop tunnel configuration (unused, kept for compatibility)
+    ///   - speed: TTS playback speed (unused, kept for compatibility)
+    ///   - language: Language code (unused, kept for compatibility)
+    ///   - cleaningFunction: Optional function (unused, kept for compatibility)
+    /// - Returns: Audio data if available
     @discardableResult
     func synthesizeAndPlay(
         text: String,
@@ -99,78 +101,20 @@ class TTSService: ObservableObject {
         language: String,
         cleaningFunction: ((String) -> String)? = nil
     ) async throws -> Data {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Validate text
-        guard !trimmed.isEmpty else {
-            print("🔇 synthesizeAndPlay: Empty text, aborting")
-            throw TTSError.emptyText
-        }
-
-        // Check if we already have audio for this exact text
-        if lastGeneratedText == trimmed, let existingAudio = lastAudioData {
-            print("🔊 synthesizeAndPlay: Using existing TTS audio for same text")
-
-            // Play existing audio if not already playing
-            // Note: We're already on MainActor, but audioPlayer.play might need main thread
+        // TTS is now server-side only - audio comes via WebSocket tts_audio events
+        // This method is kept for backward compatibility but should not synthesize
+        print("⚠️ TTSService: synthesizeAndPlay called - TTS is now server-side only")
+        
+        // Check if we already have audio for this text
+        if lastGeneratedText == text.trimmingCharacters(in: .whitespacesAndNewlines), let existingAudio = lastAudioData {
             if !audioPlayer.isPlaying {
-                do {
-                    try await audioPlayer.play(audioData: existingAudio, title: "AI Assistant Response")
-                    print("🔊 synthesizeAndPlay: Playing existing audio")
-                } catch {
-                    print("❌ synthesizeAndPlay: Failed to play existing audio: \(error)")
-                }
+                try await audioPlayer.play(audioData: existingAudio, title: "AI Assistant Response")
             }
-
             return existingAudio
         }
-
-        // Set generating state (already on MainActor)
-        isGenerating = true
-
-        do {
-            // Clean text if cleaning function provided
-            let cleanedText = cleaningFunction?(trimmed) ?? trimmed
-
-            // Validate cleaned text
-            guard !cleanedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                print("⚠️ synthesizeAndPlay: Cleaned text is empty, skipping TTS")
-                isGenerating = false
-                throw TTSError.emptyText
-            }
-
-            print("🔊 synthesizeAndPlay: Generating TTS (length: \(cleanedText.count)) at \(speed)x speed")
-
-            // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
-            let ttsEndpoint = "\(config.apiBaseUrl)/proxy/tts/synthesize"
-            let ttsHandler = LocalTTSHandler(laptopAuthKey: config.authKey, endpoint: ttsEndpoint)
-
-            // Synthesize audio (this can run off MainActor)
-            let audioData = try await ttsHandler.synthesize(
-                text: cleanedText,
-                speed: speed,
-                language: language
-            )
-
-            print("✅ synthesizeAndPlay: TTS synthesis completed, audio data size: \(audioData.count) bytes")
-
-            // Update state with new audio (back on MainActor)
-            isGenerating = false
-            lastGeneratedText = trimmed
-            lastAudioData = audioData
-
-            // Play audio (already on MainActor)
-            // AudioPlayer.play() now handles the delay and audio session configuration internally
-            try await audioPlayer.play(audioData: audioData, title: "AI Assistant Response")
-            print("🔊 synthesizeAndPlay: TTS playback started at \(speed)x speed")
-
-            return audioData
-
-        } catch {
-            print("❌ synthesizeAndPlay: TTS error: \(error)")
-            isGenerating = false
-            throw error
-        }
+        
+        // No audio available - throw error
+        throw EventBus.TTSError.synthesisFailed(message: "TTS is server-side only, no cached audio available")
     }
 
     /// Replay the last generated audio
@@ -208,8 +152,3 @@ class TTSService: ObservableObject {
     }
 }
 
-// MARK: - Error Types
-
-extension TTSError {
-    static let emptyText = TTSError.requestFailed
-}

@@ -204,6 +204,23 @@ export class ChatHistoryDatabase {
   }
 
   /**
+   * Clear chat history for a session (keep session, remove messages)
+   * This is used for context reset in agent mode
+   */
+  clearHistory(sessionId: string): void {
+    // Delete messages but keep session
+    const deleteMessagesStmt = this.db.prepare(`
+      DELETE FROM chat_messages WHERE session_id = ?
+    `);
+    const messagesDeleted = deleteMessagesStmt.run(sessionId);
+
+    // Update session timestamp
+    this.updateSessionTimestamp(sessionId);
+
+    console.log(`✅ [ChatHistoryDatabase] History cleared for session ${sessionId} (${messagesDeleted.changes} messages removed)`);
+  }
+
+  /**
    * Delete chat history for a session
    * This permanently removes all messages
    */

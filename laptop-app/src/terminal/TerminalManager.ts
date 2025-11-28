@@ -252,7 +252,7 @@ export class TerminalManager {
         if (!this.aiAgent) {
           throw new Error('AIAgent not configured for agent terminals');
         }
-        const agentExecutor = new AgentExecutor(cwd, this.aiAgent, this);
+        const agentExecutor = new AgentExecutor(cwd, this.aiAgent, this, sessionId, this.chatHistoryDb);
         session.agentExecutor = agentExecutor;
         
         // Setup output handlers for agent executor
@@ -699,7 +699,7 @@ export class TerminalManager {
   }
 
   private isHeadlessTerminal(type: TerminalType): type is HeadlessTerminalType {
-    return type === 'cursor' || type === 'claude';
+    return type === 'cursor' || type === 'claude' || type === 'agent';
   }
 
   /**
@@ -1146,6 +1146,31 @@ export class TerminalManager {
     } catch (error) {
       console.error(`❌ [${session.sessionId}] Error during process cleanup: ${error}`);
     }
+  }
+  
+  /**
+   * Clear chat history for an agent session (reset context)
+   */
+  async clearChatHistory(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+    
+    if (session.terminalType !== 'agent' || !session.agentExecutor) {
+      throw new Error(`Session ${sessionId} is not an agent session`);
+    }
+    
+    // Reset context in AgentExecutor
+    await session.agentExecutor.resetContext();
+    
+    // Clear chat history in session
+    if (session.chatHistory) {
+      session.chatHistory.messages = [];
+      session.chatHistory.updatedAt = Date.now();
+    }
+    
+    console.log(`🔄 [${sessionId}] Chat history cleared`);
   }
   
 }

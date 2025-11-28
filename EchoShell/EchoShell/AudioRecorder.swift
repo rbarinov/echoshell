@@ -32,12 +32,8 @@ class AudioRecorder: NSObject, ObservableObject {
     // When false, commands are not sent via executeAgentCommand (for terminal detail pages)
     var autoSendCommand: Bool = true
     
-    // Flag to skip HTTP transcription and use WebSocket instead
-    // When true, onAudioFileReady callback is called instead of HTTP transcription
-    var useWebSocketTranscription: Bool = false
-    
     // Callback for when audio file is ready (WebSocket mode)
-    // Called instead of HTTP transcription when useWebSocketTranscription is true
+    // Audio is sent via WebSocket for server-side transcription
     var onAudioFileReady: ((URL) -> Void)?
     
     override init() {
@@ -260,9 +256,12 @@ extension AudioRecorder: AVAudioRecorderDelegate {
             print("❌ iOS AudioRecorder: Recording failed")
             // Check if file exists
             if let url = recordingURL, FileManager.default.fileExists(atPath: url.path) {
-                print("⚠️ iOS AudioRecorder: File exists despite failure flag, attempting transcription anyway")
-                // Try to transcribe even if failure flag
-                transcribeViaLaptop()
+                print("⚠️ iOS AudioRecorder: File exists despite failure flag, attempting WebSocket transcription anyway")
+                // Try WebSocket mode even if failure flag
+                DispatchQueue.main.async {
+                    self.isTranscribing = true
+                }
+                self.onAudioFileReady?(url)
             } else {
                 print("❌ iOS AudioRecorder: No valid recording file")
                 DispatchQueue.main.async {
@@ -314,19 +313,12 @@ extension AudioRecorder: AVAudioRecorderDelegate {
         
         print("📱 iOS AudioRecorder: Recording finished successfully")
         
-        // Check if WebSocket mode is enabled
-        if useWebSocketTranscription {
-            print("📱 iOS AudioRecorder: WebSocket mode - calling onAudioFileReady callback")
-            DispatchQueue.main.async {
-                self.isTranscribing = true // Mark as transcribing for UI feedback
-            }
-            onAudioFileReady?(url)
-            return
+        // WebSocket mode: send audio via WebSocket for server-side transcription
+        print("📱 iOS AudioRecorder: WebSocket mode - calling onAudioFileReady callback")
+        DispatchQueue.main.async {
+            self.isTranscribing = true // Mark as transcribing for UI feedback
         }
-        
-        // Default: use laptop mode HTTP transcription
-        print("📱 iOS AudioRecorder: Using laptop mode HTTP transcription")
-        transcribeViaLaptop()
+        onAudioFileReady?(url)
     }
     
     func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
@@ -364,174 +356,6 @@ extension AudioRecorder {
         
         // Could send to Watch via WatchConnectivity here if needed
         // For now, just keep it local
-    }
-    
-    // NEW: Laptop mode transcription
-    private func transcribeViaLaptop() {
-        // Check URL again
-        guard let url = recordingURL else {
-            print("❌ iOS AudioRecorder: No recording URL for transcription")
-            DispatchQueue.main.async {
-                self.recognizedText = "Error: No recording URL"
-                self.isTranscribing = false
-            }
-            return
-        }
-        
-        // Check file existence
-        guard FileManager.default.fileExists(atPath: url.path) else {
-            print("❌ iOS AudioRecorder: Recording file does not exist: \(url.path)")
-            DispatchQueue.main.async {
-                self.recognizedText = "Error: Recording file not found"
-                self.isTranscribing = false
-                self.recordingURL = nil
-            }
-            return
-        }
-
-        // Check for laptop connection via settingsManager.laptopConfig (single source of truth)
-        guard let settingsManager = settingsManager else {
-            print("❌ iOS AudioRecorder: SettingsManager not configured")
-            DispatchQueue.main.async {
-                self.recognizedText = "Error: Settings not configured. Please restart the app."
-                self.isTranscribing = false
-            }
-            return
-        }
-        
-        guard let laptopConfig = settingsManager.laptopConfig else {
-            print("❌ iOS AudioRecorder: Not connected to laptop (no laptop config)")
-            DispatchQueue.main.async {
-                self.recognizedText = "Error: Not connected to laptop. Please connect in Settings."
-                self.isTranscribing = false
-            }
-            return
-        }
-
-        DispatchQueue.main.async {
-            self.isTranscribing = true
-            self.recognizedText = ""
-        }
-
-        // Notify RecordingView to clear terminal output when transcription starts
-        Task { @MainActor in
-            EventBus.shared.transcriptionStarted = true
-        }
-
-        let transcriptionStartTime = Date()
-
-        print("📱 iOS AudioRecorder: Starting transcription for file: \(url.path)")
-        // Build STT endpoint from laptop config (proxy endpoint via tunnel)
-        let sttEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/stt/transcribe"
-        let service = TranscriptionService(laptopAuthKey: laptopConfig.authKey, endpoint: sttEndpoint)
-        let language = UserDefaults.standard.string(forKey: "transcriptionLanguage") ?? "auto"
-        
-        // Store the recording URL and operation ID at transcription start to check if it's still valid
-        let transcriptionURL = url
-        let transcriptionOperationId = currentOperationId
-        
-        service.transcribe(audioFileURL: url, language: language == "auto" ? nil : language) { [weak self] result in
-            DispatchQueue.main.async {
-                guard let self = self else {
-                    print("⚠️ iOS AudioRecorder: Self deallocated during transcription")
-                    return
-                }
-                
-                // Check if transcription was cancelled (new recording started or operation ID changed)
-                if self.recordingURL != transcriptionURL || 
-                   self.recordingURL == nil ||
-                   self.currentOperationId != transcriptionOperationId {
-                    print("⚠️ iOS AudioRecorder: Transcription result ignored - operation cancelled (new recording started)")
-                    self.isTranscribing = false
-                    return
-                }
-                
-                let transcriptionEndTime = Date()
-                self.lastTranscriptionDuration = transcriptionEndTime.timeIntervalSince(transcriptionStartTime)
-                self.isTranscribing = false
-                
-                switch result {
-                case .success((let text, let networkUsage)):
-                    // Check that text is not empty
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        print("⚠️ iOS AudioRecorder: Transcription returned empty text")
-                        self.recognizedText = "No speech detected. Please try again."
-                        return
-                    }
-                    
-                    self.recognizedText = text
-                    self.lastNetworkUsage = networkUsage
-                    
-                    print("✅ Transcription via laptop successful")
-                    print("   Text: \(text.prefix(50))...")
-                    
-                    // Clear file after successful transcription
-                    if let url = self.recordingURL {
-                        try? FileManager.default.removeItem(at: url)
-                        self.recordingURL = nil
-                    }
-                    
-                    // Notify that transcription is complete
-                    Task { @MainActor in
-                        EventBus.shared.transcriptionStarted = false
-                        EventBus.shared.transcriptionCompletedPublisher.send(
-                            EventBus.TranscriptionResult(
-                                text: text,
-                                language: language == "auto" ? nil : language,
-                                duration: self.lastTranscriptionDuration
-                            )
-                        )
-                    }
-                    
-                    // Send transcribed text to laptop for command execution
-                    // Only send if autoSendCommand is enabled (default: true)
-                    // This can be disabled for terminal detail pages where commands are sent directly to terminal
-                    if self.autoSendCommand {
-                        self.sendCommandToLaptop(text: text)
-                    }
-                    
-                case .failure(let error):
-                    let errorDescription = error.localizedDescription
-                    print("❌ Transcription error: \(errorDescription)")
-                    print("❌ Transcription error details: \(error)")
-                    
-                    // Check if this is a network error that might be transient
-                    let isNetworkError = errorDescription.contains("network") || 
-                                        errorDescription.contains("timeout") ||
-                                        errorDescription.contains("connection") ||
-                                        errorDescription.contains("HTTP 5")
-                    
-                    // For network errors, don't show error immediately - allow retry
-                    if isNetworkError {
-                        print("⚠️ Network error detected, will retry transcription")
-                        // Reset state to allow retry
-                        self.isTranscribing = false
-                        // Clear recognizedText to allow retry
-                        self.recognizedText = ""
-                    } else {
-                        // For other errors, show error message
-                        self.recognizedText = "Transcription error: \(errorDescription)"
-                        
-                        // Clear file on error
-                        if let url = self.recordingURL {
-                            try? FileManager.default.removeItem(at: url)
-                            self.recordingURL = nil
-                        }
-                        
-                        // Reset transcription state to allow retry
-                        self.isTranscribing = false
-                        
-                        // Clear recognizedText after a delay to allow user to see the error
-                        // This ensures next attempt can start fresh
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                            if self.recognizedText == "Transcription error: \(errorDescription)" {
-                                self.recognizedText = ""
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
     
     // NEW: Send transcribed command to laptop
@@ -735,39 +559,10 @@ extension AudioRecorder {
             }
             
             do {
-                // Build TTS endpoint from laptop config (proxy endpoint via tunnel)
-                let ttsEndpoint = "\(laptopConfig.apiBaseUrl)/proxy/tts/synthesize"
-                let ttsHandler = LocalTTSHandler(laptopAuthKey: laptopConfig.authKey, endpoint: ttsEndpoint)
-                let language = settingsManager?.transcriptionLanguage.rawValue
-                let speed = settingsManager?.ttsSpeed ?? 1.0
-                // Voice is controlled by server configuration (TTS_VOICE env var), not sent from client
-                let audioData = try await ttsHandler.synthesize(text: text, speed: speed, language: language)
-                
-                // Check cancellation before posting notification
-                guard currentOperationId == ttsOperationId else {
-                    print("⚠️ iOS AudioRecorder: TTS audio ignored - operation cancelled")
-                    return
-                }
-                
-                // Play audio - use EventBus to notify RecordingView
-                await MainActor.run {
-                    // Check cancellation again on main thread
-                    guard self.currentOperationId == ttsOperationId else {
-                        print("⚠️ iOS AudioRecorder: TTS audio ignored on main thread - operation cancelled")
-                        return
-                    }
-                    
-                    EventBus.shared.ttsGenerating = false
-                    EventBus.shared.ttsReadyPublisher.send(
-                        EventBus.TTSReadyEvent(
-                            audioData: audioData,
-                            text: text,
-                            operationId: ttsOperationId?.uuidString ?? "",
-                            sessionId: nil // Global agent, not terminal-specific
-                        )
-                    )
-                }
-                
+                // TTS is now server-side only - audio comes via WebSocket tts_audio events
+                // This fallback path should not be used
+                print("⚠️ AudioRecorder: Local TTS synthesis attempted - TTS is now server-side only")
+                throw NSError(domain: "TTSService", code: -1, userInfo: [NSLocalizedDescriptionKey: "TTS is now server-side only"])
             } catch {
                 // Check cancellation before showing error
                 guard currentOperationId == ttsOperationId else {

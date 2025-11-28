@@ -105,15 +105,16 @@ let proxyHandler: ProxyHandler;
 terminalHandler = new TerminalHandler(terminalManager);
 keyHandler = new KeyHandler(keyManager, null); // tunnelConfig will be set later
 workspaceHandler = new WorkspaceHandler(workspaceManager, worktreeManager);
-agentHandler = new AgentHandler(aiAgent, terminalManager);
+agentHandler = new AgentHandler(aiAgent, terminalManager, sttProvider, ttsProvider);
 proxyHandler = new ProxyHandler(sttProvider, ttsProvider);
 
 // Setup routes
 app.use('/terminal', createTerminalRoutes(terminalManager, chatHistoryDb));
 app.use('/workspace', createWorkspaceRoutes(workspaceManager, worktreeManager));
 
-// Setup WebSocket with STT/TTS providers for server-side processing
-setupTerminalWebSocket(wss, terminalManager, outputRouter, sttProvider, ttsProvider);
+// Setup WebSocket with STT/TTS providers and AI Agent for server-side processing
+// Supports both /terminal/{sessionId}/stream and /agent/ws endpoints
+setupTerminalWebSocket(wss, terminalManager, outputRouter, sttProvider, ttsProvider, aiAgent);
 
 let tunnelClient: TunnelClient | null = null;
 let tunnelConfig: TunnelConfig | null = null;
@@ -233,6 +234,88 @@ async function initializeTunnel(isRetry = false): Promise<void> {
     tunnelClient.setTerminalInputHandler((sessionId, data) => {
       console.log(`⌨️  Terminal input for ${sessionId}: ${data.length} bytes`);
       terminalManager.writeInput(sessionId, data);
+    });
+    
+    // Set up agent request handler
+    tunnelClient.setAgentRequestHandler(async (request) => {
+      const { tunnelId, streamKey, payload } = request;
+      console.log(`🤖 Agent request: type=${payload.type}, streamKey=${streamKey}`);
+      
+      try {
+        let command = payload.command;
+        
+        // Handle audio input - transcribe first
+        if (payload.type === 'execute_audio' && payload.audio) {
+          if (!sttProvider) {
+            throw new Error('STT provider not configured');
+          }
+          const audioBuffer = Buffer.from(payload.audio, 'base64');
+          console.log(`🎤 Transcribing audio: ${audioBuffer.length} bytes`);
+          
+          const { transcribeAudio } = await import('./proxy/STTProxy.js');
+          command = await transcribeAudio(sttProvider, audioBuffer, payload.language);
+          console.log(`🎤 Transcription: "${command.substring(0, 100)}..."`);
+          
+          // Send transcription to client
+          tunnelClient!.sendAgentResponse(tunnelId, streamKey, {
+            type: 'transcription',
+            text: command,
+            timestamp: Date.now()
+          });
+        }
+        
+        // Handle context reset
+        if (payload.type === 'reset_context') {
+          aiAgent.clearContext();
+          tunnelClient!.sendAgentResponse(tunnelId, streamKey, {
+            type: 'context_reset',
+            timestamp: Date.now()
+          });
+          return;
+        }
+        
+        if (!command) {
+          throw new Error('No command provided');
+        }
+        
+        // Execute agent command (no streaming for now)
+        const result = await aiAgent.execute(
+          command,
+          undefined, // session ID not needed for global agent
+          terminalManager
+        );
+        
+        // TTS if enabled
+        let audioBase64: string | undefined;
+        if (payload.tts_enabled && result.output && ttsProvider) {
+          console.log(`🔊 Synthesizing TTS: ${result.output.length} chars`);
+          const { synthesizeSpeech } = await import('./proxy/TTSProxy.js');
+          const audioBuffer = await synthesizeSpeech(
+            ttsProvider,
+            result.output,
+            ttsProvider.getVoice(),
+            payload.tts_speed
+          );
+          audioBase64 = audioBuffer.toString('base64');
+        }
+        
+        // Send complete response
+        tunnelClient!.sendAgentResponse(tunnelId, streamKey, {
+          type: 'complete',
+          text: result.output || '',
+          audio: audioBase64,
+          timestamp: Date.now()
+        });
+        
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        console.error(`❌ Agent error: ${errorMessage}`);
+        tunnelClient!.sendAgentResponse(tunnelId, streamKey, {
+          type: 'error',
+          error: errorMessage,
+          timestamp: Date.now()
+        });
+      }
     });
     
     // Set up terminal output streaming

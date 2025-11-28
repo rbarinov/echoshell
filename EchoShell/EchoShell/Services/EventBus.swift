@@ -101,4 +101,8 @@ class EventBus: ObservableObject {
     
     var apiKeyChangedPublisher = PassthroughSubject<Void, Never>()
     var languageChangedPublisher = PassthroughSubject<Void, Never>()
+    
+    // MARK: - Agent Context Events
+    
+    var resetContextPublisher = PassthroughSubject<Void, Never>()
 }

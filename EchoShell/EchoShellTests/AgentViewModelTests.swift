@@ -32,13 +32,11 @@ struct AgentViewModelTests {
         let audioPlayer = AudioPlayer()
         let ttsService = await TTSService(audioPlayer: audioPlayer)
         let apiClient = APIClient(config: config)
-        let recordingStreamClient = RecordingStreamClient()
         
         let viewModel = await AgentViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient,
             config: config
         )
         
@@ -76,13 +74,11 @@ struct AgentViewModelTests {
         let audioPlayer = AudioPlayer()
         let ttsService = await TTSService(audioPlayer: audioPlayer)
         let apiClient = APIClient(config: config)
-        let recordingStreamClient = RecordingStreamClient()
         
         let viewModel = await AgentViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient,
             config: config
         )
         
@@ -102,13 +98,11 @@ struct AgentViewModelTests {
         let audioPlayer = AudioPlayer()
         let ttsService = await TTSService(audioPlayer: audioPlayer)
         let apiClient = APIClient(config: config)
-        let recordingStreamClient = RecordingStreamClient()
         
         let viewModel = await AgentViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient,
             config: config
         )
         
@@ -133,13 +127,11 @@ struct AgentViewModelTests {
         let audioPlayer = AudioPlayer()
         let ttsService = await TTSService(audioPlayer: audioPlayer)
         let apiClient = APIClient(config: config)
-        let recordingStreamClient = RecordingStreamClient()
         
         let viewModel = await AgentViewModel(
             audioRecorder: audioRecorder,
             ttsService: ttsService,
             apiClient: apiClient,
-            recordingStreamClient: recordingStreamClient,
             config: config
         )
         

@@ -87,6 +87,30 @@ export const TTSReadyMessageSchema = WebSocketMessageSchema.extend({
 export type TTSReadyMessage = z.infer<typeof TTSReadyMessageSchema>;
 
 /**
+ * Agent response payload schema
+ */
+export const AgentResponsePayloadSchema = z.object({
+  type: z.enum(['transcription', 'chunk', 'complete', 'error', 'context_reset']),
+  text: z.string().optional(),
+  delta: z.string().optional(),
+  audio: z.string().optional(),
+  error: z.string().optional(),
+  timestamp: z.number().optional(),
+});
+
+/**
+ * Agent response message schema (from laptop to tunnel server)
+ */
+export const AgentResponseMessageSchema = WebSocketMessageSchema.extend({
+  type: z.literal('agent_response'),
+  tunnelId: z.string(),
+  streamKey: z.string(),
+  payload: AgentResponsePayloadSchema,
+});
+
+export type AgentResponseMessage = z.infer<typeof AgentResponseMessageSchema>;
+
+/**
  * Terminal input message schema
  */
 export const TerminalInputMessageSchema = z.object({

@@ -12,6 +12,7 @@ import type {
   TerminalOutputMessage,
   RecordingOutputMessage,
   TTSReadyMessage,
+  AgentResponseMessage,
 } from '../../types/index.js';
 import {
   HttpResponseMessageSchema,
@@ -19,6 +20,7 @@ import {
   TerminalOutputMessageSchema,
   RecordingOutputMessageSchema,
   TTSReadyMessageSchema,
+  AgentResponseMessageSchema,
 } from '../../schemas/tunnelSchemas.js';
 import { TunnelManager } from '../../tunnel/TunnelManager.js';
 import { Logger } from '../../utils/logger.js';
@@ -74,6 +76,9 @@ export class TunnelHandler {
           break;
         case 'tts_ready':
           this.handleTTSReady(tunnelId, message as TTSReadyMessage);
+          break;
+        case 'agent_response':
+          this.handleAgentResponse(tunnelId, message as AgentResponseMessage);
           break;
         default:
           Logger.debug('Unknown message type', { tunnelId, messageType: message.type });
@@ -259,5 +264,32 @@ export class TunnelHandler {
       sessionId,
       streamKey,
     });
+  }
+
+  /**
+   * Handle agent response from laptop
+   * Forwards agent response messages (transcription, chunk, complete) to iPhone
+   */
+  private handleAgentResponse(tunnelId: string, message: AgentResponseMessage): void {
+    const validation = AgentResponseMessageSchema.safeParse(message);
+    if (!validation.success) {
+      Logger.warn('Invalid agent_response message', {
+        tunnelId,
+        issues: validation.error.issues,
+      });
+      return;
+    }
+
+    const streamKey = message.streamKey || `${tunnelId}:agent`;
+
+    Logger.debug('Agent response received', {
+      tunnelId,
+      streamKey,
+      payloadType: message.payload?.type,
+    });
+
+    // Forward payload directly to the agent stream client
+    const payloadString = JSON.stringify(message.payload);
+    this.streamManager.broadcastToAgentStream(streamKey, payloadString);
   }
 }

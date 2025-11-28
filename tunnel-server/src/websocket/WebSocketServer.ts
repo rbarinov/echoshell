@@ -74,6 +74,14 @@ export class WebSocketServerManager {
           pathParts[4] === 'stream'
         ) {
           this.handleRecordingStreamConnection(ws, pathParts[1], pathParts[3]);
+        } else if (
+          pathParts[0] === 'api' &&
+          pathParts[1] &&
+          pathParts[2] === 'agent' &&
+          pathParts[3] === 'ws'
+        ) {
+          // Agent WebSocket - proxy to laptop's /agent/ws
+          this.handleAgentStreamConnection(ws, pathParts[1]);
         } else {
           Logger.warn('Unknown WebSocket path', { path: url.pathname });
           ws.close(1008, 'Invalid WebSocket path');
@@ -210,6 +218,65 @@ export class WebSocketServerManager {
     // Handle disconnect cleanup
     ws.on('close', () => {
       this.heartbeatManager.cleanupStream(connection);
+    });
+  }
+
+  /**
+   * Handle agent WebSocket connection (iPhone connects here for agent mode)
+   * Proxies messages between iPhone and laptop's /agent/ws
+   */
+  private handleAgentStreamConnection(ws: WebSocket, tunnelId: string): void {
+    const streamKey = `${tunnelId}:agent`;
+    Logger.info('Agent WebSocket connected', { tunnelId, streamKey });
+
+    const connection: StreamConnection = {
+      ws,
+      lastPongReceived: Date.now(),
+    };
+
+    // Register agent connection
+    this.streamManager.registerAgentStream(streamKey, connection);
+
+    // Forward messages from iPhone to laptop
+    ws.on('message', (data: RawData) => {
+      try {
+        const tunnel = this.tunnelManager.get(tunnelId);
+        if (!tunnel || tunnel.ws.readyState !== WebSocket.OPEN) {
+          Logger.warn('Tunnel not available for agent message', { tunnelId });
+          ws.send(JSON.stringify({ type: 'error', error: 'Laptop not connected' }));
+          return;
+        }
+
+        // Parse and validate message
+        const message = JSON.parse(data.toString());
+        
+        // Forward to laptop with agent_request type
+        tunnel.ws.send(JSON.stringify({
+          type: 'agent_request',
+          tunnelId,
+          streamKey,
+          payload: message
+        }));
+
+        Logger.debug('Agent message forwarded to laptop', { tunnelId, messageType: message.type });
+      } catch (error) {
+        Logger.error('Error processing agent message', {
+          tunnelId,
+          error: error instanceof Error ? error.message : 'Unknown error'
+        });
+        ws.send(JSON.stringify({ type: 'error', error: 'Invalid message format' }));
+      }
+    });
+
+    // Handle pong
+    ws.on('pong', () => {
+      connection.lastPongReceived = Date.now();
+    });
+
+    // Handle disconnect
+    ws.on('close', () => {
+      Logger.info('Agent WebSocket disconnected', { tunnelId, streamKey });
+      this.streamManager.unregisterAgentStream(streamKey, connection);
     });
   }
 }

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const ALLOWED_TERMINAL_TYPES = ['regular', 'cursor', 'claude'] as const;
+const ALLOWED_TERMINAL_TYPES = ['regular', 'cursor', 'claude', 'agent'] as const;
 
 export const TerminalTypeSchema = z.enum(ALLOWED_TERMINAL_TYPES);
 

@@ -90,6 +90,28 @@ export interface TTSReadyMessage extends WebSocketMessage {
 }
 
 /**
+ * Agent response payload types
+ */
+export interface AgentResponsePayload {
+  type: 'transcription' | 'chunk' | 'complete' | 'error' | 'context_reset';
+  text?: string;
+  delta?: string;
+  audio?: string;
+  error?: string;
+  timestamp?: number;
+}
+
+/**
+ * Agent response message from laptop (for agent WebSocket communication)
+ */
+export interface AgentResponseMessage extends WebSocketMessage {
+  type: 'agent_response';
+  tunnelId: string;
+  streamKey: string;
+  payload: AgentResponsePayload;
+}
+
+/**
  * Terminal input message from client
  */
 export interface TerminalInputMessage {

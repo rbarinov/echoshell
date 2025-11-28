@@ -155,10 +155,7 @@ struct ChatTerminalView: View {
         audioRecorder.configure(with: settingsManager)
         audioRecorder.autoSendCommand = false
         
-        // Enable WebSocket transcription mode
-        audioRecorder.useWebSocketTranscription = true
-        
-        // Set callback for when audio file is ready
+        // Set callback for when audio file is ready (WebSocket mode)
         // Use a capture list with unowned references since this view owns the recorder
         audioRecorder.onAudioFileReady = { audioURL in
             Task { @MainActor in

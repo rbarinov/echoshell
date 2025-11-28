@@ -29,11 +29,35 @@ export enum ConnectionState {
   Dead = 'dead'
 }
 
+export interface AgentRequest {
+  tunnelId: string;
+  streamKey: string;
+  payload: {
+    type: 'execute' | 'execute_audio' | 'reset_context';
+    command?: string;
+    audio?: string;
+    audio_format?: string;
+    language?: string;
+    tts_enabled?: boolean;
+    tts_speed?: number;
+  };
+}
+
+export interface AgentResponsePayload {
+  type: 'transcription' | 'chunk' | 'complete' | 'error' | 'context_reset';
+  text?: string;
+  delta?: string;
+  audio?: string;
+  error?: string;
+  timestamp?: number;
+}
+
 export class TunnelClient {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = Infinity; // Keep trying forever
   private terminalInputHandler: ((sessionId: string, data: string) => void) | null = null;
+  private agentRequestHandler: ((request: AgentRequest) => Promise<void>) | null = null;
   private lastPongReceived: number = 0;
   private pingInterval: NodeJS.Timeout | null = null;
   private healthCheckInterval: NodeJS.Timeout | null = null;
@@ -54,8 +78,34 @@ export class TunnelClient {
     this.terminalInputHandler = handler;
   }
   
+  setAgentRequestHandler(handler: (request: AgentRequest) => Promise<void>): void {
+    this.agentRequestHandler = handler;
+  }
+  
   setStateChangeCallback(callback: (state: ConnectionState) => void): void {
     this.stateChangeCallback = callback;
+  }
+  
+  /**
+   * Send agent response back to tunnel server
+   */
+  sendAgentResponse(tunnelId: string, streamKey: string, payload: AgentResponsePayload): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('⚠️ Cannot send agent_response - WebSocket not connected');
+      return;
+    }
+    
+    const message = {
+      type: 'agent_response',
+      tunnelId,
+      streamKey,
+      payload
+    };
+    
+    const messageStr = JSON.stringify(message);
+    console.log(`📤 TunnelClient: Sending agent_response: type=${payload.type}, streamKey=${streamKey}`);
+    
+    this.ws.send(messageStr);
   }
   
   getConnectionState(): ConnectionState {
@@ -209,6 +259,20 @@ export class TunnelClient {
           // Handle terminal input from iPhone
           if (this.terminalInputHandler) {
             this.terminalInputHandler(message.sessionId, message.data);
+          }
+        } else if (message.type === 'agent_request') {
+          // Handle agent request from iPhone via tunnel
+          console.log(`🤖 TunnelClient: Received agent_request from tunnel: type=${message.payload?.type}`);
+          if (this.agentRequestHandler) {
+            this.agentRequestHandler(message as AgentRequest).catch(error => {
+              console.error(`❌ TunnelClient: Error handling agent_request: ${error.message}`);
+              // Send error response back
+              this.sendAgentResponse(message.tunnelId, message.streamKey, {
+                type: 'error',
+                error: error.message || 'Unknown error',
+                timestamp: Date.now()
+              });
+            });
           }
         }
       } catch (error) {

@@ -33,6 +33,7 @@ class WebSocketClient: ObservableObject {
     private var onChatMessageCallback: ((ChatMessage) -> Void)?
     private var onTTSAudioCallback: ((TTSAudioEvent) -> Void)?
     private var onTranscriptionCallback: ((String) -> Void)?
+    private var onContextResetCallback: (() -> Void)?
     
     // Heartbeat configuration
     private let pingInterval: TimeInterval = 20.0 // 20 seconds
@@ -47,7 +48,8 @@ class WebSocketClient: ObservableObject {
         onMessage: ((String) -> Void)? = nil,
         onChatMessage: ((ChatMessage) -> Void)? = nil,
         onTTSAudio: ((TTSAudioEvent) -> Void)? = nil,
-        onTranscription: ((String) -> Void)? = nil
+        onTranscription: ((String) -> Void)? = nil,
+        onContextReset: (() -> Void)? = nil
     ) {
         // Always preserve callbacks for reconnection
         if let callback = onMessage {
@@ -61,6 +63,9 @@ class WebSocketClient: ObservableObject {
         }
         if let transcriptionCallback = onTranscription {
             self.onTranscriptionCallback = transcriptionCallback
+        }
+        if let contextResetCallback = onContextReset {
+            self.onContextResetCallback = contextResetCallback
         }
         self.config = config
         self.sessionId = sessionId
@@ -81,16 +86,60 @@ class WebSocketClient: ObservableObject {
         webSocketTask?.resume()
         
         Task { @MainActor in
-            self.isConnected = true
+            // Don't set isConnected = true here - wait for actual connection confirmation
             self.connectionState = .connecting
         }
         reconnectAttempts = 0
         lastPongReceived = Date()
         
         print("📡 WebSocket connecting to: \(wsUrlString)")
+        print("   - tunnelId: \(config.tunnelId)")
+        print("   - sessionId: \(sessionId)")
         
         setupHeartbeat()
         receiveMessage()
+        
+        // Send a ping after a short delay to ensure connection is established
+        // Some WebSocket implementations need a moment to fully connect
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self = self, let task = self.webSocketTask else {
+                print("⚠️ WebSocket: Task is nil, cannot send ping")
+                return
+            }
+            
+            print("📡 WebSocket: Sending initial ping to confirm connection (task state: \(task.state.rawValue))...")
+            task.sendPing { [weak self] error in
+                guard let self = self else { return }
+                if error == nil {
+                    // Ping succeeded - connection is established
+                    Task { @MainActor in
+                        self.isConnected = true
+                        self.connectionState = .connected
+                        print("✅ WebSocket connected (ping successful)")
+                    }
+                } else {
+                    print("⚠️ WebSocket initial ping failed: \(error?.localizedDescription ?? "unknown")")
+                    print("   - Task state: \(task.state.rawValue)")
+                    // Try again after a delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                        guard let self = self, let retryTask = self.webSocketTask else { return }
+                        print("📡 WebSocket: Retrying ping...")
+                        retryTask.sendPing { [weak self] retryError in
+                            guard let self = self else { return }
+                            if retryError == nil {
+                                Task { @MainActor in
+                                    self.isConnected = true
+                                    self.connectionState = .connected
+                                    print("✅ WebSocket connected (retry ping successful)")
+                                }
+                            } else {
+                                print("❌ WebSocket retry ping also failed: \(retryError?.localizedDescription ?? "unknown")")
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
     
     func disconnect() {
@@ -175,6 +224,31 @@ class WebSocketClient: ObservableObject {
         }
     }
     
+    /// Send reset context message (agent mode only)
+    func sendResetContext() {
+        guard isConnected, let webSocketTask = webSocketTask else {
+            print("⚠️ Cannot send reset_context - not connected")
+            return
+        }
+        
+        print("🔄 WebSocketClient: Sending reset_context message")
+        
+        let message: [String: Any] = [
+            "type": "reset_context"
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: message),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            webSocketTask.send(.string(jsonString)) { error in
+                if let error = error {
+                    print("❌ Error sending reset_context: \(error.localizedDescription)")
+                } else {
+                    print("✅ Reset context message sent successfully")
+                }
+            }
+        }
+    }
+    
     /// Execute a voice command via WebSocket (audio will be transcribed on server)
     /// - Parameters:
     ///   - audioData: Audio data to transcribe and execute
@@ -220,9 +294,12 @@ class WebSocketClient: ObservableObject {
             case .success(let message):
                 // Update last pong on any message (indicates connection is alive)
                 self.lastPongReceived = Date()
-                if self.connectionState == .dead {
+                // Mark connection as established on first successful message
+                if self.connectionState != .connected {
                     Task { @MainActor in
+                        self.isConnected = true
                         self.connectionState = .connected
+                        print("✅ WebSocket connected (message received)")
                     }
                 }
                 
@@ -303,6 +380,18 @@ class WebSocketClient: ObservableObject {
             DispatchQueue.main.async {
                 if let callback = self.onTranscriptionCallback {
                     callback(transcribedText)
+                }
+            }
+            return
+        }
+        
+        // Handle context_reset event (agent mode)
+        if type == "context_reset" {
+            print("🔄 WebSocket context_reset received")
+            
+            DispatchQueue.main.async {
+                if let callback = self.onContextResetCallback {
+                    callback()
                 }
             }
             return
@@ -452,7 +541,8 @@ class WebSocketClient: ObservableObject {
                 onMessage: self.onMessageCallback,
                 onChatMessage: self.onChatMessageCallback,
                 onTTSAudio: self.onTTSAudioCallback,
-                onTranscription: self.onTranscriptionCallback
+                onTranscription: self.onTranscriptionCallback,
+                onContextReset: self.onContextResetCallback
             )
         }
     }

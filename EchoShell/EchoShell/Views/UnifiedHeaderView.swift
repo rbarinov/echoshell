@@ -60,9 +60,26 @@ struct UnifiedHeaderView: View {
             
             Spacer()
             
-            // Right: Connection status
-            ConnectionStatusIndicator(state: connectionState)
-                .frame(width: 44, height: 44, alignment: .center)
+            // Right: Reset Context button (agent mode only) and Connection status
+            HStack(spacing: 8) {
+                // Reset Context button (only in agent mode)
+                if case .agent = navigationState {
+                    Button {
+                        EventBus.shared.resetContextPublisher.send()
+                    } label: {
+                        Image(systemName: "arrow.counterclockwise")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.blue)
+                            .frame(width: 36, height: 36, alignment: .center)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                
+                // Connection status
+                ConnectionStatusIndicator(state: connectionState)
+                    .frame(width: 44, height: 44, alignment: .center)
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
         .padding(.horizontal, 16)
