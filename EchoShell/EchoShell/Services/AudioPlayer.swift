@@ -179,8 +179,10 @@ class AudioPlayer: NSObject, ObservableObject {
                 throw NSError(domain: "AudioPlayer", code: -1, userInfo: [NSLocalizedDescriptionKey: "Player failed to start playback"])
             }
             
-            isPlaying = true
-            isPaused = false
+            await MainActor.run {
+                isPlaying = true
+                isPaused = false
+            }
             
             print("✅ AudioPlayer: Playback started successfully")
             print("   isPlaying: \(audioPlayer.isPlaying)")
@@ -367,8 +369,11 @@ extension AudioPlayer: AVAudioPlayerDelegate {
         fadeOutTimer?.invalidate()
         fadeOutTimer = nil
         
-        isPlaying = false
-        isPaused = false
+        // Update published properties on main thread
+        Task { @MainActor in
+            isPlaying = false
+            isPaused = false
+        }
         
         // Clean up temporary file if it exists
         if let tempFile = tempAudioFile {
@@ -404,7 +409,9 @@ extension AudioPlayer: AVAudioPlayerDelegate {
     }
     
     func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
-        isPlaying = false
+        Task { @MainActor in
+            isPlaying = false
+        }
         print("❌ Audio playback decode error: \(error?.localizedDescription ?? "Unknown")")
         
         // Deactivate audio session on error

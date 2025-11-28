@@ -210,20 +210,22 @@ struct ChatTerminalView: View {
             try AVAudioSession.sharedInstance().setActive(true)
             
             // Create delegate wrapper and store it to keep it alive
-            let delegate = AudioPlayerDelegateWrapper { [weak avAudioPlayer] in
+            let delegate = AudioPlayerDelegateWrapper {
                 Task { @MainActor in
                     self.ttsState = .idle
                     self.isAgentProcessing = false
                     self.audioPlayerDelegate = nil
+                    self.avAudioPlayer = nil
                     print("🔇 ChatTerminalView: Server TTS playback finished")
                 }
             }
             audioPlayerDelegate = delegate
             
             // Create and play audio
-            avAudioPlayer = try AVAudioPlayer(data: audioData)
-            avAudioPlayer?.delegate = delegate
-            avAudioPlayer?.play()
+            let player = try AVAudioPlayer(data: audioData)
+            player.delegate = delegate
+            player.play()
+            avAudioPlayer = player // Keep reference to prevent deallocation
             ttsState = .playing
             print("▶️ ChatTerminalView: Started playing server TTS audio")
         } catch {
