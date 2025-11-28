@@ -11,12 +11,14 @@ import type {
   ClientAuthKeyMessage,
   TerminalOutputMessage,
   RecordingOutputMessage,
+  TTSReadyMessage,
 } from '../../types/index.js';
 import {
   HttpResponseMessageSchema,
   ClientAuthKeyMessageSchema,
   TerminalOutputMessageSchema,
   RecordingOutputMessageSchema,
+  TTSReadyMessageSchema,
 } from '../../schemas/tunnelSchemas.js';
 import { TunnelManager } from '../../tunnel/TunnelManager.js';
 import { Logger } from '../../utils/logger.js';
@@ -69,6 +71,9 @@ export class TunnelHandler {
           break;
         case 'recording_output':
           this.handleRecordingOutput(tunnelId, message as RecordingOutputMessage);
+          break;
+        case 'tts_ready':
+          this.handleTTSReady(tunnelId, message as TTSReadyMessage);
           break;
         default:
           Logger.debug('Unknown message type', { tunnelId, messageType: message.type });
@@ -211,5 +216,48 @@ export class TunnelHandler {
     });
 
     this.streamManager.broadcastToRecordingStream(streamKey, payloadString);
+  }
+
+  /**
+   * Handle TTS ready event from laptop
+   * Broadcasts to all recording streams for the session
+   */
+  private handleTTSReady(tunnelId: string, message: TTSReadyMessage): void {
+    const validation = TTSReadyMessageSchema.safeParse(message);
+    if (!validation.success) {
+      Logger.warn('Invalid tts_ready message', {
+        tunnelId,
+        issues: validation.error.issues,
+      });
+      return;
+    }
+
+    const sessionId = message.session_id;
+    const streamKey = `${tunnelId}:${sessionId}:recording`;
+
+    Logger.info('TTS ready event received', {
+      tunnelId,
+      sessionId,
+      textLength: message.text.length,
+    });
+
+    // Create tts_ready event for iOS clients
+    const ttsPayload = {
+      type: 'tts_ready',
+      session_id: sessionId,
+      text: message.text,
+      timestamp: message.timestamp ?? Date.now(),
+    };
+
+    const payloadString = JSON.stringify(ttsPayload);
+
+    // Broadcast to all recording streams for this session
+    this.streamManager.broadcastToRecordingStream(streamKey, payloadString);
+
+    Logger.debug('TTS ready event broadcasted', {
+      tunnelId,
+      sessionId,
+      streamKey,
+    });
   }
 }

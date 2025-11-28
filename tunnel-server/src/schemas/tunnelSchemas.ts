@@ -75,6 +75,18 @@ export const RecordingOutputMessageSchema = WebSocketMessageSchema.extend({
 export type RecordingOutputMessage = z.infer<typeof RecordingOutputMessageSchema>;
 
 /**
+ * TTS ready message schema (text ready for speech synthesis)
+ */
+export const TTSReadyMessageSchema = WebSocketMessageSchema.extend({
+  type: z.literal('tts_ready'),
+  session_id: z.string(),
+  text: z.string().min(1),
+  timestamp: z.number().optional(),
+});
+
+export type TTSReadyMessage = z.infer<typeof TTSReadyMessageSchema>;
+
+/**
  * Terminal input message schema
  */
 export const TerminalInputMessageSchema = z.object({

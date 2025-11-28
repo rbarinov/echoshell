@@ -80,6 +80,16 @@ export interface RecordingOutputMessage extends WebSocketMessage {
 }
 
 /**
+ * TTS ready message from laptop (text ready for speech synthesis)
+ */
+export interface TTSReadyMessage extends WebSocketMessage {
+  type: 'tts_ready';
+  session_id: string;
+  text: string;
+  timestamp?: number;
+}
+
+/**
  * Terminal input message from client
  */
 export interface TerminalInputMessage {
