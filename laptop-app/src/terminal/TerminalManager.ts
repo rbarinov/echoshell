@@ -91,9 +91,14 @@ export class TerminalManager {
       // Terminal expects \r (carriage return) to execute commands, not \n (newline)
       let normalizedData = data;
       
-      // Log original data for debugging
+      // Log original data for debugging (including backspace)
       const originalBytes = Array.from(data).map(c => c.charCodeAt(0));
-      console.log(`⌨️  Raw input: ${JSON.stringify(data)} (bytes: ${originalBytes.join(', ')})`);
+      const hasBackspace = originalBytes.some(b => b === 0x08 || b === 0x7f);
+      if (hasBackspace) {
+        console.log(`⌨️  Backspace detected in input: ${JSON.stringify(data)} (bytes: ${originalBytes.join(', ')})`);
+      } else {
+        console.log(`⌨️  Raw input: ${JSON.stringify(data)} (bytes: ${originalBytes.join(', ')})`);
+      }
       
       // Normalize input: convert \n to \r for Enter key
       // Terminals expect \r (carriage return) to execute commands, not \n (newline)
@@ -324,10 +329,12 @@ export class TerminalManager {
       const escapedPrompt = prompt.replace(/'/g, "'\\''");
       commandLine += ` '${escapedPrompt}'\r`;
     } else {
-      // Claude CLI format: claude -p "prompt" --output-format json-stream [--session-id <session_id>]
+      // Claude CLI format: claude --verbose --print -p "prompt" --output-format stream-json [--session-id <session_id>]
+      // Note: --verbose is required for --output-format to work properly
+      // Note: --print is required for --output-format to work
       // Note: -p flag must come before --output-format
       const escapedPrompt = prompt.replace(/'/g, "'\\''");
-      commandLine = `claude -p '${escapedPrompt}' --output-format json-stream`;
+      commandLine = `claude --verbose --print -p '${escapedPrompt}' --output-format stream-json`;
       if (currentCliSessionId) {
         commandLine += ` --session-id ${currentCliSessionId}`;
         console.log(`🔄 [${session.sessionId}] Using existing CLI session_id: ${currentCliSessionId}`);

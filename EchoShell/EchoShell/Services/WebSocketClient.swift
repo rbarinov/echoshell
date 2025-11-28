@@ -81,12 +81,19 @@ class WebSocketClient: ObservableObject {
             return
         }
         
-        // Log input bytes for debugging
+        // Log input bytes for debugging (including backspace)
         let inputBytes = input.utf8.map { $0 }
         let inputDescription = input
             .replacingOccurrences(of: "\r", with: "\\r")
             .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\u{0008}", with: "\\b") // Backspace
+            .replacingOccurrences(of: "\t", with: "\\t")
         print("📤 Sending input to terminal: '\(inputDescription)' (bytes: \(inputBytes))")
+        
+        // Special handling for backspace - ensure it's sent correctly
+        if inputBytes.count == 1 && (inputBytes[0] == 0x08 || inputBytes[0] == 0x7f) {
+            print("⌨️ WebSocketClient: Sending backspace character (byte: \(inputBytes[0]))")
+        }
         
         // Send input as JSON message
         let message: [String: Any] = [
