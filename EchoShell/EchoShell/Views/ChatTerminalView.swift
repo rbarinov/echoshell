@@ -7,20 +7,19 @@
 //
 
 import SwiftUI
+import AVFoundation
 
-/// TTS lifecycle state machine
+/// TTS lifecycle state machine (simplified for server-side TTS)
 enum TTSState: Equatable {
     case idle
-    case generating
-    case ready
     case playing
     case error(String)
 
     var isActive: Bool {
         switch self {
-        case .generating, .playing:
+        case .playing:
             return true
-        case .idle, .ready, .error:
+        case .idle, .error:
             return false
         }
     }
@@ -35,21 +34,15 @@ struct ChatTerminalView: View {
     @StateObject private var chatViewModel: ChatViewModel
     @StateObject private var wsClient = WebSocketClient()
     @StateObject private var audioRecorder = AudioRecorder()
-    @StateObject private var recordingStreamClient = RecordingStreamClient()
-    @StateObject private var audioPlayer: AudioPlayer
-    @StateObject private var ttsService: TTSService
-    @State private var lastTTSedText: String = "" // Track last TTS to prevent duplicates
     @State private var isAgentProcessing: Bool = false // Track if agent is processing
     @State private var ttsState: TTSState = .idle // TTS state machine
+    @State private var avAudioPlayer: AVAudioPlayer? // For playing server-side TTS audio
+    @State private var audioPlayerDelegate: AudioPlayerDelegateWrapper? // Keep delegate alive
     
     init(session: TerminalSession, config: TunnelConfig) {
         self.session = session
         self.config = config
         _chatViewModel = StateObject(wrappedValue: ChatViewModel(sessionId: session.id))
-        
-        let player = AudioPlayer()
-        _audioPlayer = StateObject(wrappedValue: player)
-        _ttsService = StateObject(wrappedValue: TTSService(audioPlayer: player))
     }
     
     var body: some View {
@@ -64,45 +57,30 @@ struct ChatTerminalView: View {
             recordingButtonView
         }
         .onAppear {
-            
             // Load chat history from server
             Task {
                 await loadChatHistory()
             }
             
             setupWebSocket()
-            setupRecordingStream()
             audioRecorder.configure(with: settingsManager)
             audioRecorder.autoSendCommand = false
         }
         .onDisappear {
             wsClient.disconnect()
-            recordingStreamClient.disconnect()
+            stopAudioPlayback()
         }
         .onChange(of: audioRecorder.isTranscribing) { oldValue, newValue in
-            // When transcription completes, send command to terminal
+            // When transcription completes, send command via WebSocket
             if oldValue == true && newValue == false && !audioRecorder.recognizedText.isEmpty {
                 isAgentProcessing = true // Mark as processing
-                Task {
-                    await sendCommand(audioRecorder.recognizedText)
-                }
-            }
-        }
-        .onReceive(EventBus.shared.ttsPlaybackFinishedPublisher) { _ in
-            // When audio playback finishes, agent processing is complete
-            isAgentProcessing = false
-        }
-        .onChange(of: audioPlayer.isPlaying) { oldValue, newValue in
-            // Update TTS state machine based on playback state
-            if newValue == true {
-                // Audio started playing
-                ttsState = .playing
-                print("🔊 ChatTerminalView: TTS playback started")
-            } else if oldValue == true && newValue == false {
-                // Audio stopped playing
-                ttsState = .idle
-                isAgentProcessing = false
-                print("🔇 ChatTerminalView: TTS playback stopped, resetting to idle")
+                // Send command via WebSocket with TTS settings
+                wsClient.executeCommand(
+                    audioRecorder.recognizedText,
+                    ttsEnabled: settingsManager.ttsEnabled,
+                    ttsSpeed: settingsManager.ttsSpeed,
+                    language: settingsManager.transcriptionLanguage.whisperCode ?? "en"
+                )
             }
         }
     }
@@ -116,9 +94,9 @@ struct ChatTerminalView: View {
                     audioRecorder.stopRecording()
                 } else {
                     // Stop any current TTS playback before starting new recording
-                    if ttsState.isActive || audioPlayer.isPlaying {
+                    if ttsState.isActive {
                         print("🛑 ChatTerminalView: Stopping TTS before new recording")
-                        ttsService.stop()
+                        stopAudioPlayback()
                     }
                     
                     // Cancel current command execution before starting new recording
@@ -126,7 +104,6 @@ struct ChatTerminalView: View {
                         await cancelCurrentCommand()
                         isAgentProcessing = false // Reset processing state
                         ttsState = .idle // Reset TTS state
-                        lastTTSedText = "" // Reset last TTS text to allow new generation
                     }
 
                     audioRecorder.startRecording()
@@ -187,8 +164,8 @@ struct ChatTerminalView: View {
                     if message.type == .system, 
                        let metadata = message.metadata,
                        metadata.completion == true {
-                        // Process completed - reset processing state immediately
-                        // TTS will be handled separately via tts_ready event
+                        // Process completed - reset processing state
+                        // TTS audio will arrive via onTTSAudio callback
                         self.isAgentProcessing = false
                         print("✅ ChatTerminalView: Completion message received, resetting isAgentProcessing")
                         return
@@ -197,94 +174,77 @@ struct ChatTerminalView: View {
                     // Check if this is an error message (indicates completion)
                     if message.type == .error {
                         // Error indicates completion (even if failed)
-                        // Don't wait for TTS - error means process is done
                         self.isAgentProcessing = false
                         print("✅ ChatTerminalView: Error message received, resetting isAgentProcessing")
                     }
-                    
-                    // Note: We don't reset isAgentProcessing here for assistant/tool messages
-                    // because TTS might still be generating. We'll reset it when:
-                    // 1. Completion message received (handled above)
-                    // 2. TTS playback finishes (handled in onReceive/onChange)
-                    // 3. Error message received (handled above)
-                    // 4. User cancels command (handled in cancelCurrentCommand)
                 }
+            },
+            onTTSAudio: { event in
+                // Server-side TTS audio received - play it directly
+                Task { @MainActor in
+                    print("🔊 ChatTerminalView: Received TTS audio from server: \(event.audio.count) bytes")
+                    
+                    // Stop any previous playback before starting new one
+                    if self.ttsState.isActive {
+                        print("🛑 ChatTerminalView: Stopping previous audio before playing new")
+                        self.stopAudioPlayback()
+                    }
+                    
+                    // Play the received audio
+                    self.playServerTTSAudio(event.audio)
+                }
+            },
+            onTranscription: { transcribedText in
+                // Server-side transcription received (if we used execute_audio)
+                print("🎤 ChatTerminalView: Received transcription from server: \(transcribedText.prefix(50))...")
             }
         )
     }
     
-    private func setupRecordingStream() {
-        recordingStreamClient.connect(
-            config: config,
-            sessionId: session.id,
-            onMessage: { message in
-                // Legacy format support - no action needed
-                // Messages are already in chatHistory and accumulate continuously
-            },
-            onTTSReady: { text in
+    // MARK: - Audio Playback (Server-side TTS)
+    
+    private func playServerTTSAudio(_ audioData: Data) {
+        do {
+            // Configure audio session for playback
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+            
+            // Create delegate wrapper and store it to keep it alive
+            let delegate = AudioPlayerDelegateWrapper { [weak avAudioPlayer] in
                 Task { @MainActor in
-                    // Prevent duplicate TTS for same text
-                    let trimmedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    guard !trimmedText.isEmpty else { return }
-
-                    // Check if we already generated TTS for this exact text
-                    if self.lastTTSedText == trimmedText {
-                        print("⚠️ ChatTerminalView: Skipping duplicate TTS for same text")
-                        return
-                    }
-
-                    // Stop any previous playback before starting new TTS
-                    // This ensures only one playback at a time
-                    if self.ttsState.isActive || self.audioPlayer.isPlaying {
-                        print("🛑 ChatTerminalView: Stopping previous TTS playback")
-                        self.ttsService.stop()
-                        self.ttsState = .idle
-                    }
-
-                    // Mark this text as processed BEFORE generating (prevent race conditions)
-                    self.lastTTSedText = trimmedText
-
-                    // Transition to generating state
-                    self.ttsState = .generating
-
-                    do {
-                        _ = try await self.ttsService.synthesizeAndPlay(
-                            text: text,
-                            config: config,
-                            speed: 1.0,
-                            language: "en"
-                        )
-                        print("✅ ChatTerminalView: TTS completed for text (\(trimmedText.count) chars)")
-
-                        // Transition to ready state
-                        self.ttsState = .ready
-
-                        // Reset agent processing state after TTS completes
-                        self.isAgentProcessing = false
-
-                        // Monitor playback to transition to playing state
-                        // This is handled by onChange(of: audioPlayer.isPlaying) below
-                    } catch {
-                        print("❌ TTS error: \(error)")
-
-                        // Transition to error state
-                        self.ttsState = .error(error.localizedDescription)
-
-                        // Reset on error to allow retry
-                        self.lastTTSedText = ""
-                        self.isAgentProcessing = false
-
-                        // Auto-reset error state after 3 seconds
-                        Task {
-                            try? await Task.sleep(nanoseconds: 3_000_000_000)
-                            if case .error = self.ttsState {
-                                self.ttsState = .idle
-                            }
-                        }
-                    }
+                    self.ttsState = .idle
+                    self.isAgentProcessing = false
+                    self.audioPlayerDelegate = nil
+                    print("🔇 ChatTerminalView: Server TTS playback finished")
                 }
             }
-        )
+            audioPlayerDelegate = delegate
+            
+            // Create and play audio
+            avAudioPlayer = try AVAudioPlayer(data: audioData)
+            avAudioPlayer?.delegate = delegate
+            avAudioPlayer?.play()
+            ttsState = .playing
+            print("▶️ ChatTerminalView: Started playing server TTS audio")
+        } catch {
+            print("❌ ChatTerminalView: Error playing server TTS audio: \(error)")
+            ttsState = .error(error.localizedDescription)
+            isAgentProcessing = false
+            
+            // Auto-reset error state after 3 seconds
+            Task {
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if case .error = self.ttsState {
+                    self.ttsState = .idle
+                }
+            }
+        }
+    }
+    
+    private func stopAudioPlayback() {
+        avAudioPlayer?.stop()
+        avAudioPlayer = nil
+        ttsState = .idle
     }
     
     // MARK: - History Loading
@@ -388,29 +348,26 @@ struct ChatTerminalView: View {
         }
     }
     
-    // MARK: - Command Execution
+}
+
+// MARK: - Audio Player Delegate Wrapper
+
+/// Wrapper class to handle AVAudioPlayerDelegate callbacks
+private class AudioPlayerDelegateWrapper: NSObject, AVAudioPlayerDelegate {
+    private let onFinish: () -> Void
     
-    private func sendCommand(_ command: String) async {
-        guard !command.isEmpty else { return }
-        
-        let apiClient = APIClient(config: config)
-        do {
-            _ = try await apiClient.executeCommand(sessionId: session.id, command: command)
-            print("✅ Command sent: \(command)")
-        } catch {
-            print("❌ Error sending command: \(error)")
-            
-            // Add error message to chat
-            let errorMessage = ChatMessage(
-                id: UUID().uuidString,
-                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
-                type: .error,
-                content: "Failed to execute command: \(error.localizedDescription)"
-            )
-            await MainActor.run {
-                chatViewModel.addMessage(errorMessage)
-            }
-        }
+    init(onFinish: @escaping () -> Void) {
+        self.onFinish = onFinish
+        super.init()
+    }
+    
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        onFinish()
+    }
+    
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        print("❌ AVAudioPlayer decode error: \(error?.localizedDescription ?? "unknown")")
+        onFinish()
     }
 }
 

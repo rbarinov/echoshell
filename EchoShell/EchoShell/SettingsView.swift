@@ -107,29 +107,39 @@ struct SettingsView: View {
                 }
                 
             Section(header: Text("Text-to-Speech"),
-                       footer: Text("Adjust the playback speed for voice responses. Range: 0.7x to 1.2x (compatible with ElevenLabs)")) {
-                    VStack(alignment: .leading, spacing: 12) {
+                       footer: Text("Voice responses are synthesized on your laptop and streamed to your device. Adjust the playback speed (0.7x to 1.2x).")) {
+                    Toggle(isOn: $settingsManager.ttsEnabled) {
                         HStack {
-                            Image(systemName: "speaker.wave.2.fill")
-                                .foregroundColor(.blue)
-                            Text("Playback Speed")
-                            Spacer()
-                            Text(String(format: "%.1fx", settingsManager.ttsSpeed))
-                                .foregroundColor(.secondary)
-                                .font(.body)
-                                .monospacedDigit()
+                            Image(systemName: settingsManager.ttsEnabled ? "speaker.wave.3.fill" : "speaker.slash.fill")
+                                .foregroundColor(settingsManager.ttsEnabled ? .green : .gray)
+                            Text("Voice Responses")
                         }
-                        
-                        Slider(value: $settingsManager.ttsSpeed, in: 0.7...1.2, step: 0.1) {
-                            Text("Speed")
-                        } minimumValueLabel: {
-                            Text("0.7x")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } maximumValueLabel: {
-                            Text("1.2x")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                    }
+                    
+                    if settingsManager.ttsEnabled {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Image(systemName: "speaker.wave.2.fill")
+                                    .foregroundColor(.blue)
+                                Text("Playback Speed")
+                                Spacer()
+                                Text(String(format: "%.1fx", settingsManager.ttsSpeed))
+                                    .foregroundColor(.secondary)
+                                    .font(.body)
+                                    .monospacedDigit()
+                            }
+                            
+                            Slider(value: $settingsManager.ttsSpeed, in: 0.7...1.2, step: 0.1) {
+                                Text("Speed")
+                            } minimumValueLabel: {
+                                Text("0.7x")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            } maximumValueLabel: {
+                                Text("1.2x")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
                         }
                     }
                 }

@@ -86,6 +86,9 @@ aiAgent.setWorktreeManager(worktreeManager);
 // Initialize OutputRouter (tunnel client will be set later)
 const outputRouter = new OutputRouter(terminalManager, null);
 
+// Set TTS provider in OutputRouter for server-side TTS synthesis
+outputRouter.setTtsProvider(ttsProvider);
+
 // Set OutputRouter in TerminalManager
 terminalManager.setOutputRouter(outputRouter);
 
@@ -106,8 +109,8 @@ proxyHandler = new ProxyHandler(sttProvider, ttsProvider);
 app.use('/terminal', createTerminalRoutes(terminalManager, chatHistoryDb));
 app.use('/workspace', createWorkspaceRoutes(workspaceManager, worktreeManager));
 
-// Setup WebSocket
-setupTerminalWebSocket(wss, terminalManager, outputRouter);
+// Setup WebSocket with STT/TTS providers for server-side processing
+setupTerminalWebSocket(wss, terminalManager, outputRouter, sttProvider, ttsProvider);
 
 let tunnelClient: TunnelClient | null = null;
 let tunnelConfig: TunnelConfig | null = null;

@@ -48,7 +48,7 @@ class SessionStateManager: ObservableObject {
     private let sessionNamesKey: String
     
     // MARK: - Initialization
-    12
+    
     private init() {
         activeSessionKey = "session_state_active_session"
         sessionModesKey = "session_state_modes"

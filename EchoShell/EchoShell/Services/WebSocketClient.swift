@@ -9,6 +9,15 @@
 import Foundation
 import UIKit
 
+/// TTS Audio event from server
+struct TTSAudioEvent {
+    let sessionId: String
+    let audio: Data // Decoded audio data
+    let format: String // e.g., "audio/mpeg"
+    let text: String // Original text that was synthesized
+    let timestamp: Date
+}
+
 class WebSocketClient: ObservableObject {
     @Published var isConnected = false
     @Published var messages: [TerminalMessage] = []
@@ -22,6 +31,8 @@ class WebSocketClient: ObservableObject {
     private let maxReconnectAttempts = 5
     private var onMessageCallback: ((String) -> Void)?
     private var onChatMessageCallback: ((ChatMessage) -> Void)?
+    private var onTTSAudioCallback: ((TTSAudioEvent) -> Void)?
+    private var onTranscriptionCallback: ((String) -> Void)?
     
     // Heartbeat configuration
     private let pingInterval: TimeInterval = 20.0 // 20 seconds
@@ -30,13 +41,26 @@ class WebSocketClient: ObservableObject {
     private var pingTimer: Timer?
     private var healthCheckTimer: Timer?
     
-    func connect(config: TunnelConfig, sessionId: String, onMessage: ((String) -> Void)? = nil, onChatMessage: ((ChatMessage) -> Void)? = nil) {
+    func connect(
+        config: TunnelConfig,
+        sessionId: String,
+        onMessage: ((String) -> Void)? = nil,
+        onChatMessage: ((ChatMessage) -> Void)? = nil,
+        onTTSAudio: ((TTSAudioEvent) -> Void)? = nil,
+        onTranscription: ((String) -> Void)? = nil
+    ) {
         // Always preserve callbacks for reconnection
         if let callback = onMessage {
             self.onMessageCallback = callback
         }
         if let chatCallback = onChatMessage {
             self.onChatMessageCallback = chatCallback
+        }
+        if let ttsCallback = onTTSAudio {
+            self.onTTSAudioCallback = ttsCallback
+        }
+        if let transcriptionCallback = onTranscription {
+            self.onTranscriptionCallback = transcriptionCallback
         }
         self.config = config
         self.sessionId = sessionId
@@ -117,6 +141,77 @@ class WebSocketClient: ObservableObject {
         }
     }
     
+    /// Execute a text command via WebSocket
+    /// - Parameters:
+    ///   - command: Text command to execute
+    ///   - ttsEnabled: Whether to synthesize TTS audio on server
+    ///   - ttsSpeed: TTS playback speed (0.7-1.2 for ElevenLabs, 0.25-4.0 for OpenAI)
+    ///   - language: Language code for TTS
+    func executeCommand(_ command: String, ttsEnabled: Bool = true, ttsSpeed: Double = 1.0, language: String = "en") {
+        guard isConnected, let webSocketTask = webSocketTask else {
+            print("⚠️ Cannot execute command - not connected")
+            return
+        }
+        
+        print("🎯 WebSocketClient: Executing command via WebSocket: \(command.prefix(100))...")
+        
+        let message: [String: Any] = [
+            "type": "execute",
+            "command": command,
+            "tts_enabled": ttsEnabled,
+            "tts_speed": ttsSpeed,
+            "language": language
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: message),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            webSocketTask.send(.string(jsonString)) { error in
+                if let error = error {
+                    print("❌ Error sending execute command: \(error.localizedDescription)")
+                } else {
+                    print("✅ Execute command sent successfully")
+                }
+            }
+        }
+    }
+    
+    /// Execute a voice command via WebSocket (audio will be transcribed on server)
+    /// - Parameters:
+    ///   - audioData: Audio data to transcribe and execute
+    ///   - audioFormat: Audio format (default: audio/m4a)
+    ///   - ttsEnabled: Whether to synthesize TTS audio on server
+    ///   - ttsSpeed: TTS playback speed
+    ///   - language: Language code for STT/TTS
+    func executeAudioCommand(_ audioData: Data, audioFormat: String = "audio/m4a", ttsEnabled: Bool = true, ttsSpeed: Double = 1.0, language: String = "en") {
+        guard isConnected, let webSocketTask = webSocketTask else {
+            print("⚠️ Cannot execute audio command - not connected")
+            return
+        }
+        
+        let audioBase64 = audioData.base64EncodedString()
+        print("🎤 WebSocketClient: Executing audio command via WebSocket: \(audioData.count) bytes")
+        
+        let message: [String: Any] = [
+            "type": "execute_audio",
+            "audio": audioBase64,
+            "audio_format": audioFormat,
+            "tts_enabled": ttsEnabled,
+            "tts_speed": ttsSpeed,
+            "language": language
+        ]
+        
+        if let jsonData = try? JSONSerialization.data(withJSONObject: message),
+           let jsonString = String(data: jsonData, encoding: .utf8) {
+            webSocketTask.send(.string(jsonString)) { error in
+                if let error = error {
+                    print("❌ Error sending execute_audio command: \(error.localizedDescription)")
+                } else {
+                    print("✅ Execute audio command sent successfully")
+                }
+            }
+        }
+    }
+    
     private func receiveMessage() {
         webSocketTask?.receive { [weak self] result in
             guard let self = self else { return }
@@ -167,6 +262,51 @@ class WebSocketClient: ObservableObject {
         
         let type = json["type"] as? String ?? "output"
         let sessionId = json["session_id"] as? String ?? ""
+        
+        // Handle tts_audio event (server-side TTS)
+        if type == "tts_audio" {
+            guard let audioBase64 = json["audio"] as? String,
+                  let audioData = Data(base64Encoded: audioBase64) else {
+                print("❌ WebSocket: Invalid tts_audio event - missing or invalid audio data")
+                return
+            }
+            
+            let format = json["format"] as? String ?? "audio/mpeg"
+            let ttsText = json["text"] as? String ?? ""
+            let timestamp = json["timestamp"] as? Int64 ?? Int64(Date().timeIntervalSince1970 * 1000)
+            
+            print("🔊 WebSocket tts_audio received: \(audioData.count) bytes, format: \(format), text: \(ttsText.prefix(50))...")
+            
+            let event = TTSAudioEvent(
+                sessionId: sessionId,
+                audio: audioData,
+                format: format,
+                text: ttsText,
+                timestamp: Date(timeIntervalSince1970: TimeInterval(timestamp) / 1000.0)
+            )
+            
+            DispatchQueue.main.async {
+                if let callback = self.onTTSAudioCallback {
+                    callback(event)
+                } else {
+                    print("⚠️ onTTSAudioCallback is nil!")
+                }
+            }
+            return
+        }
+        
+        // Handle transcription event (server-side STT)
+        if type == "transcription" {
+            let transcribedText = json["text"] as? String ?? ""
+            print("🎤 WebSocket transcription received: \(transcribedText.prefix(100))...")
+            
+            DispatchQueue.main.async {
+                if let callback = self.onTranscriptionCallback {
+                    callback(transcribedText)
+                }
+            }
+            return
+        }
         
         // Handle chat_message format (for headless terminals)
         if type == "chat_message", let messageDict = json["message"] as? [String: Any] {
@@ -306,7 +446,14 @@ class WebSocketClient: ObservableObject {
                 return
             }
             
-            self.connect(config: config, sessionId: sessionId, onMessage: self.onMessageCallback, onChatMessage: self.onChatMessageCallback)
+            self.connect(
+                config: config,
+                sessionId: sessionId,
+                onMessage: self.onMessageCallback,
+                onChatMessage: self.onChatMessageCallback,
+                onTTSAudio: self.onTTSAudioCallback,
+                onTranscription: self.onTranscriptionCallback
+            )
         }
     }
 }

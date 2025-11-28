@@ -1,6 +1,8 @@
 import type { TerminalManager } from '../terminal/TerminalManager';
 import type { TunnelClient } from '../tunnel/TunnelClient';
+import type { TTSProvider } from '../keys/TTSProvider';
 import type { ChatMessage } from '../terminal/types';
+import { synthesizeSpeech } from '../proxy/TTSProxy';
 
 export interface OutputDestination {
   type: 'terminal_display' | 'recording_stream' | 'websocket';
@@ -18,6 +20,12 @@ export interface OutputMessage {
   };
 }
 
+export interface SessionTtsSettings {
+  enabled: boolean;
+  speed: number;
+  language: string;
+}
+
 /**
  * Routes terminal output to appropriate destinations
  * - terminal_display: Raw/filtered output for terminal UI (mobile + web)
@@ -26,11 +34,42 @@ export interface OutputMessage {
  */
 export class OutputRouter {
   private websocketListeners = new Map<string, Set<(data: string) => void>>();
+  private sessionTtsSettings = new Map<string, SessionTtsSettings>();
+  private ttsProvider: TTSProvider | null = null;
   
   constructor(
     private terminalManager: TerminalManager,
     private tunnelClient: TunnelClient | null
   ) {}
+
+  /**
+   * Set TTS provider for server-side TTS synthesis
+   */
+  setTtsProvider(provider: TTSProvider | null): void {
+    this.ttsProvider = provider;
+  }
+
+  /**
+   * Set TTS settings for a session
+   */
+  setSessionTtsSettings(sessionId: string, settings: SessionTtsSettings): void {
+    this.sessionTtsSettings.set(sessionId, settings);
+    console.log(`🔊 [OutputRouter] TTS settings for ${sessionId}: enabled=${settings.enabled}, speed=${settings.speed}, language=${settings.language}`);
+  }
+
+  /**
+   * Get TTS settings for a session
+   */
+  getSessionTtsSettings(sessionId: string): SessionTtsSettings | undefined {
+    return this.sessionTtsSettings.get(sessionId);
+  }
+
+  /**
+   * Clear TTS settings for a session
+   */
+  clearSessionTtsSettings(sessionId: string): void {
+    this.sessionTtsSettings.delete(sessionId);
+  }
 
   /**
    * Register WebSocket listener for a session
@@ -84,44 +123,127 @@ export class OutputRouter {
 
   /**
    * Send output to recording stream (for TTS on mobile)
+   * Now supports server-side TTS synthesis
    */
   private sendToRecordingStream(message: OutputMessage): void {
-    if (!this.tunnelClient) {
+    // If this is a complete message (TTS ready), synthesize and send audio
+    if (message.metadata?.isComplete === true) {
+      const text = message.metadata?.fullText || message.data;
+      const settings = this.sessionTtsSettings.get(message.sessionId);
+      
+      // If TTS is enabled and we have a provider, synthesize audio
+      if (settings?.enabled !== false && this.ttsProvider) {
+        this.synthesizeAndSendTTS(message.sessionId, text, settings);
+      } else {
+        // TTS disabled - just send text event for legacy clients
+        this.sendTtsTextEvent(message.sessionId, text);
+      }
       return;
     }
 
-    // If this is a complete message (TTS ready), send as tts_ready event
-    if (message.metadata?.isComplete === true) {
-      const ttsPayload = {
-        type: 'tts_ready',
-        session_id: message.sessionId,
+    // Legacy format for streaming messages (for clients that still use it)
+    if (this.tunnelClient) {
+      const payload = {
         text: message.metadata?.fullText || message.data,
+        delta: message.metadata?.delta || message.data,
+        raw: message.data,
+        timestamp: Date.now(),
+        isComplete: message.metadata?.isComplete || false
+      };
+      this.tunnelClient.sendRecordingOutput(message.sessionId, payload);
+    }
+  }
+
+  /**
+   * Synthesize TTS audio and send via WebSocket/Tunnel
+   */
+  private async synthesizeAndSendTTS(
+    sessionId: string,
+    text: string,
+    settings?: SessionTtsSettings
+  ): Promise<void> {
+    if (!this.ttsProvider) {
+      console.warn(`⚠️ [OutputRouter] No TTS provider configured, sending text only`);
+      this.sendTtsTextEvent(sessionId, text);
+      return;
+    }
+
+    const speed = settings?.speed ?? 1.0;
+    
+    try {
+      console.log(`🔊 [OutputRouter] Synthesizing TTS for session ${sessionId}: ${text.length} chars at ${speed}x speed`);
+      
+      // Synthesize audio
+      const audioBuffer = await synthesizeSpeech(this.ttsProvider, text, undefined, speed);
+      const audioBase64 = audioBuffer.toString('base64');
+      
+      console.log(`✅ [OutputRouter] TTS synthesis complete: ${audioBuffer.length} bytes`);
+      
+      // Create tts_audio event
+      const ttsAudioEvent = {
+        type: 'tts_audio',
+        session_id: sessionId,
+        audio: audioBase64,
+        format: 'audio/mpeg',
+        text: text,
         timestamp: Date.now()
       };
       
-      // Send tts_ready event via tunnel client
-      this.tunnelClient.sendRecordingOutput(message.sessionId, {
-        ...ttsPayload,
-        text: ttsPayload.text,
+      const jsonString = JSON.stringify(ttsAudioEvent);
+      
+      // Send to WebSocket listeners (localhost)
+      const listeners = this.websocketListeners.get(sessionId);
+      if (listeners && listeners.size > 0) {
+        console.log(`📤 [OutputRouter] Sending tts_audio to ${listeners.size} WebSocket listeners`);
+        listeners.forEach(listener => listener(jsonString));
+      }
+      
+      // Send to tunnel (for mobile via tunnel server)
+      if (this.tunnelClient) {
+        console.log(`📤 [OutputRouter] Sending tts_audio via tunnel`);
+        this.tunnelClient.sendTerminalOutput(sessionId, jsonString);
+      }
+      
+      // Clear TTS settings after sending
+      this.clearSessionTtsSettings(sessionId);
+      
+    } catch (error) {
+      console.error(`❌ [OutputRouter] TTS synthesis error:`, error);
+      // Fallback to text-only event
+      this.sendTtsTextEvent(sessionId, text);
+    }
+  }
+
+  /**
+   * Send TTS text event (for legacy clients or when TTS is disabled)
+   */
+  private sendTtsTextEvent(sessionId: string, text: string): void {
+    const ttsReadyEvent = {
+      type: 'tts_ready',
+      session_id: sessionId,
+      text: text,
+      timestamp: Date.now()
+    };
+    
+    const jsonString = JSON.stringify(ttsReadyEvent);
+    
+    // Send to WebSocket listeners
+    const listeners = this.websocketListeners.get(sessionId);
+    if (listeners) {
+      listeners.forEach(listener => listener(jsonString));
+    }
+    
+    // Send to tunnel
+    if (this.tunnelClient) {
+      this.tunnelClient.sendRecordingOutput(sessionId, {
+        text: text,
         delta: '',
         raw: '',
-        timestamp: ttsPayload.timestamp,
+        timestamp: Date.now(),
         isComplete: true,
-        isTTSReady: true // Flag to indicate this is a tts_ready event
+        isTTSReady: true
       });
-      return;
     }
-
-    // Legacy format for streaming messages
-    const payload = {
-      text: message.metadata?.fullText || message.data,
-      delta: message.metadata?.delta || message.data,
-      raw: message.data,
-      timestamp: Date.now(),
-      isComplete: message.metadata?.isComplete || false
-    };
-
-    this.tunnelClient.sendRecordingOutput(message.sessionId, payload);
   }
 
   /**

@@ -116,6 +116,14 @@ class SettingsManager: ObservableObject {
         }
     }
     
+    // TTS enabled (default true) - when disabled, server won't synthesize TTS audio
+    @Published var ttsEnabled: Bool = true {
+        didSet {
+            UserDefaults.standard.set(ttsEnabled, forKey: "ttsEnabled")
+            print("📱 SettingsManager: TTS enabled updated to: \(ttsEnabled)")
+        }
+    }
+    
     // TTS playback speed (0.7 to 1.2, default 1.0) - compatible with ElevenLabs API requirements
     private var isUpdatingTtsSpeed = false
     @Published var ttsSpeed: Double = 1.0 {
@@ -194,6 +202,13 @@ class SettingsManager: ObservableObject {
         // Load selected session
         self.selectedSessionId = UserDefaults.standard.string(forKey: "selectedSessionId")
         
+        // Load TTS enabled (default true)
+        if UserDefaults.standard.object(forKey: "ttsEnabled") != nil {
+            self.ttsEnabled = UserDefaults.standard.bool(forKey: "ttsEnabled")
+        } else {
+            self.ttsEnabled = true // Default enabled
+        }
+        
         // Load TTS speed (default 1.0, range 0.7-1.2 for ElevenLabs compatibility)
         if UserDefaults.standard.object(forKey: "ttsSpeed") != nil {
             let loadedSpeed = UserDefaults.standard.double(forKey: "ttsSpeed")
@@ -210,6 +225,7 @@ class SettingsManager: ObservableObject {
         print("📱 SettingsManager: Initialized with API key length: \(self.apiKey.count)")
         print("📱 SettingsManager: Language: \(self.transcriptionLanguage.displayName)")
         print("📱 SettingsManager: Command mode: \(self.commandMode.displayName)")
+        print("📱 SettingsManager: TTS enabled: \(self.ttsEnabled)")
         print("📱 SettingsManager: TTS speed: \(self.ttsSpeed)")
         print("📱 SettingsManager: Operation mode: Laptop Mode (Terminal Control)")
     }
