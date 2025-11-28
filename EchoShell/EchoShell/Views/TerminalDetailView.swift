@@ -199,20 +199,15 @@ struct TerminalDetailView: View {
         let apiClient = APIClient(config: config)
         do {
             let history = try await apiClient.getHistory(sessionId: session.id)
-            
+
             await MainActor.run {
                 if let coordinator = self.terminalCoordinator {
                     if !history.isEmpty {
-                        coordinator.feed(history)
+                        // Use feedHistory() to load without auto-scrolling
+                        // This keeps the terminal at the current scroll position
+                        // User can manually scroll to see history or bottom
+                        coordinator.feedHistory(history)
                         print("✅ Loaded terminal history: \(history.count) characters")
-                        
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                            coordinator.scrollToBottom()
-                        }
-                    } else {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            coordinator.scrollToBottom()
-                        }
                     }
                     coordinator.focus()
                 }
@@ -222,9 +217,6 @@ struct TerminalDetailView: View {
             await MainActor.run {
                 if let coordinator = self.terminalCoordinator {
                     coordinator.focus()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                        coordinator.scrollToBottom()
-                    }
                 }
             }
         }

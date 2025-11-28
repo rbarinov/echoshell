@@ -162,6 +162,25 @@ struct SwiftTermTerminalView: UIViewRepresentable {
             }
         }
 
+        // Feed history data without auto-scroll (for initial history load)
+        // This keeps the terminal at the top when loading large histories
+        func feedHistory(_ text: String) {
+            guard let terminalView = terminalView, !text.isEmpty else { return }
+
+            // Ensure we're on main thread
+            if Thread.isMainThread {
+                // Feed text directly to SwiftTerm - it handles all formatting
+                terminalView.feed(text: text)
+                // DO NOT auto-scroll - keep terminal at top to show history
+            } else {
+                DispatchQueue.main.async {
+                    // Feed text directly to SwiftTerm - it handles all formatting
+                    terminalView.feed(text: text)
+                    // DO NOT auto-scroll - keep terminal at top to show history
+                }
+            }
+        }
+
         // Check if we should auto-scroll to bottom
         // Returns true if user is already at bottom or hasn't manually scrolled recently
         private func shouldScrollToBottom() -> Bool {
