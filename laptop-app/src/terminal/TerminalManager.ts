@@ -205,7 +205,7 @@ export class TerminalManager {
     };
 
     // Create PTY for all terminal types (unified logic)
-    const pty = this.createPTY(cwd);
+    const pty = this.createPTY(cwd, terminalType);
     session.pty = pty;
     session.pid = pty.pid;
     
@@ -538,9 +538,9 @@ export class TerminalManager {
   /**
    * Create PTY with interactive shell (unified for all terminal types)
    */
-  private createPTY(cwd: string): IPty {
+  private createPTY(cwd: string, terminalType?: TerminalType): IPty {
     const shell = process.env.SHELL || (os.platform() === 'win32' ? 'powershell.exe' : 'bash');
-    
+
     // Configure environment
     const env = {
       ...process.env,
@@ -550,24 +550,42 @@ export class TerminalManager {
       ZDOTDIR: process.env.ZDOTDIR || process.env.HOME,
       ZSH_DISABLE_COMPFIX: 'true',
     } as Record<string, string>;
-    
+
     delete env.BASH_ENV;
     delete env.ENV;
-    
+
     const shellArgs: string[] = [];
     if (shell.includes('zsh')) {
       shellArgs.push('-i');
     } else if (shell.includes('bash')) {
       shellArgs.push('-i');
     }
-    
-    return spawn(shell, shellArgs, {
+
+    const pty = spawn(shell, shellArgs, {
       name: 'xterm-256color',
       cols: 80,
       rows: 30,
       cwd,
       env
     });
+
+    // For headless terminals, disable local echo to prevent duplicate characters
+    // Headless terminals (cursor/claude) handle their own output, so we don't want shell echo
+    if (terminalType && this.isHeadlessTerminal(terminalType)) {
+      // Wait for shell to initialize, then disable echo
+      setTimeout(() => {
+        try {
+          // Use stty to disable local echo
+          // This prevents the shell from echoing back typed characters
+          pty.write('stty -echo\r');
+          console.log(`🔇 Disabled local echo for headless terminal (${terminalType})`);
+        } catch (error) {
+          console.warn(`⚠️  Failed to disable echo for headless terminal: ${error}`);
+        }
+      }, 100);
+    }
+
+    return pty;
   }
 
   /**
