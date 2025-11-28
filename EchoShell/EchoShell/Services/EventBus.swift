@@ -70,6 +70,18 @@ class EventBus: ObservableObject {
         let transport: String // "headless" or "interactive"
     }
     
+    // MARK: - Audio Ready Events (for WebSocket transmission)
+    
+    var audioReadyForTransmissionPublisher = PassthroughSubject<AudioReadyEvent, Never>()
+    
+    struct AudioReadyEvent {
+        let audioData: Data
+        let audioURL: URL
+        let language: String
+        let ttsEnabled: Bool
+        let ttsSpeed: Double
+    }
+    
     // MARK: - Navigation Events
     
     var navigateBackPublisher = PassthroughSubject<Void, Never>()

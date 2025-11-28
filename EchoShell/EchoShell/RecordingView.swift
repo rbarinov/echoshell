@@ -905,6 +905,56 @@ struct RecordingView: View {
                 }
             }
         }
+        .onReceive(EventBus.shared.audioReadyForTransmissionPublisher) { event in
+            // Direct mode: send audio via terminal WebSocket
+            guard settingsManager.commandMode == .direct else {
+                print("⚠️ AudioReadyForTransmission: Ignoring in non-direct mode")
+                return
+            }
+            
+            guard let sessionId = settingsManager.selectedSessionId else {
+                print("❌ AudioReadyForTransmission: No session selected")
+                return
+            }
+            
+            guard wsClient.isConnected else {
+                print("❌ AudioReadyForTransmission: WebSocket not connected")
+                // Try to connect first
+                if let config = settingsManager.laptopConfig {
+                    connectToTerminalStream(config: config, sessionId: sessionId)
+                    // Retry after delay
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        if wsClient.isConnected {
+                            wsClient.executeAudioCommand(
+                                event.audioData,
+                                audioFormat: "audio/m4a",
+                                ttsEnabled: event.ttsEnabled,
+                                ttsSpeed: event.ttsSpeed,
+                                language: event.language
+                            )
+                            print("📤 AudioReadyForTransmission: Sent audio via WebSocket (after reconnect)")
+                        } else {
+                            print("❌ AudioReadyForTransmission: WebSocket still not connected")
+                        }
+                    }
+                }
+                return
+            }
+            
+            // Send audio via WebSocket
+            wsClient.executeAudioCommand(
+                event.audioData,
+                audioFormat: "audio/m4a",
+                ttsEnabled: event.ttsEnabled,
+                ttsSpeed: event.ttsSpeed,
+                language: event.language
+            )
+            
+            // Clean up audio file
+            try? FileManager.default.removeItem(at: event.audioURL)
+            
+            print("📤 AudioReadyForTransmission: Sent audio via terminal WebSocket to session \(sessionId)")
+        }
         .onDisappear {
             // DON'T stop TTS and audio playback when leaving the page
             // Allow background tasks to complete - they will continue in background

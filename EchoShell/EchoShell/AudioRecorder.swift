@@ -32,6 +32,14 @@ class AudioRecorder: NSObject, ObservableObject {
     // When false, commands are not sent via executeAgentCommand (for terminal detail pages)
     var autoSendCommand: Bool = true
     
+    // Flag to skip HTTP transcription and use WebSocket instead
+    // When true, onAudioFileReady callback is called instead of HTTP transcription
+    var useWebSocketTranscription: Bool = false
+    
+    // Callback for when audio file is ready (WebSocket mode)
+    // Called instead of HTTP transcription when useWebSocketTranscription is true
+    var onAudioFileReady: ((URL) -> Void)?
+    
     override init() {
         super.init()
         setupAudioSession()
@@ -304,10 +312,20 @@ extension AudioRecorder: AVAudioRecorderDelegate {
             print("⚠️ iOS AudioRecorder: Could not check file attributes: \(error)")
         }
         
-        print("📱 iOS AudioRecorder: Recording finished successfully, starting transcription")
+        print("📱 iOS AudioRecorder: Recording finished successfully")
         
-        // Always use laptop mode transcription
-        print("📱 iOS AudioRecorder: Using laptop mode")
+        // Check if WebSocket mode is enabled
+        if useWebSocketTranscription {
+            print("📱 iOS AudioRecorder: WebSocket mode - calling onAudioFileReady callback")
+            DispatchQueue.main.async {
+                self.isTranscribing = true // Mark as transcribing for UI feedback
+            }
+            onAudioFileReady?(url)
+            return
+        }
+        
+        // Default: use laptop mode HTTP transcription
+        print("📱 iOS AudioRecorder: Using laptop mode HTTP transcription")
         transcribeViaLaptop()
     }
     

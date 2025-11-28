@@ -63,25 +63,25 @@ struct ChatTerminalView: View {
             }
             
             setupWebSocket()
-            audioRecorder.configure(with: settingsManager)
-            audioRecorder.autoSendCommand = false
+            setupAudioRecorder()
         }
         .onDisappear {
             wsClient.disconnect()
             stopAudioPlayback()
         }
         .onChange(of: audioRecorder.isTranscribing) { oldValue, newValue in
-            // When transcription completes, send command via WebSocket
-            if oldValue == true && newValue == false && !audioRecorder.recognizedText.isEmpty {
-                isAgentProcessing = true // Mark as processing
-                // Send command via WebSocket with TTS settings
-                wsClient.executeCommand(
-                    audioRecorder.recognizedText,
-                    ttsEnabled: settingsManager.ttsEnabled,
-                    ttsSpeed: settingsManager.ttsSpeed,
-                    language: settingsManager.transcriptionLanguage.whisperCode ?? "en"
-                )
+            // This is now a no-op - transcription comes from WebSocket callback
+            // Keeping for potential UI state updates
+            if oldValue == true && newValue == false {
+                print("📱 ChatTerminalView: isTranscribing changed from \(oldValue) to \(newValue)")
             }
+        }
+        // NOTE: Commands are now sent via WebSocket executeAudioCommand in handleAudioFileReady
+        // The old flow of "transcribe locally then send text" is replaced by:
+        // "send audio via WebSocket, server transcribes and processes"
+        .onChange(of: audioRecorder.isRecording) { oldValue, newValue in
+            // Just for debugging
+            print("📱 ChatTerminalView: isRecording changed from \(oldValue) to \(newValue)")
         }
     }
     
@@ -151,6 +151,61 @@ struct ChatTerminalView: View {
     
     // MARK: - Setup Methods
     
+    private func setupAudioRecorder() {
+        audioRecorder.configure(with: settingsManager)
+        audioRecorder.autoSendCommand = false
+        
+        // Enable WebSocket transcription mode
+        audioRecorder.useWebSocketTranscription = true
+        
+        // Set callback for when audio file is ready
+        // Use a capture list with unowned references since this view owns the recorder
+        audioRecorder.onAudioFileReady = { audioURL in
+            Task { @MainActor in
+                await self.handleAudioFileReady(audioURL)
+            }
+        }
+        
+        print("✅ ChatTerminalView: AudioRecorder configured (WebSocket mode enabled)")
+    }
+    
+    /// Handle audio file ready for WebSocket transmission
+    @MainActor
+    private func handleAudioFileReady(_ audioURL: URL) async {
+        print("🎤 ChatTerminalView: Audio file ready: \(audioURL.path)")
+        
+        // Load audio data
+        guard let audioData = try? Data(contentsOf: audioURL) else {
+            print("❌ ChatTerminalView: Failed to load audio file")
+            return
+        }
+        
+        print("🎤 ChatTerminalView: Loaded audio data: \(audioData.count) bytes")
+        
+        guard wsClient.isConnected else {
+            print("❌ ChatTerminalView: WebSocket not connected, cannot send audio")
+            return
+        }
+        
+        // Mark as processing
+        isAgentProcessing = true
+        
+        // Send audio via WebSocket
+        let language = settingsManager.transcriptionLanguage.whisperCode ?? "en"
+        wsClient.executeAudioCommand(
+            audioData,
+            audioFormat: "audio/m4a",
+            ttsEnabled: settingsManager.ttsEnabled,
+            ttsSpeed: settingsManager.ttsSpeed,
+            language: language
+        )
+        
+        // Clean up audio file
+        try? FileManager.default.removeItem(at: audioURL)
+        
+        print("📤 ChatTerminalView: Sent audio command via WebSocket")
+    }
+    
     private func setupWebSocket() {
         wsClient.connect(
             config: config,
@@ -195,8 +250,12 @@ struct ChatTerminalView: View {
                 }
             },
             onTranscription: { transcribedText in
-                // Server-side transcription received (if we used execute_audio)
-                print("🎤 ChatTerminalView: Received transcription from server: \(transcribedText.prefix(50))...")
+                Task { @MainActor in
+                    // Server-side transcription received
+                    print("🎤 ChatTerminalView: Received transcription from server: \(transcribedText.prefix(50))...")
+                    // Note: The transcription is automatically added as a user message by the server
+                    // So we don't need to add it to chat history here
+                }
             }
         )
     }

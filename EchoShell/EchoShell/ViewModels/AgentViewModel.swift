@@ -102,7 +102,82 @@ class AgentViewModel: ObservableObject {
         audioRecorder.configure(with: settingsManager)
         // In Agent mode, disable autoSendCommand so commands are sent via executeCommand()
         audioRecorder.autoSendCommand = false
-        print("✅ AgentViewModel: AudioRecorder configured with settingsManager (autoSendCommand disabled)")
+        
+        // Enable WebSocket transcription mode
+        audioRecorder.useWebSocketTranscription = true
+        
+        // Set callback for when audio file is ready
+        audioRecorder.onAudioFileReady = { [weak self] audioURL in
+            Task { @MainActor in
+                await self?.handleAudioFileReady(audioURL, settingsManager: settingsManager)
+            }
+        }
+        
+        print("✅ AgentViewModel: AudioRecorder configured (WebSocket mode enabled)")
+    }
+    
+    /// Handle audio file ready for WebSocket transmission
+    private func handleAudioFileReady(_ audioURL: URL, settingsManager: SettingsManager) async {
+        print("🎤 AgentViewModel: Audio file ready: \(audioURL.path)")
+        
+        // Load audio data
+        guard let audioData = try? Data(contentsOf: audioURL) else {
+            print("❌ AgentViewModel: Failed to load audio file")
+            isTranscribing = false
+            recognizedText = "Error loading audio file"
+            return
+        }
+        
+        print("🎤 AgentViewModel: Loaded audio data: \(audioData.count) bytes")
+        
+        // Check command mode - Direct mode uses a different flow
+        if settingsManager.commandMode == .direct {
+            // Direct mode: Post audio data for the RecordingView to handle via its terminal WebSocket
+            print("🎤 AgentViewModel: Direct mode - posting audio ready event")
+            isTranscribing = false // Direct mode handles its own state
+            EventBus.shared.audioReadyForTransmissionPublisher.send(
+                EventBus.AudioReadyEvent(
+                    audioData: audioData,
+                    audioURL: audioURL,
+                    language: settingsManager.transcriptionLanguage.whisperCode ?? "en",
+                    ttsEnabled: settingsManager.ttsEnabled,
+                    ttsSpeed: settingsManager.ttsSpeed
+                )
+            )
+            return
+        }
+        
+        // Agent mode: use AgentViewModel's WebSocket
+        
+        // Ensure WebSocket is connected
+        await ensureAgentSession()
+        
+        guard wsClient.isConnected else {
+            print("❌ AgentViewModel: WebSocket not connected, cannot send audio")
+            isTranscribing = false
+            recognizedText = "Not connected. Please try again."
+            return
+        }
+        
+        // Prevent screen sleep during processing
+        IdleTimerManager.shared.beginOperation("agent_processing")
+        isProcessing = true
+        
+        // Send audio via WebSocket
+        let language = settingsManager.transcriptionLanguage.whisperCode ?? "en"
+        wsClient.executeAudioCommand(
+            audioData,
+            audioFormat: "audio/m4a",
+            ttsEnabled: settingsManager.ttsEnabled,
+            ttsSpeed: settingsManager.ttsSpeed,
+            language: language
+        )
+        
+        // Transcription will come back via onTranscription callback
+        // TTS audio will come back via onTTSAudio callback
+        
+        // Clean up audio file
+        try? FileManager.default.removeItem(at: audioURL)
     }
 
     /// Update configuration (for example, when laptop config changes)
@@ -324,11 +399,14 @@ class AgentViewModel: ObservableObject {
         audioRecorder.$isRecording
             .assign(to: &$isRecording)
 
+        // Note: In WebSocket mode, transcription comes from server via onTranscription callback
+        // We still bind isTranscribing to show loading state
         audioRecorder.$isTranscribing
             .assign(to: &$isTranscribing)
 
-        audioRecorder.$recognizedText
-            .assign(to: &$recognizedText)
+        // Don't bind recognizedText - it comes from WebSocket transcription callback now
+        // audioRecorder.$recognizedText
+        //     .assign(to: &$recognizedText)
     }
 
     private func setupWebSocketBindings() {
@@ -360,8 +438,10 @@ class AgentViewModel: ObservableObject {
             },
             onTranscription: { [weak self] text in
                 Task { @MainActor in
+                    guard let self = self else { return }
                     print("🎤 AgentViewModel: Received server transcription: \(text)")
-                    self?.recognizedText = text
+                    self.recognizedText = text
+                    self.isTranscribing = false // Transcription complete
                 }
             }
         )
