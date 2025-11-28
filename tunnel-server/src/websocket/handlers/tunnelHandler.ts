@@ -13,6 +13,7 @@ import type {
   RecordingOutputMessage,
   TTSReadyMessage,
   AgentResponseMessage,
+  AgentEventMessage,
 } from '../../types/index.js';
 import {
   HttpResponseMessageSchema,
@@ -21,6 +22,7 @@ import {
   RecordingOutputMessageSchema,
   TTSReadyMessageSchema,
   AgentResponseMessageSchema,
+  AgentEventMessageSchema,
 } from '../../schemas/tunnelSchemas.js';
 import { TunnelManager } from '../../tunnel/TunnelManager.js';
 import { Logger } from '../../utils/logger.js';
@@ -79,6 +81,9 @@ export class TunnelHandler {
           break;
         case 'agent_response':
           this.handleAgentResponse(tunnelId, message as AgentResponseMessage);
+          break;
+        case 'agent_event':
+          this.handleAgentEvent(tunnelId, message as AgentEventMessage);
           break;
         default:
           Logger.debug('Unknown message type', { tunnelId, messageType: message.type });
@@ -269,6 +274,7 @@ export class TunnelHandler {
   /**
    * Handle agent response from laptop
    * Forwards agent response messages (transcription, chunk, complete) to iPhone
+   * LEGACY - will be deprecated in favor of handleAgentEvent
    */
   private handleAgentResponse(tunnelId: string, message: AgentResponseMessage): void {
     const validation = AgentResponseMessageSchema.safeParse(message);
@@ -291,5 +297,40 @@ export class TunnelHandler {
     // Forward payload directly to the agent stream client
     const payloadString = JSON.stringify(message.payload);
     this.streamManager.broadcastToAgentStream(streamKey, payloadString);
+  }
+
+  /**
+   * Handle unified AgentEvent from laptop (NEW protocol)
+   * Routes event to all clients subscribed to this session
+   */
+  private handleAgentEvent(tunnelId: string, message: AgentEventMessage): void {
+    const validation = AgentEventMessageSchema.safeParse(message);
+    if (!validation.success) {
+      Logger.warn('Invalid agent_event message', {
+        tunnelId,
+        issues: validation.error.issues,
+      });
+      return;
+    }
+
+    const event = message.event;
+    const streamKey = `${tunnelId}:${event.session_id}:agent`;
+
+    Logger.info('AgentEvent received', {
+      tunnelId,
+      sessionId: event.session_id,
+      eventType: event.type,
+      streamKey,
+    });
+
+    // Broadcast event to all clients subscribed to this agent stream
+    // Clients will receive the AgentEvent directly
+    this.streamManager.broadcastToAgentStream(streamKey, JSON.stringify(event));
+
+    Logger.debug('AgentEvent broadcasted', {
+      tunnelId,
+      sessionId: event.session_id,
+      eventType: event.type,
+    });
   }
 }

@@ -103,12 +103,34 @@ export interface AgentResponsePayload {
 
 /**
  * Agent response message from laptop (for agent WebSocket communication)
+ * LEGACY - will be deprecated in favor of AgentEventMessage
  */
 export interface AgentResponseMessage extends WebSocketMessage {
   type: 'agent_response';
   tunnelId: string;
   streamKey: string;
   payload: AgentResponsePayload;
+}
+
+/**
+ * Unified AgentEvent (NEW protocol)
+ * Replaces fragmented agent_response and stream-based communication
+ */
+export interface AgentEvent {
+  type: 'command_text' | 'command_voice' | 'transcription' | 'assistant_message' | 'tts_audio' | 'completion' | 'error' | 'context_reset';
+  session_id: string;
+  message_id: string;
+  parent_id?: string;
+  timestamp: number;
+  payload: Record<string, unknown>;
+}
+
+/**
+ * AgentEvent message wrapper (sent through tunnel WebSocket)
+ */
+export interface AgentEventMessage extends WebSocketMessage {
+  type: 'agent_event';
+  event: AgentEvent;
 }
 
 /**

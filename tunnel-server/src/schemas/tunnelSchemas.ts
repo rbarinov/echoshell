@@ -100,6 +100,7 @@ export const AgentResponsePayloadSchema = z.object({
 
 /**
  * Agent response message schema (from laptop to tunnel server)
+ * LEGACY - will be deprecated in favor of AgentEventMessageSchema
  */
 export const AgentResponseMessageSchema = WebSocketMessageSchema.extend({
   type: z.literal('agent_response'),
@@ -109,6 +110,30 @@ export const AgentResponseMessageSchema = WebSocketMessageSchema.extend({
 });
 
 export type AgentResponseMessage = z.infer<typeof AgentResponseMessageSchema>;
+
+/**
+ * Unified AgentEvent schema (NEW protocol)
+ */
+export const AgentEventSchema = z.object({
+  type: z.enum(['command_text', 'command_voice', 'transcription', 'assistant_message', 'tts_audio', 'completion', 'error', 'context_reset']),
+  session_id: z.string(),
+  message_id: z.string(),
+  parent_id: z.string().optional(),
+  timestamp: z.number(),
+  payload: z.record(z.string(), z.unknown()),
+});
+
+export type AgentEvent = z.infer<typeof AgentEventSchema>;
+
+/**
+ * AgentEvent message schema (wraps AgentEvent for WebSocket transport)
+ */
+export const AgentEventMessageSchema = WebSocketMessageSchema.extend({
+  type: z.literal('agent_event'),
+  event: AgentEventSchema,
+});
+
+export type AgentEventMessage = z.infer<typeof AgentEventMessageSchema>;
 
 /**
  * Terminal input message schema
