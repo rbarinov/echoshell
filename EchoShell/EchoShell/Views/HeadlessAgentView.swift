@@ -1,5 +1,5 @@
 //
-//  ChatTerminalView.swift
+//  HeadlessAgentView.swift
 //  EchoShell
 //
 //  Created for Voice-Controlled Terminal Management System
@@ -25,27 +25,28 @@ enum TTSState: Equatable {
     }
 }
 
-struct ChatTerminalView: View {
+struct HeadlessAgentView: View {
     let session: TerminalSession
     let config: TunnelConfig
     @EnvironmentObject var settingsManager: SettingsManager
     @EnvironmentObject var sessionState: SessionStateManager
 
     @StateObject private var baseChatViewModel: ChatViewModel
-    @StateObject private var chatViewModel: TerminalChatViewModel
+    @StateObject private var chatViewModel: HeadlessAgentChatViewModel
     @StateObject private var wsClient = WebSocketClient()
     @StateObject private var audioRecorder = AudioRecorder()
     @State private var isAgentProcessing: Bool = false // Track if agent is processing
     @State private var ttsState: TTSState = .idle // TTS state machine
     @State private var avAudioPlayer: AVAudioPlayer? // For playing server-side TTS audio
     @State private var audioPlayerDelegate: AudioPlayerDelegateWrapper? // Keep delegate alive
+    @State private var pendingVoiceMessageId: String?
     
     init(session: TerminalSession, config: TunnelConfig) {
         self.session = session
         self.config = config
         let baseViewModel = ChatViewModel(sessionId: session.id)
         _baseChatViewModel = StateObject(wrappedValue: baseViewModel)
-        _chatViewModel = StateObject(wrappedValue: TerminalChatViewModel(baseViewModel: baseViewModel))
+        _chatViewModel = StateObject(wrappedValue: HeadlessAgentChatViewModel(baseViewModel: baseViewModel))
     }
     
     var body: some View {
@@ -54,7 +55,7 @@ struct ChatTerminalView: View {
             isAgentMode: true // Always in "agent" mode (showing all messages)
         )
         .onAppear {
-            // Setup callbacks for TerminalChatViewModel
+            // Setup callbacks for HeadlessAgentChatViewModel
             chatViewModel.onSendTextCommand = { command in
                 await sendTextCommand(command)
             }
@@ -64,9 +65,7 @@ struct ChatTerminalView: View {
             chatViewModel.onStopRecording = {
                 audioRecorder.stopRecording()
             }
-            chatViewModel.isRecordingCallback = {
-                audioRecorder.isRecording
-            }
+            chatViewModel.updateRecordingState(audioRecorder.isRecording)
             
             // Sync isProcessing state
             chatViewModel.isProcessing = isAgentProcessing
@@ -87,15 +86,15 @@ struct ChatTerminalView: View {
             // This is now a no-op - transcription comes from WebSocket callback
             // Keeping for potential UI state updates
             if oldValue == true && newValue == false {
-                print("📱 ChatTerminalView: isTranscribing changed from \(oldValue) to \(newValue)")
+                print("📱 HeadlessAgentView: isTranscribing changed from \(oldValue) to \(newValue)")
             }
         }
         // NOTE: Commands are now sent via WebSocket executeAudioCommand in handleAudioFileReady
         // The old flow of "transcribe locally then send text" is replaced by:
         // "send audio via WebSocket, server transcribes and processes"
         .onChange(of: audioRecorder.isRecording) { oldValue, newValue in
-            // Just for debugging
-            print("📱 ChatTerminalView: isRecording changed from \(oldValue) to \(newValue)")
+            chatViewModel.updateRecordingState(newValue)
+            print("📱 HeadlessAgentView: isRecording changed from \(oldValue) to \(newValue)")
         }
     }
     
@@ -109,7 +108,7 @@ struct ChatTerminalView: View {
                 } else {
                     // Stop any current TTS playback before starting new recording
                     if ttsState.isActive {
-                        print("🛑 ChatTerminalView: Stopping TTS before new recording")
+                        print("🛑 HeadlessAgentView: Stopping TTS before new recording")
                         stopAudioPlayback()
                     }
                     
@@ -180,24 +179,27 @@ struct ChatTerminalView: View {
             }
         }
         
-        print("✅ ChatTerminalView: AudioRecorder configured (WebSocket mode enabled)")
+        print("✅ HeadlessAgentView: AudioRecorder configured (WebSocket mode enabled)")
     }
     
     /// Handle audio file ready for WebSocket transmission
     @MainActor
     private func handleAudioFileReady(_ audioURL: URL) async {
-        print("🎤 ChatTerminalView: Audio file ready: \(audioURL.path)")
+        print("🎤 HeadlessAgentView: Audio file ready: \(audioURL.path)")
         
         // Load audio data
         guard let audioData = try? Data(contentsOf: audioURL) else {
-            print("❌ ChatTerminalView: Failed to load audio file")
+            print("❌ HeadlessAgentView: Failed to load audio file")
             return
         }
         
-        print("🎤 ChatTerminalView: Loaded audio data: \(audioData.count) bytes")
+        print("🎤 HeadlessAgentView: Loaded audio data: \(audioData.count) bytes")
+        
+        // Add voice bubble & placeholder before sending
+        addPendingVoiceMessage(audioURL: audioURL)
         
         guard wsClient.isConnected else {
-            print("❌ ChatTerminalView: WebSocket not connected, cannot send audio")
+            print("❌ HeadlessAgentView: WebSocket not connected, cannot send audio")
             return
         }
         
@@ -217,7 +219,7 @@ struct ChatTerminalView: View {
         // Clean up audio file
         try? FileManager.default.removeItem(at: audioURL)
         
-        print("📤 ChatTerminalView: Sent audio command via WebSocket")
+        print("📤 HeadlessAgentView: Sent audio command via WebSocket")
     }
     
     /// Send text command via WebSocket
@@ -225,10 +227,10 @@ struct ChatTerminalView: View {
     private func sendTextCommand(_ command: String) async {
         guard !command.isEmpty else { return }
         
-        print("📤 ChatTerminalView: Sending text command: \(command)")
+        print("📤 HeadlessAgentView: Sending text command: \(command)")
         
         guard wsClient.isConnected else {
-            print("❌ ChatTerminalView: WebSocket not connected, cannot send command")
+            print("❌ HeadlessAgentView: WebSocket not connected, cannot send command")
             return
         }
         
@@ -247,7 +249,7 @@ struct ChatTerminalView: View {
             language: language
         )
         
-        print("✅ ChatTerminalView: Sent text command via WebSocket")
+        print("✅ HeadlessAgentView: Sent text command via WebSocket")
     }
     
     private func setupWebSocket() {
@@ -257,10 +259,15 @@ struct ChatTerminalView: View {
             onMessage: nil, // Not needed for chat interface
             onChatMessage: { message in
                 Task { @MainActor in
+                    if self.handleServerUserMessage(message) {
+                        return
+                    }
+                    
                     self.baseChatViewModel.addMessage(message)
+                    self.appendTranscriptIfNeeded(for: message)
                     
                     // Check if this is a completion message (system message with completion metadata)
-                    if message.type == .system, 
+                    if message.type == .system,
                        let metadata = message.metadata,
                        metadata.completion == true {
                         // Process completed - reset processing state
@@ -269,7 +276,7 @@ struct ChatTerminalView: View {
                         Task { @MainActor in
                             self.chatViewModel.isProcessing = false
                         }
-                        print("✅ ChatTerminalView: Completion message received, resetting isAgentProcessing")
+                        print("✅ HeadlessAgentView: Completion message received, resetting isAgentProcessing")
                         return
                     }
                     
@@ -280,18 +287,18 @@ struct ChatTerminalView: View {
                         Task { @MainActor in
                             self.chatViewModel.isProcessing = false
                         }
-                        print("✅ ChatTerminalView: Error message received, resetting isAgentProcessing")
+                        print("✅ HeadlessAgentView: Error message received, resetting isAgentProcessing")
                     }
                 }
             },
             onTTSAudio: { event in
                 // Server-side TTS audio received - play it directly
                 Task { @MainActor in
-                    print("🔊 ChatTerminalView: Received TTS audio from server: \(event.audio.count) bytes")
+            print("🔊 HeadlessAgentView: Received TTS audio from server: \(event.audio.count) bytes")
                     
                     // Stop any previous playback before starting new one
                     if self.ttsState.isActive {
-                        print("🛑 ChatTerminalView: Stopping previous audio before playing new")
+                        print("🛑 HeadlessAgentView: Stopping previous audio before playing new")
                         self.stopAudioPlayback()
                     }
                     
@@ -301,10 +308,8 @@ struct ChatTerminalView: View {
             },
             onTranscription: { transcribedText in
                 Task { @MainActor in
-                    // Server-side transcription received
-                    print("🎤 ChatTerminalView: Received transcription from server: \(transcribedText.prefix(50))...")
-                    // Note: The transcription is automatically added as a user message by the server
-                    // So we don't need to add it to chat history here
+                    print("🎤 HeadlessAgentView: Received transcription from server: \(transcribedText.prefix(50))...")
+                    self.handleTranscriptionResult(transcribedText)
                 }
             }
         )
@@ -328,7 +333,7 @@ struct ChatTerminalView: View {
                     }
                     audioPlayerDelegate = nil
                     avAudioPlayer = nil
-                    print("🔇 ChatTerminalView: Server TTS playback finished")
+                    print("🔇 HeadlessAgentView: Server TTS playback finished")
                 }
             }
             audioPlayerDelegate = delegate
@@ -339,9 +344,9 @@ struct ChatTerminalView: View {
             player.play()
             avAudioPlayer = player // Keep reference to prevent deallocation
             ttsState = .playing
-            print("▶️ ChatTerminalView: Started playing server TTS audio")
+            print("▶️ HeadlessAgentView: Started playing server TTS audio")
         } catch {
-            print("❌ ChatTerminalView: Error playing server TTS audio: \(error)")
+            print("❌ HeadlessAgentView: Error playing server TTS audio: \(error)")
             ttsState = .error(error.localizedDescription)
             isAgentProcessing = false
             Task { @MainActor in
@@ -368,7 +373,7 @@ struct ChatTerminalView: View {
     
     private func loadChatHistory() async {
         do {
-            print("📂📂📂 ChatTerminalView: Loading chat history for session \(session.id)")
+            print("📂📂📂 HeadlessAgentView: Loading chat history for session \(session.id)")
             print("   API URL: \(config.apiBaseUrl)/terminal/\(session.id)/history")
             print("   Current chatHistory count BEFORE load: \(chatViewModel.chatHistory.count)")
             
@@ -383,7 +388,7 @@ struct ChatTerminalView: View {
             let (data, response) = try await URLSession.shared.data(for: request)
             
             guard let httpResponse = response as? HTTPURLResponse else {
-                print("⚠️ ChatTerminalView: Invalid response type")
+                print("⚠️ HeadlessAgentView: Invalid response type")
                 return
             }
             
@@ -392,9 +397,9 @@ struct ChatTerminalView: View {
             
             guard httpResponse.statusCode == 200 else {
                 if let errorString = String(data: data, encoding: .utf8) {
-                    print("⚠️ ChatTerminalView: Failed to load history (status: \(httpResponse.statusCode), error: \(errorString))")
+                    print("⚠️ HeadlessAgentView: Failed to load history (status: \(httpResponse.statusCode), error: \(errorString))")
                 } else {
-                    print("⚠️ ChatTerminalView: Failed to load history (status: \(httpResponse.statusCode))")
+                    print("⚠️ HeadlessAgentView: Failed to load history (status: \(httpResponse.statusCode))")
                 }
                 return
             }
@@ -422,18 +427,21 @@ struct ChatTerminalView: View {
                     print("   Message types in history: \(typeCounts)")
                     
                     if !chatHistory.isEmpty {
-                        print("✅✅✅ ChatTerminalView: Loading \(chatHistory.count) messages from history")
+                        print("✅✅✅ HeadlessAgentView: Loading \(chatHistory.count) messages from history")
                     } else {
-                        print("ℹ️ ChatTerminalView: Chat history is empty (no messages yet)")
+                        print("ℹ️ HeadlessAgentView: Chat history is empty (no messages yet)")
                     }
                     baseChatViewModel.loadMessages(chatHistory)
+                    chatHistory.forEach { message in
+                        self.appendTranscriptIfNeeded(for: message)
+                    }
                     print("   chatHistory count AFTER load: \(chatViewModel.chatHistory.count)")
                 }
             } else {
-                print("⚠️ ChatTerminalView: chat_history field is nil in response")
+                print("⚠️ HeadlessAgentView: chat_history field is nil in response")
             }
         } catch {
-            print("❌❌❌ ChatTerminalView: Error loading chat history: \(error)")
+            print("❌❌❌ HeadlessAgentView: Error loading chat history: \(error)")
             if let decodingError = error as? DecodingError {
                 print("   Decoding error details: \(decodingError)")
                 switch decodingError {
@@ -458,11 +466,218 @@ struct ChatTerminalView: View {
         let apiClient = APIClient(config: config)
         do {
             try await apiClient.cancelCommand(sessionId: session.id)
-            print("✅ ChatTerminalView: Current command cancelled")
+            print("✅ HeadlessAgentView: Current command cancelled")
         } catch {
-            print("⚠️ ChatTerminalView: Error cancelling command: \(error)")
+            print("⚠️ HeadlessAgentView: Error cancelling command: \(error)")
             // Don't throw - cancellation failure shouldn't prevent new recording
         }
+    }
+    
+    // MARK: - Transcript Helpers
+    
+    @MainActor
+    private func addPendingVoiceMessage(audioURL: URL) {
+        let messageId = UUID().uuidString
+        let timestamp = Int64(Date().timeIntervalSince1970 * 1000)
+        
+        guard let relativePath = saveVoiceAudio(from: audioURL, messageId: messageId) else {
+            pendingVoiceMessageId = nil
+            return
+        }
+        
+        let voiceMessage = ChatMessage(
+            id: messageId,
+            timestamp: timestamp,
+            type: .tts_audio,
+            content: "🎤 Voice message",
+            metadata: ChatMessage.Metadata(
+                audioFilePath: relativePath
+            )
+        )
+        baseChatViewModel.addMessage(voiceMessage)
+        pendingVoiceMessageId = messageId
+        
+        let placeholder = ChatMessage(
+            id: UUID().uuidString,
+            timestamp: timestamp + 1,
+            type: .user,
+            content: "… transcribing …",
+            metadata: ChatMessage.Metadata(
+                isPlaceholder: true,
+                parentMessageId: messageId
+            )
+        )
+        baseChatViewModel.addMessage(placeholder)
+    }
+    
+    @MainActor
+    private func handleTranscriptionResult(_ transcribedText: String) {
+        let cleaned = transcribedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return }
+        
+        if let pendingId = pendingVoiceMessageId {
+            if let index = baseChatViewModel.chatHistory.firstIndex(where: { $0.id == pendingId }) {
+                let existing = baseChatViewModel.chatHistory[index]
+                let updatedMetadata = metadata(byUpdating: existing.metadata, ttsText: cleaned)
+                var updatedHistory = baseChatViewModel.chatHistory
+                updatedHistory[index] = ChatMessage(
+                    id: existing.id,
+                    timestamp: existing.timestamp,
+                    type: existing.type,
+                    content: existing.content,
+                    metadata: updatedMetadata
+                )
+                baseChatViewModel.chatHistory = updatedHistory
+            }
+            
+            if let placeholderIndex = baseChatViewModel.chatHistory.firstIndex(where: {
+                $0.metadata?.isPlaceholder == true && $0.metadata?.parentMessageId == pendingId
+            }) {
+                let placeholder = baseChatViewModel.chatHistory[placeholderIndex]
+                var updatedHistory = baseChatViewModel.chatHistory
+                updatedHistory[placeholderIndex] = ChatMessage(
+                    id: placeholder.id,
+                    timestamp: placeholder.timestamp,
+                    type: .user,
+                    content: cleaned,
+                    metadata: ChatMessage.Metadata(parentMessageId: pendingId)
+                )
+                baseChatViewModel.chatHistory = updatedHistory
+            } else {
+                appendTranscriptMessage(for: cleaned, parentId: pendingId, isUser: true)
+            }
+            
+            pendingVoiceMessageId = nil
+        } else {
+            let userMessage = ChatMessage(
+                id: UUID().uuidString,
+                timestamp: Int64(Date().timeIntervalSince1970 * 1000),
+                type: .user,
+                content: cleaned,
+                metadata: nil
+            )
+            baseChatViewModel.addMessage(userMessage)
+        }
+    }
+    
+    /// Returns true if message was handled (placeholder replaced)
+    @MainActor
+    private func handleServerUserMessage(_ message: ChatMessage) -> Bool {
+        guard message.type == .user,
+              let pendingId = pendingVoiceMessageId else {
+            return false
+        }
+        
+        guard let voiceIndex = baseChatViewModel.chatHistory.firstIndex(where: { $0.id == pendingId }) else {
+            return false
+        }
+        
+        var updatedHistory = baseChatViewModel.chatHistory
+        let voiceMessage = updatedHistory[voiceIndex]
+        let updatedMetadata = metadata(byUpdating: voiceMessage.metadata, ttsText: message.content)
+        updatedHistory[voiceIndex] = ChatMessage(
+            id: voiceMessage.id,
+            timestamp: voiceMessage.timestamp,
+            type: voiceMessage.type,
+            content: voiceMessage.content,
+            metadata: updatedMetadata
+        )
+        
+        if let placeholderIndex = updatedHistory.firstIndex(where: {
+            $0.metadata?.isPlaceholder == true && $0.metadata?.parentMessageId == pendingId
+        }) {
+            updatedHistory[placeholderIndex] = ChatMessage(
+                id: message.id,
+                timestamp: message.timestamp,
+                type: .user,
+                content: message.content,
+                metadata: ChatMessage.Metadata(parentMessageId: pendingId)
+            )
+        }
+        
+        baseChatViewModel.chatHistory = updatedHistory
+        pendingVoiceMessageId = nil
+        return true
+    }
+    
+    @MainActor
+    private func appendTranscriptIfNeeded(for message: ChatMessage) {
+        guard message.type == .tts_audio,
+              let transcript = message.metadata?.ttsText,
+              !transcript.isEmpty else { return }
+        
+        let alreadyExists = baseChatViewModel.chatHistory.contains {
+            $0.metadata?.parentMessageId == message.id && $0.content == transcript
+        }
+        guard !alreadyExists else { return }
+        
+        appendTranscriptMessage(
+            for: transcript,
+            parentId: message.id,
+            isUser: isUserVoiceMessage(message),
+            timestamp: message.timestamp + 1
+        )
+    }
+    
+    private func appendTranscriptMessage(for text: String, parentId: String, isUser: Bool, timestamp: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) {
+        let transcriptMessage = ChatMessage(
+            id: UUID().uuidString,
+            timestamp: timestamp,
+            type: isUser ? .user : .assistant,
+            content: text,
+            metadata: ChatMessage.Metadata(parentMessageId: parentId)
+        )
+        baseChatViewModel.addMessage(transcriptMessage)
+    }
+    
+    private func saveVoiceAudio(from sourceURL: URL, messageId: String) -> String? {
+        let fileManager = FileManager.default
+        let documentsDir = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let audioDir = documentsDir.appendingPathComponent("headless_audio", isDirectory: true)
+        
+        do {
+            if !fileManager.fileExists(atPath: audioDir.path) {
+                try fileManager.createDirectory(at: audioDir, withIntermediateDirectories: true)
+            }
+            
+            let filename = "user_headless_\(messageId).m4a"
+            let destinationURL = audioDir.appendingPathComponent(filename)
+            
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try fileManager.removeItem(at: destinationURL)
+            }
+            
+            try fileManager.copyItem(at: sourceURL, to: destinationURL)
+            return "headless_audio/\(filename)"
+        } catch {
+            print("❌ HeadlessAgentView: Failed to save voice audio: \(error)")
+            return nil
+        }
+    }
+    
+    private func metadata(byUpdating metadata: ChatMessage.Metadata?, ttsText: String? = nil) -> ChatMessage.Metadata {
+        ChatMessage.Metadata(
+            toolName: metadata?.toolName,
+            toolInput: metadata?.toolInput,
+            toolOutput: metadata?.toolOutput,
+            thinking: metadata?.thinking,
+            errorCode: metadata?.errorCode,
+            stackTrace: metadata?.stackTrace,
+            completion: metadata?.completion,
+            ttsText: ttsText ?? metadata?.ttsText,
+            ttsDuration: metadata?.ttsDuration,
+            audioFilePath: metadata?.audioFilePath,
+            isPlaceholder: metadata?.isPlaceholder,
+            parentMessageId: metadata?.parentMessageId
+        )
+    }
+    
+    private func isUserVoiceMessage(_ message: ChatMessage) -> Bool {
+        guard message.type == .tts_audio else { return false }
+        if let path = message.metadata?.audioFilePath, path.contains("user_") {
+            return true
+        }
+        return false
     }
     
 }

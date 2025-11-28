@@ -63,7 +63,7 @@ class ChatViewModel: ObservableObject, ChatViewModelProtocol {
     
     // MARK: - ChatViewModelProtocol (Audio Playback)
     // Note: ChatViewModel doesn't handle audio playback directly
-    // Audio playback is handled by ChatTerminalView's own audio player
+    // Audio playback is handled by HeadlessAgentView's own audio player
     // These methods are stubs that can be overridden by views that need audio
     
     func playAudioMessage(_ message: ChatMessage) {
@@ -98,7 +98,7 @@ class ChatViewModel: ObservableObject, ChatViewModelProtocol {
     
     // MARK: - ChatViewModelProtocol (Text Input & Recording)
     // Note: ChatViewModel doesn't handle text commands or recording directly
-    // These are handled by the view (ChatTerminalView) which has access to WebSocket
+    // These are handled by the view (HeadlessAgentView) which has access to WebSocket
     
     var isRecording: Bool {
         return false // ChatViewModel doesn't track recording state

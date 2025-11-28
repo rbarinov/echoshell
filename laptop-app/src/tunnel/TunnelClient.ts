@@ -1,4 +1,6 @@
 import { WebSocket } from 'ws';
+import { AgentEvent } from '../types/AgentEvent.js';
+import { AgentWebSocketHandler } from './AgentWebSocketHandler.js';
 
 export interface TunnelConfig {
   tunnelId: string;
@@ -29,6 +31,7 @@ export enum ConnectionState {
   Dead = 'dead'
 }
 
+// Legacy interfaces (DEPRECATED - will be removed)
 export interface AgentRequest {
   tunnelId: string;
   streamKey: string;
@@ -64,6 +67,9 @@ export class TunnelClient {
   private connectionState: ConnectionState = ConnectionState.Disconnected;
   private stateChangeCallback: ((state: ConnectionState) => void) | null = null;
   
+  // NEW: Agent WebSocket handlers for unified protocol
+  private agentWsHandlers = new Map<string, AgentWebSocketHandler>();
+  
   // Heartbeat configuration
   private readonly PING_INTERVAL_MS = 20000; // 20 seconds
   private readonly PONG_TIMEOUT_MS = 30000; // 30 seconds
@@ -71,7 +77,8 @@ export class TunnelClient {
   constructor(
     private config: TunnelConfig,
     private requestHandler: (req: TunnelRequest) => Promise<TunnelResponse>,
-    private clientAuthKey?: string
+    private clientAuthKey?: string,
+    private openaiApiKey?: string
   ) {}
   
   setTerminalInputHandler(handler: (sessionId: string, data: string) => void): void {
@@ -87,7 +94,25 @@ export class TunnelClient {
   }
   
   /**
-   * Send agent response back to tunnel server
+   * NEW: Send AgentEvent to client via unified protocol
+   */
+  sendAgentEvent(event: AgentEvent): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      console.warn('⚠️ Cannot send agent_event - WebSocket not connected');
+      return;
+    }
+    
+    const message = {
+      type: 'agent_event',
+      event
+    };
+    
+    console.log(`📤 TunnelClient: Sending agent_event: ${event.type}, session=${event.session_id}`);
+    this.ws.send(JSON.stringify(message));
+  }
+
+  /**
+   * LEGACY: Send agent response back to tunnel server (DEPRECATED)
    */
   sendAgentResponse(tunnelId: string, streamKey: string, payload: AgentResponsePayload): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -260,9 +285,36 @@ export class TunnelClient {
           if (this.terminalInputHandler) {
             this.terminalInputHandler(message.sessionId, message.data);
           }
+        } else if (message.type === 'agent_event') {
+          // NEW: Handle AgentEvent via unified protocol
+          console.log(`🤖 TunnelClient: Received agent_event: ${message.event?.type}, session=${message.event?.session_id}`);
+          const event = message.event as AgentEvent;
+          
+          if (!this.openaiApiKey) {
+            console.error('❌ TunnelClient: Cannot handle agent_event - OpenAI API key not configured');
+            return;
+          }
+          
+          // Create or get handler for this session
+          if (!this.agentWsHandlers.has(event.session_id)) {
+            const handler = new AgentWebSocketHandler(
+              event.session_id,
+              this.openaiApiKey,
+              (responseEvent: AgentEvent) => this.sendAgentEvent(responseEvent) // Emit callback
+            );
+            this.agentWsHandlers.set(event.session_id, handler);
+          }
+          
+          // Process event
+          const handler = this.agentWsHandlers.get(event.session_id);
+          if (handler) {
+            handler.handleEvent(event).catch(error => {
+              console.error(`❌ TunnelClient: Error processing agent_event: ${error.message}`);
+            });
+          }
         } else if (message.type === 'agent_request') {
-          // Handle agent request from iPhone via tunnel
-          console.log(`🤖 TunnelClient: Received agent_request from tunnel: type=${message.payload?.type}`);
+          // LEGACY: Handle agent request from iPhone via tunnel (DEPRECATED)
+          console.log(`🤖 TunnelClient: Received LEGACY agent_request from tunnel: type=${message.payload?.type}`);
           if (this.agentRequestHandler) {
             this.agentRequestHandler(message as AgentRequest).catch(error => {
               console.error(`❌ TunnelClient: Error handling agent_request: ${error.message}`);

@@ -1,5 +1,5 @@
 //
-//  TerminalChatViewModel.swift
+//  HeadlessAgentChatViewModel.swift
 //  EchoShell
 //
 //  Created for Voice-Controlled Terminal Management System
@@ -11,7 +11,7 @@ import Combine
 import AVFoundation
 
 @MainActor
-class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
+class HeadlessAgentChatViewModel: ObservableObject, ChatViewModelProtocol {
     // MARK: - Published State
     
     var chatHistory: [ChatMessage] {
@@ -25,6 +25,7 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
     }
     
     @Published private(set) var audioPlaybackState: AudioPlaybackState = .idle
+    @Published private(set) var recordingState: Bool = false
     
     // MARK: - Dependencies
     
@@ -42,7 +43,6 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
     var onSendTextCommand: ((String) async -> Void)?
     var onStartRecording: (() -> Void)?
     var onStopRecording: (() -> Void)?
-    var isRecordingCallback: (() -> Bool)?
     
     // MARK: - Initialization
     
@@ -69,7 +69,7 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
         }
         
         guard let audioPath = message.metadata?.audioFilePath else {
-            print("❌ TerminalChatViewModel: Cannot play audio - no file path")
+            print("❌ HeadlessAgentChatViewModel: Cannot play audio - no file path")
             return
         }
         
@@ -78,7 +78,7 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
         let fileURL = documentsDir.appendingPathComponent(audioPath)
         
         guard let audioData = try? Data(contentsOf: fileURL) else {
-            print("❌ TerminalChatViewModel: Cannot load audio file: \(audioPath)")
+            print("❌ HeadlessAgentChatViewModel: Cannot load audio file: \(audioPath)")
             return
         }
         
@@ -109,9 +109,9 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
             currentlyPlayingMessageId = message.id
             audioPlaybackState = AudioPlaybackState(messageId: message.id, status: .playing)
             
-            print("▶️ TerminalChatViewModel: Started playing audio for message \(message.id)")
+            print("▶️ HeadlessAgentChatViewModel: Started playing audio for message \(message.id)")
         } catch {
-            print("❌ TerminalChatViewModel: Error playing audio: \(error)")
+            print("❌ HeadlessAgentChatViewModel: Error playing audio: \(error)")
             currentlyPlayingMessageId = nil
         }
     }
@@ -122,7 +122,7 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
         if let messageId = currentlyPlayingMessageId {
             audioPlaybackState = AudioPlaybackState(messageId: messageId, status: .paused)
         }
-        print("⏸️ TerminalChatViewModel: Paused audio")
+        print("⏸️ HeadlessAgentChatViewModel: Paused audio")
     }
     
     func stopAudio() {
@@ -132,7 +132,7 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
         audioPlayer = nil
         audioPlayerDelegate = nil
         audioPlaybackState = .idle
-        print("⏹️ TerminalChatViewModel: Stopped audio")
+        print("⏹️ HeadlessAgentChatViewModel: Stopped audio")
     }
     
     func isMessagePlaying(_ messageId: String) -> Bool {
@@ -144,7 +144,7 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
     }
     
     var isRecording: Bool {
-        return isRecordingCallback?() ?? false
+        return recordingState
     }
     
     func sendTextCommand(_ command: String) async {
@@ -153,10 +153,18 @@ class TerminalChatViewModel: ObservableObject, ChatViewModelProtocol {
     
     func startRecording() {
         onStartRecording?()
+        updateRecordingState(true)
     }
     
     func stopRecording() {
         onStopRecording?()
+        updateRecordingState(false)
+    }
+    
+    func updateRecordingState(_ isRecording: Bool) {
+        if recordingState != isRecording {
+            recordingState = isRecording
+        }
     }
 }
 

@@ -234,7 +234,12 @@ async function initializeTunnel(isRetry = false): Promise<void> {
     console.log('📋 Copy and paste this link in the iPhone app Settings > Enter Magic Link\n');
     
     // Connect to tunnel
-    tunnelClient = new TunnelClient(tunnelConfig, handleTunnelRequest, process.env.LAPTOP_AUTH_KEY);
+    tunnelClient = new TunnelClient(
+      tunnelConfig, 
+      handleTunnelRequest, 
+      process.env.LAPTOP_AUTH_KEY,
+      process.env.OPENAI_API_KEY // Pass OpenAI API key for unified AgentEvent handling
+    );
     await tunnelClient.connect();
     
     // Set up terminal input handler

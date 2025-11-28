@@ -195,12 +195,12 @@ struct TerminalDetailView: View {
     private var agentView: some View {
         // For headless terminals, show chat interface
         if session.terminalType == .cursor || session.terminalType == .claude {
-            ChatTerminalView(session: session, config: config)
+            HeadlessAgentView(session: session, config: config)
                 .environmentObject(settingsManager)
         } else {
             // For regular terminals in agent mode, show chat interface too
             // (Terminal Session Agent View has been removed - using unified chat interface)
-            ChatTerminalView(session: session, config: config)
+            HeadlessAgentView(session: session, config: config)
                 .environmentObject(settingsManager)
         }
     }
