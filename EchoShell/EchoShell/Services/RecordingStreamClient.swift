@@ -136,7 +136,7 @@ class RecordingStreamClient: ObservableObject {
     }
     
     private func handleMessage(_ text: String) {
-        print("📨📨📨 RecordingStreamClient received raw message: \(text.prefix(500))")
+        print("📨 RecordingStreamClient: Received raw message: \(text.prefix(200))...")
         
         guard let data = text.data(using: .utf8) else {
             print("❌❌❌ RecordingStreamClient: Failed to convert text to data")
