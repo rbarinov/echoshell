@@ -639,7 +639,7 @@ export class TerminalManager {
   }
 
   /**
-   * Add message to chat history and persist to database
+   * Add message to chat history and persist to database (internal)
    */
   private addMessageToHistory(session: TerminalSession, message: ChatMessage): void {
     if (!session.chatHistory) {
@@ -657,6 +657,19 @@ export class TerminalManager {
     }
 
     console.log(`✅ [${session.sessionId}] Message added to history: ${message.type}`);
+  }
+
+  /**
+   * Public method to add message to chat history by session ID
+   * Used by RecordingStreamManager to save tts_audio messages
+   */
+  addMessage(sessionId: string, message: ChatMessage): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      console.warn(`⚠️ [${sessionId}] Session not found, cannot add message`);
+      return;
+    }
+    this.addMessageToHistory(session, message);
   }
 
   /**

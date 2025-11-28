@@ -137,6 +137,7 @@ export class RecordingStreamManager {
   /**
    * Send tts_ready event with accumulated assistant messages
    * Extracts text content suitable for TTS - removes code blocks and thinking, but preserves inline terms
+   * Also saves a tts_audio message to chat history for voice message bubbles
    */
   private sendTTSReady(sessionId: string, state: SessionState): void {
     // Extract TTS-friendly content from assistant messages
@@ -196,6 +197,25 @@ export class RecordingStreamManager {
     }
 
     console.log(`🎙️ [${sessionId}] Sending tts_ready with ${assistantTexts.length} assistant messages (${combinedText.length} chars, dry summary)`);
+
+    // Save tts_audio message to chat history (for voice message bubbles)
+    // This allows showing voice messages when user returns to chat
+    const ttsAudioMessage: ChatMessage = {
+      id: `tts-${Date.now()}-${Math.random().toString(36).substring(7)}`,
+      timestamp: Date.now(),
+      type: 'tts_audio',
+      content: '🔊 Voice response', // Display text for the bubble
+      metadata: {
+        ttsText: combinedText // The actual text that was synthesized
+      }
+    };
+
+    // Add to chat history via TerminalManager
+    const session = this.terminalManager.getSession(sessionId);
+    if (session?.chatHistory) {
+      this.terminalManager.addMessage(sessionId, ttsAudioMessage);
+      console.log(`💾 [${sessionId}] Saved tts_audio message to chat history`);
+    }
 
     // Send tts_ready event via OutputRouter
     this.outputRouter.routeOutput({

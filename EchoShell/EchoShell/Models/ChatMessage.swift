@@ -21,6 +21,7 @@ struct ChatMessage: Codable, Identifiable, Equatable {
         case tool
         case system
         case error
+        case tts_audio // Voice message (synthesized TTS audio response)
     }
     
     struct Metadata: Codable, Equatable {
@@ -31,6 +32,8 @@ struct ChatMessage: Codable, Identifiable, Equatable {
         let errorCode: String?
         let stackTrace: String?
         let completion: Bool?
+        let ttsText: String? // Text that was synthesized to speech (for tts_audio messages)
+        let ttsDuration: Double? // Duration of audio in seconds (if known)
         
         init(
             toolName: String? = nil,
@@ -39,7 +42,9 @@ struct ChatMessage: Codable, Identifiable, Equatable {
             thinking: String? = nil,
             errorCode: String? = nil,
             stackTrace: String? = nil,
-            completion: Bool? = nil
+            completion: Bool? = nil,
+            ttsText: String? = nil,
+            ttsDuration: Double? = nil
         ) {
             self.toolName = toolName
             self.toolInput = toolInput
@@ -48,6 +53,8 @@ struct ChatMessage: Codable, Identifiable, Equatable {
             self.errorCode = errorCode
             self.stackTrace = stackTrace
             self.completion = completion
+            self.ttsText = ttsText
+            self.ttsDuration = ttsDuration
         }
     }
     

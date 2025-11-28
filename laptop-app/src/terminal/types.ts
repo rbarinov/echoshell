@@ -7,8 +7,9 @@ export type TerminalType = 'regular' | HeadlessTerminalType;
 
 /**
  * Chat message types for headless terminals
+ * - tts_audio: Voice message (synthesized TTS audio response)
  */
-export type ChatMessageType = 'user' | 'assistant' | 'tool' | 'system' | 'error';
+export type ChatMessageType = 'user' | 'assistant' | 'tool' | 'system' | 'error' | 'tts_audio';
 
 /**
  * Metadata for chat messages
@@ -21,6 +22,8 @@ export interface ChatMessageMetadata {
   errorCode?: string;
   stackTrace?: string;
   completion?: boolean; // true if this message indicates command completion
+  ttsText?: string; // Text that was synthesized to speech (for tts_audio messages)
+  ttsDuration?: number; // Duration of audio in seconds (if known)
 }
 
 /**

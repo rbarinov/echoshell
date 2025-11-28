@@ -225,6 +225,9 @@ struct ChatBubbleView: View {
             case .error:
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.caption)
+            case .tts_audio:
+                Image(systemName: "waveform.circle.fill")
+                    .font(.caption)
             }
         }
         .foregroundColor(messageIconColor)
@@ -242,6 +245,8 @@ struct ChatBubbleView: View {
             return "System"
         case .error:
             return "Error"
+        case .tts_audio:
+            return "Voice Response"
         }
     }
     
@@ -257,6 +262,8 @@ struct ChatBubbleView: View {
             return .gray
         case .error:
             return .red
+        case .tts_audio:
+            return .purple
         }
     }
     
@@ -272,6 +279,8 @@ struct ChatBubbleView: View {
             return Color.gray.opacity(0.1)
         case .error:
             return Color.red.opacity(0.1)
+        case .tts_audio:
+            return Color.purple.opacity(0.1)
         }
     }
     
@@ -280,6 +289,12 @@ struct ChatBubbleView: View {
         switch message.type {
         case .tool:
             ToolMessageView(
+                message: message,
+                isExpanded: isExpanded,
+                onToggleExpand: onToggleExpand
+            )
+        case .tts_audio:
+            VoiceMessageView(
                 message: message,
                 isExpanded: isExpanded,
                 onToggleExpand: onToggleExpand
@@ -484,6 +499,62 @@ struct ToolMessageView: View {
                             .cornerRadius(6)
                         }
                     }
+                }
+                .padding(.top, 4)
+            }
+        }
+    }
+}
+
+// MARK: - Voice Message View
+struct VoiceMessageView: View {
+    let message: ChatMessage
+    let isExpanded: Bool
+    let onToggleExpand: () -> Void
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Waveform visualization
+            HStack(spacing: 4) {
+                // Play button (visual only - actual playback handled elsewhere)
+                Image(systemName: "play.circle.fill")
+                    .font(.system(size: 28))
+                    .foregroundColor(.purple)
+                
+                // Waveform bars (decorative)
+                HStack(spacing: 2) {
+                    ForEach(0..<20, id: \.self) { index in
+                        RoundedRectangle(cornerRadius: 1)
+                            .fill(Color.purple.opacity(0.6))
+                            .frame(width: 3, height: CGFloat.random(in: 8...24))
+                    }
+                }
+                .frame(height: 28)
+                
+                Spacer()
+                
+                // Expand button
+                Button(action: onToggleExpand) {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            
+            // Show TTS text when expanded
+            if isExpanded, let ttsText = message.metadata?.ttsText {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Synthesized text:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text(ttsText)
+                        .font(.system(.caption, design: .default))
+                        .foregroundColor(.primary.opacity(0.8))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .background(Color.purple.opacity(0.05))
+                        .cornerRadius(6)
                 }
                 .padding(.top, 4)
             }

@@ -103,7 +103,7 @@ agentHandler = new AgentHandler(aiAgent, terminalManager);
 proxyHandler = new ProxyHandler(sttProvider, ttsProvider);
 
 // Setup routes
-app.use('/terminal', createTerminalRoutes(terminalManager));
+app.use('/terminal', createTerminalRoutes(terminalManager, chatHistoryDb));
 app.use('/workspace', createWorkspaceRoutes(workspaceManager, worktreeManager));
 
 // Setup WebSocket
